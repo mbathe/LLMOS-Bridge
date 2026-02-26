@@ -1,0 +1,118 @@
+[tool.poetry]
+name = "llmos-bridge-workspace"
+version = "0.0.0"
+description = "Monorepo workspace — development tooling only"
+authors = ["LLMOS Bridge Contributors"]
+license = "Apache-2.0"
+readme = "README.md"
+packages = []
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^3.7"
+ruff = "^0.5"
+mypy = "^1.10"
+pytest = "^8.2"
+pytest-asyncio = "^0.23"
+pytest-cov = "^5.0"
+httpx = "^0.27"          # For API tests
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG", # flake8-unused-arguments
+    "SIM", # flake8-simplify
+    "TCH", # flake8-type-checking
+    "RUF", # ruff-specific rules
+    "PT",  # flake8-pytest-style
+    "TID", # flake8-tidy-imports
+]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # do not perform function calls in argument defaults (FastAPI pattern)
+    "ARG002", # unused method argument (common in abstract interfaces)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["llmos_bridge", "langchain_llmos"]
+force-sort-within-sections = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_column_numbers = true
+error_summary = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "packages/llmos-bridge/tests",
+    "packages/langchain-llmos/tests",
+]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=packages/llmos-bridge/llmos_bridge",
+    "--cov-report=term-missing",
+    "--cov-report=xml:coverage.xml",
+]
+markers = [
+    "unit: Unit tests — no I/O, fully isolated",
+    "integration: Integration tests — real modules, no network",
+    "e2e: End-to-end tests — full daemon, may use network",
+    "slow: Tests that take > 5 seconds",
+    "platform_linux: Tests specific to Linux",
+    "platform_windows: Tests specific to Windows",
+    "platform_macos: Tests specific to macOS",
+    "platform_rpi: Tests specific to Raspberry Pi",
+]
+
+[tool.coverage.run]
+source = ["llmos_bridge"]
+omit = [
+    "*/tests/*",
+    "*/conftest.py",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]

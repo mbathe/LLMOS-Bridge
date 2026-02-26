@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/integration/test_context_api.py -v --tb=short)",
+      "Bash(python -m pytest tests/ -v --tb=short --no-header)",
+      "Bash(pip install langchain-core)",
+      "Bash(pip install langchain-core --quiet)",
+      "Bash(/home/paul/miniconda3/bin/pip install langchain-core --quiet)",
+      "Bash(python -m pytest tests/ -v --tb=short --no-header -p no:cacheprovider)",
+      "Bash(python -m pytest tests/ -v --tb=short -q)",
+      "Bash(python -m pytest tests/ -q --tb=short --no-header -p no:cacheprovider)",
+      "Bash(xargs ls -la)",
+      "Bash(python -m pytest tests/unit/api/test_prompt.py tests/integration/test_context_api.py -x -q)",
+      "Bash(python -m pytest tests/e2e/ -x -q)",
+      "Bash(python -c \"import langchain_llmos; print\\(langchain_llmos.__file__\\)\")",
+      "Bash(pip install -e packages/llmos-bridge -e packages/langchain-llmos)",
+      "Bash(python -c \"import sys; print\\(sys.prefix\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(python -c \"import llmos_bridge; print\\(''llmos_bridge OK:'', llmos_bridge.__file__\\)\")",
+      "Bash(pip install --break-system-packages -e packages/llmos-bridge -e packages/langchain-llmos)",
+      "Bash(python -c \"import llmos_bridge; print\\(''llmos_bridge OK''\\); import langchain_llmos; print\\(''langchain_llmos OK''\\)\")",
+      "Bash(pip --version)",
+      "Bash(/home/paul/miniconda3/bin/pip install -e packages/llmos-bridge -e packages/langchain-llmos)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/e2e/test_sdk_integration.py -x -v)",
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/e2e/test_sdk_integration.py::TestSDKClientIntegration::test_submit_plan_sync -x -v -s)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/e2e/test_sdk_integration.py -x -v --tb=short)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/e2e/test_sdk_integration.py::TestSDKToolExecution::test_run_command_tool -x -v -s)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/ packages/langchain-llmos/tests/ --no-cov -x -q)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/ --no-cov -x -q)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/ --no-cov -q --ignore=packages/llmos-bridge/tests/unit/cli/test_main_cli.py)",
+      "Bash(python -m pytest tests/ --no-cov -q)",
+      "Bash(/home/paul/miniconda3/bin/pip install langchain-anthropic)",
+      "Bash(ANTHROPIC_API_KEY=\"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\" python scripts/test_with_llm.py)"
+    ]
+  }
+}

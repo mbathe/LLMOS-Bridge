@@ -1,0 +1,95 @@
+[tool.poetry]
+name = "llmos-bridge"
+version = "0.1.0"
+description = "Local daemon bridging LLMs to OS, applications, and devices via the IML protocol"
+authors = ["LLMOS Bridge Contributors"]
+license = "Apache-2.0"
+readme = "README.md"
+homepage = "https://llmos-bridge.io"
+repository = "https://github.com/llmos-bridge/llmos-bridge"
+documentation = "https://docs.llmos-bridge.io"
+keywords = ["llm", "agent", "automation", "ai", "iml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Operating System",
+    "Typing :: Typed",
+]
+packages = [{ include = "llmos_bridge" }]
+
+[tool.poetry.dependencies]
+python           = "^3.11"
+pydantic         = "^2.7"
+fastapi          = "^0.111"
+uvicorn          = { version = "^0.30", extras = ["standard"] }
+websockets       = "^12.0"
+networkx         = "^3.3"
+structlog        = "^24.1"
+aiosqlite        = "^0.20"
+httpx            = "^0.27"
+typer            = { version = "^0.12", extras = ["all"] }
+rich             = "^13.7"
+pyyaml           = "^6.0"
+toml             = "^0.10"
+anyio            = "^4.4"
+
+[tool.poetry.group.modules]
+optional = true
+
+[tool.poetry.group.modules.dependencies]
+# Office
+openpyxl         = { version = "^3.1", optional = true }
+python-docx      = { version = "^1.1", optional = true }
+python-pptx      = { version = "^0.6", optional = true }
+# Browser
+playwright       = { version = "^1.44", optional = true }
+# GUI
+pyautogui        = { version = "^0.9", optional = true }
+pytesseract      = { version = "^0.3", optional = true }
+mss              = { version = "^9.0", optional = true }
+# Database
+asyncpg          = { version = "^0.29", optional = true }
+aiomysql         = { version = "^0.2", optional = true }
+# IoT
+paho-mqtt        = { version = "^2.0", optional = true }
+# Memory
+chromadb         = { version = "^0.5", optional = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest           = "^8.2"
+pytest-asyncio   = "^0.23"
+pytest-cov       = "^5.0"
+pytest-mock      = "^3.14"
+freezegun        = "^1.5"
+httpx            = "^0.27"
+ruff             = "^0.5"
+mypy             = "^1.10"
+types-PyYAML     = "*"
+types-toml       = "*"
+
+[tool.poetry.extras]
+office    = ["openpyxl", "python-docx", "python-pptx"]
+browser   = ["playwright"]
+gui       = ["pyautogui", "pytesseract", "mss"]
+database  = ["asyncpg", "aiomysql"]
+iot       = ["paho-mqtt"]
+memory    = ["chromadb"]
+all       = [
+    "openpyxl", "python-docx", "python-pptx",
+    "playwright",
+    "pyautogui", "pytesseract", "mss",
+    "asyncpg", "aiomysql",
+    "paho-mqtt",
+    "chromadb",
+]
+
+[tool.poetry.scripts]
+llmos-bridge = "llmos_bridge.cli.main:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "llmos-module-example"
+version = "0.1.0"
+description = "Example/template LLMOS Bridge community module — copy this to create your own module"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+keywords = ["llmos-bridge", "llmos-module"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries",
+]
+packages = [{ include = "llmos_module_example" }]
+
+[tool.poetry.dependencies]
+python        = "^3.11"
+llmos-bridge  = { path = "../../packages/llmos-bridge", develop = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest        = "^8.2"
+pytest-asyncio = "^0.23"
+
+# Required for the LLMOS Bridge Plugin Registry:
+# - README.md must describe what the module does
+# - At least 80% test coverage (pytest --cov)
+# - At least 2 usage examples
+# - Declared platform support
+# - Semantic versioning
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
