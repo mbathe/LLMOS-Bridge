@@ -39,6 +39,7 @@ def daemon_settings(tmp_path: Path) -> Settings:
         modules={"enabled": ["filesystem", "os_exec"]},
         # Disable approval requirements for testing (run_command needs approval by default)
         security={"require_approval_for": []},
+        security_advanced={"enable_decorators": False},
     )
 
 
@@ -355,6 +356,7 @@ def approval_daemon_settings(tmp_path: Path) -> Settings:
             "require_approval_for": ["os_exec.run_command"],
             "approval_timeout_seconds": 30,
         },
+        security_advanced={"enable_decorators": False},
     )
 
 

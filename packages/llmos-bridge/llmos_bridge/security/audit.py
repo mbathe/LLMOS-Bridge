@@ -36,6 +36,7 @@ from typing import Any
 
 from llmos_bridge.events.bus import (
     TOPIC_ACTIONS,
+    TOPIC_PERMISSIONS,
     TOPIC_PLANS,
     TOPIC_SECURITY,
     EventBus,
@@ -62,6 +63,19 @@ class AuditEvent(str, Enum):
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_REJECTED = "approval_rejected"
     SECURITY_VIOLATION = "security_violation"
+    # OS-level permission system events
+    PERMISSION_GRANTED = "permission_granted"
+    PERMISSION_REVOKED = "permission_revoked"
+    PERMISSION_CHECK_FAILED = "permission_check_failed"
+    RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
+    SENSITIVE_ACTION_INVOKED = "sensitive_action_invoked"
+    # Intent verification events
+    INTENT_VERIFIED = "intent_verified"
+    INTENT_REJECTED = "intent_rejected"
+    # Input scanner pipeline events
+    INPUT_SCAN_PASSED = "input_scan_passed"
+    INPUT_SCAN_REJECTED = "input_scan_rejected"
+    INPUT_SCAN_WARNED = "input_scan_warned"
 
 
 # Map each AuditEvent to the EventBus topic it should be published on.
@@ -80,6 +94,19 @@ _EVENT_TOPIC: dict[AuditEvent, str] = {
     AuditEvent.APPROVAL_GRANTED: TOPIC_SECURITY,
     AuditEvent.APPROVAL_REJECTED: TOPIC_SECURITY,
     AuditEvent.SECURITY_VIOLATION: TOPIC_SECURITY,
+    # OS-level permission system
+    AuditEvent.PERMISSION_GRANTED: TOPIC_PERMISSIONS,
+    AuditEvent.PERMISSION_REVOKED: TOPIC_PERMISSIONS,
+    AuditEvent.PERMISSION_CHECK_FAILED: TOPIC_PERMISSIONS,
+    AuditEvent.RATE_LIMIT_EXCEEDED: TOPIC_PERMISSIONS,
+    AuditEvent.SENSITIVE_ACTION_INVOKED: TOPIC_SECURITY,
+    # Intent verification
+    AuditEvent.INTENT_VERIFIED: TOPIC_SECURITY,
+    AuditEvent.INTENT_REJECTED: TOPIC_SECURITY,
+    # Input scanner pipeline
+    AuditEvent.INPUT_SCAN_PASSED: TOPIC_SECURITY,
+    AuditEvent.INPUT_SCAN_REJECTED: TOPIC_SECURITY,
+    AuditEvent.INPUT_SCAN_WARNED: TOPIC_SECURITY,
 }
 
 

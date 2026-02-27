@@ -38,6 +38,7 @@ def client(tmp_path: Path) -> TestClient:
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem", "os_exec"]},
         security={"permission_profile": "unrestricted", "require_approval_for": []},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:

@@ -44,6 +44,8 @@ from llmos_bridge.exceptions import (
     ApprovalRequiredError,
     ExecutionTimeoutError,
     LLMOSError,
+    PermissionNotGrantedError,
+    RateLimitExceededError,
 )
 from llmos_bridge.logging import bind_plan_context, get_logger
 from llmos_bridge.memory.store import KeyValueStore
@@ -77,6 +79,36 @@ log = get_logger(__name__)
 # Templates can access it as {{result.<action_id>._perception.after_text}}.
 _PERCEPTION_KEY = "_perception"
 
+# Default max result size (512 KB) — overridden by ServerConfig.max_result_size.
+_DEFAULT_MAX_RESULT_SIZE = 524_288
+
+
+def _truncate_result(result: Any, max_bytes: int = _DEFAULT_MAX_RESULT_SIZE) -> Any:
+    """Truncate oversized action results to prevent LLM context overflow.
+
+    Serialises to JSON to measure size. If oversized, the result is replaced
+    with a summary dict containing the truncated JSON and a warning.
+    """
+    import json as _json
+
+    try:
+        serialised = _json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        serialised = str(result)
+
+    if len(serialised.encode("utf-8", errors="replace")) <= max_bytes:
+        return result
+
+    # Truncate to max_bytes and wrap in a summary.
+    truncated = serialised[:max_bytes]
+    return {
+        "_truncated": True,
+        "_original_size": len(serialised),
+        "_max_size": max_bytes,
+        "data": truncated,
+        "warning": f"Result truncated from {len(serialised)} to {max_bytes} bytes.",
+    }
+
 
 class PlanExecutor:
     """Executes an IMLPlan end-to-end.
@@ -103,6 +135,11 @@ class PlanExecutor:
         perception_pipeline: Any | None = None,  # perception.pipeline.PerceptionPipeline
         kv_store: KeyValueStore | None = None,
         node_registry: NodeRegistry | None = None,
+        resource_manager: Any | None = None,  # ResourceManager (optional)
+        fallback_chains: dict[str, list[str]] | None = None,
+        max_result_size: int = _DEFAULT_MAX_RESULT_SIZE,
+        intent_verifier: Any | None = None,
+        scanner_pipeline: Any | None = None,  # SecurityPipeline (optional)
     ) -> None:
         self._registry = module_registry
         self._nodes = node_registry or NodeRegistry(LocalNode(module_registry))
@@ -113,6 +150,11 @@ class PlanExecutor:
         self._approval_gate = approval_gate
         self._perception = perception_pipeline
         self._kv_store = kv_store
+        self._resource_manager = resource_manager
+        self._fallback_chains = fallback_chains or {}
+        self._max_result_size = max_result_size
+        self._intent_verifier = intent_verifier
+        self._scanner_pipeline = scanner_pipeline
         self._rollback = RollbackEngine(module_registry=module_registry)
         # plan_id → asyncio.Task for background execution tracking
         self._running_tasks: dict[str, asyncio.Task[ExecutionState]] = {}
@@ -186,21 +228,104 @@ class PlanExecutor:
                 )
                 return state
 
-        # ---- Step 2: security pre-flight ----
+        # ---- Step 1.3: Scanner pipeline (fast heuristic + ML screening) ----
+        if self._scanner_pipeline is not None and self._scanner_pipeline.enabled:
+            pipeline_result = await self._scanner_pipeline.scan_input(plan)
+            if not pipeline_result.allowed:
+                error_msg = (
+                    f"Input scan rejected: verdict={pipeline_result.aggregate_verdict.value}, "
+                    f"risk={pipeline_result.max_risk_score}"
+                )
+                log.error(
+                    "scanner_pipeline_rejected",
+                    plan_id=plan.plan_id,
+                    verdict=pipeline_result.aggregate_verdict.value,
+                    risk_score=pipeline_result.max_risk_score,
+                    short_circuited=pipeline_result.short_circuited,
+                )
+                state.plan_status = PlanStatus.FAILED
+                await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                await self._audit.log(
+                    AuditEvent.PLAN_FAILED, plan_id=plan.plan_id, error=error_msg
+                )
+                return state
+
+        # ---- Step 1.5: Fire intent verification concurrently ----
+        # The LLM call is the slowest step (~500-2000ms).  We launch it as
+        # a background task and overlap it with the security pre-flight and
+        # DAG construction below.  We only await the result before the first
+        # action dispatch.
+        import asyncio as _aio
+
+        _verification_task: _aio.Task[Any] | None = None
+        if self._intent_verifier is not None and self._intent_verifier.enabled:
+            _verification_task = _aio.create_task(
+                self._intent_verifier.verify_plan(plan)
+            )
+
+        # ---- Step 2: security pre-flight (runs concurrently with verification) ----
         try:
             self._guard.check_plan(plan)
         except LLMOSError as exc:
             log.error("plan_preflight_failed", error=str(exc))
+            if _verification_task is not None:
+                _verification_task.cancel()
             state.plan_status = PlanStatus.FAILED
             await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
             await self._audit.log(AuditEvent.PLAN_FAILED, plan_id=plan.plan_id, error=str(exc))
             return state
 
+        # ---- Step 3: DAG construction (concurrent with verification) ----
+        scheduler = DAGScheduler(plan)
+
+        # ---- Step 3.5: Await intent verification before dispatching actions ----
+        if _verification_task is not None:
+            try:
+                from llmos_bridge.security.intent_verifier import VerificationVerdict
+
+                verification = await _verification_task
+                if verification.verdict == VerificationVerdict.REJECT:
+                    error_msg = f"Intent verification rejected: {verification.reasoning}"
+                    log.error(
+                        "intent_verification_rejected",
+                        plan_id=plan.plan_id,
+                        risk_level=verification.risk_level,
+                        threats=[t.threat_type.value for t in verification.threats],
+                    )
+                    state.plan_status = PlanStatus.FAILED
+                    await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                    await self._audit.log(
+                        AuditEvent.INTENT_REJECTED,
+                        plan_id=plan.plan_id,
+                        error=error_msg,
+                        risk_level=verification.risk_level,
+                    )
+                    return state
+                elif verification.verdict == VerificationVerdict.CLARIFY:
+                    log.warning(
+                        "intent_verification_clarify",
+                        plan_id=plan.plan_id,
+                        clarification=verification.clarification_needed,
+                    )
+                    if self._intent_verifier._strict:
+                        state.plan_status = PlanStatus.FAILED
+                        await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                        return state
+                elif verification.verdict == VerificationVerdict.WARN:
+                    log.warning(
+                        "intent_verification_warn",
+                        plan_id=plan.plan_id,
+                        reasoning=verification.reasoning,
+                    )
+            except Exception as exc:
+                log.error("intent_verification_error", error=str(exc))
+                if self._intent_verifier._strict:
+                    state.plan_status = PlanStatus.FAILED
+                    await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                    return state
+
         await self._store.update_plan_status(plan.plan_id, PlanStatus.RUNNING)
         state.plan_status = PlanStatus.RUNNING
-
-        # ---- Step 3: DAG-based execution ----
-        scheduler = DAGScheduler(plan)
 
         # Track action IDs that must be skipped due to cascade failure.
         cascade_skipped: set[str] = set()
@@ -321,12 +446,21 @@ class PlanExecutor:
             )
             resolved_params = resolver.resolve(action.params)
         except LLMOSError as exc:
-            await self._fail_action(plan.plan_id, action.id, action_state, str(exc))
+            await self._fail_action(
+                plan.plan_id, action.id, action_state, str(exc),
+                module_id=action.module, action_name=action.action,
+            )
             return
 
         # Permission check at dispatch time.
         try:
             self._guard.check_action(action, plan_id=plan.plan_id)
+            # Re-check sandbox with resolved params — templates like
+            # {{result.a1.path}} were skipped during pre-flight and now
+            # contain actual paths that must be validated.
+            self._guard.check_sandbox_params(
+                action.module, action.action, resolved_params
+            )
         except ApprovalRequiredError:
             approval_result = await self._handle_approval(
                 plan.plan_id, action, action_state, resolved_params, state
@@ -337,7 +471,10 @@ class PlanExecutor:
             # Approval granted (possibly with modified params).
             resolved_params = approval_result
         except LLMOSError as exc:
-            await self._fail_action(plan.plan_id, action.id, action_state, str(exc))
+            await self._fail_action(
+                plan.plan_id, action.id, action_state, str(exc),
+                module_id=action.module, action_name=action.action,
+            )
             return
 
         attempt = 0
@@ -376,10 +513,12 @@ class PlanExecutor:
                 )
 
             try:
-                raw_result = await asyncio.wait_for(
-                    self._dispatch(action, resolved_params),
+                raw_result, fallback_used = await asyncio.wait_for(
+                    self._dispatch_with_resource_limit(action, resolved_params),
                     timeout=action.timeout,
                 )
+                if fallback_used:
+                    action_state.fallback_module = fallback_used
             except asyncio.TimeoutError:
                 err = ExecutionTimeoutError(action.id, action.timeout)
                 if attempt < max_attempts:
@@ -387,7 +526,30 @@ class PlanExecutor:
                     log.warning("action_retry", delay=delay, attempt=attempt)
                     await asyncio.sleep(delay)
                     continue
-                await self._fail_action(plan.plan_id, action.id, action_state, str(err))
+                await self._fail_action(
+                    plan.plan_id, action.id, action_state, str(err),
+                    module_id=action.module, action_name=action.action,
+                )
+                return
+            except PermissionNotGrantedError as exc:
+                msg = (
+                    f"Permission '{exc.permission}' not granted for module "
+                    f"'{exc.module_id}'. Use security.request_permission to grant it."
+                )
+                await self._fail_action(
+                    plan.plan_id, action.id, action_state, msg,
+                    module_id=action.module, action_name=action.action,
+                )
+                return
+            except RateLimitExceededError as exc:
+                msg = (
+                    f"Rate limit exceeded for '{exc.action_key}': "
+                    f"max {exc.limit} per {exc.window}. Wait before retrying."
+                )
+                await self._fail_action(
+                    plan.plan_id, action.id, action_state, msg,
+                    module_id=action.module, action_name=action.action,
+                )
                 return
             except Exception as exc:
                 if attempt < max_attempts:
@@ -397,7 +559,10 @@ class PlanExecutor:
                     )
                     await asyncio.sleep(delay)
                     continue
-                await self._fail_action(plan.plan_id, action.id, action_state, str(exc))
+                await self._fail_action(
+                    plan.plan_id, action.id, action_state, str(exc),
+                    module_id=action.module, action_name=action.action,
+                )
                 if action.on_error == OnErrorBehavior.ROLLBACK and action.rollback:
                     await self._rollback.execute(plan, action, execution_results)
                 return
@@ -434,6 +599,9 @@ class PlanExecutor:
                         error=str(perc_exc),
                     )
 
+            # Truncate oversized results to prevent LLM context overflow.
+            clean_result = _truncate_result(clean_result, self._max_result_size)
+
             execution_results[action.id] = clean_result
             action_state.status = ActionStatus.COMPLETED
             action_state.result = clean_result
@@ -469,13 +637,109 @@ class PlanExecutor:
             log.info("action_completed", action=f"{action.module}.{action.action}")
             return
 
+    async def _dispatch_with_resource_limit(
+        self, action: IMLAction, resolved_params: dict[str, Any]
+    ) -> tuple[Any, str | None]:
+        """Dispatch action, optionally throttled by ResourceManager.
+
+        Returns:
+            Tuple of (result, fallback_module_used_or_None).
+        """
+        if self._resource_manager:
+            async with self._resource_manager.acquire(action.module):
+                return await self._dispatch_with_fallback(action, resolved_params)
+        return await self._dispatch_with_fallback(action, resolved_params)
+
+    async def _dispatch_with_fallback(
+        self, action: IMLAction, resolved_params: dict[str, Any]
+    ) -> tuple[Any, str | None]:
+        """Dispatch action with graceful degradation via fallback modules.
+
+        If the primary module fails and a fallback chain is configured, the
+        executor tries each fallback module in order before giving up.
+
+        Returns:
+            Tuple of (result, fallback_module_used_or_None).
+        """
+        try:
+            result = await self._dispatch(action, resolved_params)
+            return result, None
+        except Exception as primary_exc:
+            fallback_chain = self._fallback_chains.get(action.module, [])
+            if not fallback_chain:
+                raise
+
+            for fallback_module in fallback_chain:
+                try:
+                    node = self._nodes.resolve(action.target_node)
+                    result = await node.execute_action(
+                        fallback_module, action.action, resolved_params
+                    )
+                    log.warning(
+                        "fallback_used",
+                        primary_module=action.module,
+                        fallback_module=fallback_module,
+                        action=action.action,
+                        action_id=action.id,
+                    )
+                    return result, fallback_module
+                except Exception:
+                    continue
+
+            # All fallbacks failed — raise the original error.
+            raise primary_exc
+
     async def _dispatch(self, action: IMLAction, resolved_params: dict[str, Any]) -> Any:
         node = self._nodes.resolve(action.target_node)
         return await node.execute_action(action.module, action.action, resolved_params)
 
+    def _suggest_alternatives(
+        self, module_id: str, action_name: str, error: str
+    ) -> list[str]:
+        """Generate alternative suggestions when an action fails.
+
+        Looks at fallback chains and available modules to propose concrete
+        alternatives the LLM can try next (Negotiation Protocol).
+        """
+        alternatives: list[str] = []
+
+        # Suggest fallback modules that have the same action.
+        for fb_module in self._fallback_chains.get(module_id, []):
+            try:
+                mod = self._registry.get(fb_module)
+                manifest = mod.get_manifest()
+                action_names = [a.name for a in manifest.actions]
+                if action_name in action_names:
+                    alternatives.append(
+                        f"Try '{fb_module}.{action_name}' as an alternative"
+                    )
+            except Exception:
+                pass
+
+        # Suggest retry with different params for common errors.
+        err_lower = error.lower()
+        if "not found" in err_lower or "no such file" in err_lower:
+            alternatives.append("Verify the file path exists before retrying")
+        if "permission" in err_lower or "denied" in err_lower:
+            alternatives.append("Check file permissions or use a different path")
+        if "timeout" in err_lower:
+            alternatives.append("Retry with a longer timeout or smaller payload")
+
+        return alternatives
+
     async def _fail_action(
-        self, plan_id: str, action_id: str, action_state: ActionState, error: str
+        self,
+        plan_id: str,
+        action_id: str,
+        action_state: ActionState,
+        error: str,
+        module_id: str = "",
+        action_name: str = "",
     ) -> None:
+        # Negotiation Protocol: store structured alternatives on the action state.
+        alternatives = self._suggest_alternatives(module_id, action_name, error)
+        action_state.alternatives = alternatives
+
         action_state.status = ActionStatus.FAILED
         action_state.error = error
         action_state.finished_at = time.time()
@@ -547,6 +811,11 @@ class PlanExecutor:
             if approval_config and approval_config.message
             else f"Execute {action.module}.{action.action}"
         )
+        clarification = (
+            approval_config.clarification_options
+            if approval_config and approval_config.clarification_options
+            else []
+        )
         request = ApprovalRequest(
             plan_id=plan_id,
             action_id=action.id,
@@ -558,6 +827,7 @@ class PlanExecutor:
             requires_approval_reason=(
                 "action_flag" if action.requires_approval else "config_rule"
             ),
+            clarification_options=clarification,
         )
 
         # Update state and notify.

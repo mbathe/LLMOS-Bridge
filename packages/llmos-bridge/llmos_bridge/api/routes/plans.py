@@ -109,13 +109,14 @@ async def submit_plan(
             action_responses = [
                 ActionResponse(
                     action_id=a.action_id,
-                    module=a.module,
+                    module=a.fallback_module or a.module,
                     action=a.action,
                     status=a.status,
                     started_at=a.started_at,
                     finished_at=a.finished_at,
                     result=a.result,
                     error=a.error,
+                    alternatives=a.alternatives,
                     attempt=a.attempt,
                     approval_metadata=a.approval_metadata,
                 )
@@ -169,13 +170,14 @@ async def get_plan(
     actions = [
         ActionResponse(
             action_id=a.action_id,
-            module=a.module,
+            module=a.fallback_module or a.module,
             action=a.action,
             status=a.status,
             started_at=a.started_at,
             finished_at=a.finished_at,
             result=a.result,
             error=a.error,
+            alternatives=a.alternatives,
             attempt=a.attempt,
             approval_metadata=a.approval_metadata,
         )
@@ -293,6 +295,7 @@ async def list_pending_approvals(
             risk_level=req.risk_level,
             description=req.description,
             requires_approval_reason=req.requires_approval_reason,
+            clarification_options=req.clarification_options,
             requested_at=req.requested_at,
         )
         for req in pending

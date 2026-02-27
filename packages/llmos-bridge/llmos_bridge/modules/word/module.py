@@ -17,6 +17,8 @@ from typing import Any
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import audit_trail, requires_permission, sensitive_action
+from llmos_bridge.security.models import Permission, RiskLevel
 from llmos_bridge.protocol.params.word import (
     AddBookmarkParams,
     AddCommentParams,
@@ -210,6 +212,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_open)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_create_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateDocumentParams.model_validate(params)
 
@@ -247,6 +250,8 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_create)
 
+    @audit_trail("standard")
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_save_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SaveDocumentParams.model_validate(params)
 
@@ -258,6 +263,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_save)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_document_properties(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetDocumentPropertiesParams.model_validate(params)
 
@@ -320,6 +326,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_get_meta)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_margins(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetMarginsParams.model_validate(params)
 
@@ -351,6 +358,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_set_margins)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_default_font(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetDefaultFontParams.model_validate(params)
 
@@ -502,6 +510,7 @@ class WordModule(BaseModule):
     # Paragraph operations
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_write_paragraph(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteParagraphParams.model_validate(params)
 
@@ -557,6 +566,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_format_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatTextParams.model_validate(params)
 
@@ -581,6 +591,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_format)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_apply_style(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyStyleParams.model_validate(params)
 
@@ -598,6 +609,8 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_apply)
 
+    @sensitive_action(RiskLevel.MEDIUM)
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_delete_paragraph(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteParagraphParams.model_validate(params)
 
@@ -616,6 +629,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_page_break(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertPageBreakParams.model_validate(params)
 
@@ -637,6 +651,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_section_break(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertSectionBreakParams.model_validate(params)
 
@@ -674,6 +689,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_list(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertListParams.model_validate(params)
 
@@ -725,6 +741,7 @@ class WordModule(BaseModule):
     # Table operations
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_table(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertTableParams.model_validate(params)
 
@@ -763,6 +780,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_modify_table_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ModifyTableCellParams.model_validate(params)
 
@@ -820,6 +838,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_modify)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_table_row(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTableRowParams.model_validate(params)
 
@@ -849,6 +868,7 @@ class WordModule(BaseModule):
     # Rich content
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertImageParams.model_validate(params)
 
@@ -882,6 +902,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_hyperlink(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertHyperlinkParams.model_validate(params)
 
@@ -948,6 +969,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_bookmark(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddBookmarkParams.model_validate(params)
 
@@ -989,6 +1011,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_add)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddCommentParams.model_validate(params)
 
@@ -1015,6 +1038,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_add)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_toc(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertTableOfContentsParams.model_validate(params)
 
@@ -1022,51 +1046,52 @@ class WordModule(BaseModule):
             from docx.oxml import OxmlElement
             from docx.oxml.ns import qn
 
-            doc = self._get_doc(p.path)
+            with self._get_path_lock(p.path):
+                doc = self._get_doc(p.path)
 
-            # Heading paragraph for the TOC.
-            if p.title:
-                title_para = doc.add_paragraph(p.title, style="TOC Heading")
-            else:
-                title_para = None
-
-            # TOC paragraph with field code.
-            toc_para = doc.add_paragraph()
-            run = toc_para.add_run()
-
-            fld_char_begin = OxmlElement("w:fldChar")
-            fld_char_begin.set(qn("w:fldCharType"), "begin")
-
-            instr_text = OxmlElement("w:instrText")
-            instr_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-            instr_text.text = f" TOC \\o '1-{p.max_depth}' \\h \\z \\u "
-
-            fld_char_separate = OxmlElement("w:fldChar")
-            fld_char_separate.set(qn("w:fldCharType"), "separate")
-
-            fld_char_end = OxmlElement("w:fldChar")
-            fld_char_end.set(qn("w:fldCharType"), "end")
-
-            run._r.append(fld_char_begin)
-            run._r.append(instr_text)
-            run._r.append(fld_char_separate)
-            run._r.append(fld_char_end)
-
-            if p.insert_after_paragraph is not None:
-                ref_para = self._get_para(doc, p.insert_after_paragraph)
-                if title_para is not None:
-                    ref_para._element.addnext(title_para._element)
-                    title_para._element.addnext(toc_para._element)
+                # Heading paragraph for the TOC.
+                if p.title:
+                    title_para = doc.add_paragraph(p.title, style="TOC Heading")
                 else:
-                    ref_para._element.addnext(toc_para._element)
+                    title_para = None
 
-            self._save_doc(p.path, doc)
-            return {
-                "path": p.path,
-                "toc_inserted": True,
-                "max_depth": p.max_depth,
-                "note": "Open the document in Word and press Ctrl+A then F9 to update the TOC.",
-            }
+                # TOC paragraph with field code.
+                toc_para = doc.add_paragraph()
+                run = toc_para.add_run()
+
+                fld_char_begin = OxmlElement("w:fldChar")
+                fld_char_begin.set(qn("w:fldCharType"), "begin")
+
+                instr_text = OxmlElement("w:instrText")
+                instr_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                instr_text.text = f" TOC \\o '1-{p.max_depth}' \\h \\z \\u "
+
+                fld_char_separate = OxmlElement("w:fldChar")
+                fld_char_separate.set(qn("w:fldCharType"), "separate")
+
+                fld_char_end = OxmlElement("w:fldChar")
+                fld_char_end.set(qn("w:fldCharType"), "end")
+
+                run._r.append(fld_char_begin)
+                run._r.append(instr_text)
+                run._r.append(fld_char_separate)
+                run._r.append(fld_char_end)
+
+                if p.insert_after_paragraph is not None:
+                    ref_para = self._get_para(doc, p.insert_after_paragraph)
+                    if title_para is not None:
+                        ref_para._element.addnext(title_para._element)
+                        title_para._element.addnext(toc_para._element)
+                    else:
+                        ref_para._element.addnext(toc_para._element)
+
+                self._save_doc(p.path, doc)
+                return {
+                    "path": p.path,
+                    "toc_inserted": True,
+                    "max_depth": p.max_depth,
+                    "note": "Open the document in Word and press Ctrl+A then F9 to update the TOC.",
+                }
 
         return await asyncio.to_thread(_insert)
 
@@ -1074,6 +1099,7 @@ class WordModule(BaseModule):
     # Header / footer
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_header_footer(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddHeaderFooterParams.model_validate(params)
 
@@ -1081,50 +1107,51 @@ class WordModule(BaseModule):
             from docx.oxml import OxmlElement
             from docx.oxml.ns import qn
 
-            doc = self._get_doc(p.path)
-            if p.section >= len(doc.sections):
-                raise IndexError(
-                    f"Section index {p.section} is out of range "
-                    f"(document has {len(doc.sections)} section(s))."
-                )
-            section = doc.sections[p.section]
+            with self._get_path_lock(p.path):
+                doc = self._get_doc(p.path)
+                if p.section >= len(doc.sections):
+                    raise IndexError(
+                        f"Section index {p.section} is out of range "
+                        f"(document has {len(doc.sections)} section(s))."
+                    )
+                section = doc.sections[p.section]
 
-            if p.header_text is not None:
-                section.header.is_linked_to_previous = False
-                hdr_para = section.header.paragraphs[0]
-                hdr_para.clear()
-                run = hdr_para.add_run(p.header_text)
-                self._set_paragraph_alignment(hdr_para, p.alignment)
+                if p.header_text is not None:
+                    section.header.is_linked_to_previous = False
+                    hdr_para = section.header.paragraphs[0]
+                    hdr_para.clear()
+                    run = hdr_para.add_run(p.header_text)
+                    self._set_paragraph_alignment(hdr_para, p.alignment)
 
-            if p.footer_text is not None or p.page_numbers:
-                section.footer.is_linked_to_previous = False
-                ftr_para = section.footer.paragraphs[0]
-                ftr_para.clear()
-                if p.footer_text:
-                    ftr_para.add_run(p.footer_text)
-                if p.page_numbers:
-                    # Insert a PAGE field for automatic page numbering.
-                    ftr_para.add_run("  ")
-                    fld_run = ftr_para.add_run()
-                    fld_char_begin = OxmlElement("w:fldChar")
-                    fld_char_begin.set(qn("w:fldCharType"), "begin")
-                    instr = OxmlElement("w:instrText")
-                    instr.text = " PAGE "
-                    fld_char_end = OxmlElement("w:fldChar")
-                    fld_char_end.set(qn("w:fldCharType"), "end")
-                    fld_run._r.append(fld_char_begin)
-                    fld_run._r.append(instr)
-                    fld_run._r.append(fld_char_end)
-                self._set_paragraph_alignment(ftr_para, p.alignment)
+                if p.footer_text is not None or p.page_numbers:
+                    section.footer.is_linked_to_previous = False
+                    ftr_para = section.footer.paragraphs[0]
+                    ftr_para.clear()
+                    if p.footer_text:
+                        ftr_para.add_run(p.footer_text)
+                    if p.page_numbers:
+                        # Insert a PAGE field for automatic page numbering.
+                        ftr_para.add_run("  ")
+                        fld_run = ftr_para.add_run()
+                        fld_char_begin = OxmlElement("w:fldChar")
+                        fld_char_begin.set(qn("w:fldCharType"), "begin")
+                        instr = OxmlElement("w:instrText")
+                        instr.text = " PAGE "
+                        fld_char_end = OxmlElement("w:fldChar")
+                        fld_char_end.set(qn("w:fldCharType"), "end")
+                        fld_run._r.append(fld_char_begin)
+                        fld_run._r.append(instr)
+                        fld_run._r.append(fld_char_end)
+                    self._set_paragraph_alignment(ftr_para, p.alignment)
 
-            self._save_doc(p.path, doc)
-            return {
-                "path": p.path,
-                "section": p.section,
-                "header_set": p.header_text is not None,
-                "footer_set": p.footer_text is not None or p.page_numbers,
-                "page_numbers": p.page_numbers,
-            }
+                self._save_doc(p.path, doc)
+                return {
+                    "path": p.path,
+                    "section": p.section,
+                    "header_set": p.header_text is not None,
+                    "footer_set": p.footer_text is not None or p.page_numbers,
+                    "page_numbers": p.page_numbers,
+                }
 
         return await asyncio.to_thread(_add)
 
@@ -1132,70 +1159,72 @@ class WordModule(BaseModule):
     # Search & replace
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_find_replace(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FindReplaceParams.model_validate(params)
 
         def _find_replace() -> dict[str, Any]:
             import re
 
-            doc = self._get_doc(p.path)
+            with self._get_path_lock(p.path):
+                doc = self._get_doc(p.path)
 
-            # Build the pattern.
-            flags = 0 if p.case_sensitive else re.IGNORECASE
-            find_text = re.escape(p.find) if not p.whole_word else rf"\b{re.escape(p.find)}\b"
-            pattern = re.compile(find_text, flags)
+                # Build the pattern.
+                flags = 0 if p.case_sensitive else re.IGNORECASE
+                find_text = re.escape(p.find) if not p.whole_word else rf"\b{re.escape(p.find)}\b"
+                pattern = re.compile(find_text, flags)
 
-            replacements = 0
+                replacements = 0
 
-            for para in self._iter_paragraphs_and_cells(doc):
-                # Replace within individual runs where possible.
-                # For cross-run matches, reassemble the full paragraph text,
-                # replace, then rewrite as a single run preserving the first
-                # run's formatting.
-                full_text = para.text
-                if not pattern.search(full_text):
-                    continue
+                for para in self._iter_paragraphs_and_cells(doc):
+                    # Replace within individual runs where possible.
+                    # For cross-run matches, reassemble the full paragraph text,
+                    # replace, then rewrite as a single run preserving the first
+                    # run's formatting.
+                    full_text = para.text
+                    if not pattern.search(full_text):
+                        continue
 
-                new_text, n = pattern.subn(p.replace, full_text)
-                replacements += n
+                    new_text, n = pattern.subn(p.replace, full_text)
+                    replacements += n
 
-                if n > 0:
-                    # Preserve formatting of the first run if it exists.
-                    first_run_fmt: dict[str, Any] = {}
-                    if para.runs:
-                        fr = para.runs[0]
-                        first_run_fmt = {
-                            "bold": fr.bold,
-                            "italic": fr.italic,
-                            "underline": fr.underline,
-                            "font_name": fr.font.name,
-                            "font_size": fr.font.size,
-                        }
+                    if n > 0:
+                        # Preserve formatting of the first run if it exists.
+                        first_run_fmt: dict[str, Any] = {}
+                        if para.runs:
+                            fr = para.runs[0]
+                            first_run_fmt = {
+                                "bold": fr.bold,
+                                "italic": fr.italic,
+                                "underline": fr.underline,
+                                "font_name": fr.font.name,
+                                "font_size": fr.font.size,
+                            }
 
-                    # Clear all runs.
-                    for run in para.runs:
-                        run.text = ""
+                        # Clear all runs.
+                        for run in para.runs:
+                            run.text = ""
 
-                    # Set text on the first run (or add one).
-                    if para.runs:
-                        para.runs[0].text = new_text
-                        run = para.runs[0]
-                        if first_run_fmt.get("bold") is not None:
-                            run.bold = first_run_fmt["bold"]
-                        if first_run_fmt.get("italic") is not None:
-                            run.italic = first_run_fmt["italic"]
-                        if first_run_fmt.get("underline") is not None:
-                            run.underline = first_run_fmt["underline"]
-                    else:
-                        para.add_run(new_text)
+                        # Set text on the first run (or add one).
+                        if para.runs:
+                            para.runs[0].text = new_text
+                            run = para.runs[0]
+                            if first_run_fmt.get("bold") is not None:
+                                run.bold = first_run_fmt["bold"]
+                            if first_run_fmt.get("italic") is not None:
+                                run.italic = first_run_fmt["italic"]
+                            if first_run_fmt.get("underline") is not None:
+                                run.underline = first_run_fmt["underline"]
+                        else:
+                            para.add_run(new_text)
 
-            self._save_doc(p.path, doc)
-            return {
-                "path": p.path,
-                "find": p.find,
-                "replace": p.replace,
-                "replacements_made": replacements,
-            }
+                self._save_doc(p.path, doc)
+                return {
+                    "path": p.path,
+                    "find": p.find,
+                    "replace": p.replace,
+                    "replacements_made": replacements,
+                }
 
         return await asyncio.to_thread(_find_replace)
 
@@ -1203,49 +1232,51 @@ class WordModule(BaseModule):
     # Export
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_export_to_pdf(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportToPdfParams.model_validate(params)
 
         def _export() -> dict[str, Any]:
-            docx_path = Path(p.path)
-            pdf_path = Path(p.output_path)
-            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._get_path_lock(p.path):
+                docx_path = Path(p.path)
+                pdf_path = Path(p.output_path)
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if p.use_libreoffice:
-                result = subprocess.run(
-                    [
-                        "libreoffice",
-                        "--headless",
-                        "--convert-to",
-                        "pdf",
-                        "--outdir",
-                        str(pdf_path.parent),
-                        str(docx_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"LibreOffice conversion failed (exit {result.returncode}): "
-                        f"{result.stderr.strip()}"
+                if p.use_libreoffice:
+                    result = subprocess.run(
+                        [
+                            "libreoffice",
+                            "--headless",
+                            "--convert-to",
+                            "pdf",
+                            "--outdir",
+                            str(pdf_path.parent),
+                            str(docx_path),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     )
-                # LibreOffice saves the file as <stem>.pdf in the output dir.
-                generated = pdf_path.parent / (docx_path.stem + ".pdf")
-                if generated != pdf_path and generated.exists():
-                    generated.rename(pdf_path)
-            else:
-                raise NotImplementedError(
-                    "Only LibreOffice-based PDF export is supported. "
-                    "Set use_libreoffice=True."
-                )
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            f"LibreOffice conversion failed (exit {result.returncode}): "
+                            f"{result.stderr.strip()}"
+                        )
+                    # LibreOffice saves the file as <stem>.pdf in the output dir.
+                    generated = pdf_path.parent / (docx_path.stem + ".pdf")
+                    if generated != pdf_path and generated.exists():
+                        generated.rename(pdf_path)
+                else:
+                    raise NotImplementedError(
+                        "Only LibreOffice-based PDF export is supported. "
+                        "Set use_libreoffice=True."
+                    )
 
-            return {
-                "path": p.path,
-                "pdf_path": str(pdf_path),
-                "exported": True,
-            }
+                return {
+                    "path": p.path,
+                    "pdf_path": str(pdf_path),
+                    "exported": True,
+                }
 
         return await asyncio.to_thread(_export)
 

@@ -45,6 +45,8 @@ from llmos_bridge.modules.iot.interfaces import (
 )
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.modules.platform import PlatformInfo
+from llmos_bridge.security.decorators import audit_trail, requires_permission, sensitive_action
+from llmos_bridge.security.models import Permission, RiskLevel
 
 
 class IoTModule(BaseModule):
@@ -85,6 +87,7 @@ class IoTModule(BaseModule):
     # Actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.GPIO_WRITE, reason="Configures GPIO pin mode")
     async def _action_set_pin_mode(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import SetPinModeParams
 
@@ -95,6 +98,7 @@ class IoTModule(BaseModule):
         self.gpio.setup(p.pin, mode, pull)
         return {"pin": p.pin, "mode": p.mode, "pull": p.pull}
 
+    @requires_permission(Permission.GPIO_READ, reason="Reads GPIO pin value")
     async def _action_digital_read(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import DigitalReadParams
 
@@ -102,6 +106,8 @@ class IoTModule(BaseModule):
         value = await self.gpio.async_digital_read(p.pin)
         return {"pin": p.pin, "value": value}
 
+    @audit_trail("standard")
+    @requires_permission(Permission.GPIO_WRITE, reason="Writes GPIO pin value")
     async def _action_digital_write(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import DigitalWriteParams
 
@@ -109,6 +115,8 @@ class IoTModule(BaseModule):
         await self.gpio.async_digital_write(p.pin, p.value)
         return {"pin": p.pin, "value": p.value}
 
+    @audit_trail("standard")
+    @requires_permission(Permission.ACTUATOR, reason="Starts PWM output")
     async def _action_pwm_start(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import PwmStartParams
 
@@ -116,6 +124,7 @@ class IoTModule(BaseModule):
         self.gpio.pwm_start(p.pin, p.frequency_hz, p.duty_cycle)
         return {"pin": p.pin, "frequency_hz": p.frequency_hz, "duty_cycle": p.duty_cycle}
 
+    @requires_permission(Permission.ACTUATOR, reason="Adjusts PWM duty cycle")
     async def _action_pwm_set_duty_cycle(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import PwmSetDutyCycleParams
 
@@ -123,6 +132,7 @@ class IoTModule(BaseModule):
         self.gpio.pwm_set_duty_cycle(p.pin, p.duty_cycle)
         return {"pin": p.pin, "duty_cycle": p.duty_cycle}
 
+    @requires_permission(Permission.ACTUATOR, reason="Stops PWM output")
     async def _action_pwm_stop(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import PwmStopParams
 
@@ -130,6 +140,7 @@ class IoTModule(BaseModule):
         self.gpio.pwm_stop(p.pin)
         return {"pin": p.pin, "stopped": True}
 
+    @requires_permission(Permission.GPIO_READ, reason="Registers GPIO event listener")
     async def _action_add_event_detect(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import AddEventDetectParams
 
@@ -139,6 +150,7 @@ class IoTModule(BaseModule):
         self.gpio.add_event_detect(p.pin, edge, bouncetime_ms=p.bouncetime_ms)
         return {"pin": p.pin, "edge": p.edge, "bouncetime_ms": p.bouncetime_ms}
 
+    @requires_permission(Permission.GPIO_READ, reason="Removes GPIO event listener")
     async def _action_remove_event_detect(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import RemoveEventDetectParams
 
@@ -146,6 +158,8 @@ class IoTModule(BaseModule):
         self.gpio.remove_event_detect(p.pin)
         return {"pin": p.pin, "removed": True}
 
+    @sensitive_action(RiskLevel.MEDIUM)
+    @requires_permission(Permission.GPIO_WRITE, reason="Cleans up GPIO resources")
     async def _action_cleanup(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.iot import CleanupParams
 
@@ -153,6 +167,7 @@ class IoTModule(BaseModule):
         self.gpio.cleanup(pins=p.pins or None)
         return {"pins": p.pins, "cleaned": True}
 
+    @requires_permission(Permission.GPIO_READ, reason="Reads GPIO pin states")
     async def _action_get_pin_state(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return the known state of all configured pins (MockGPIO only)."""
         if isinstance(self.gpio, MockGPIO):

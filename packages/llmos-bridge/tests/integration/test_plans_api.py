@@ -29,6 +29,7 @@ def client(tmp_path: Path) -> TestClient:
         },
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem"]},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -283,6 +284,7 @@ class TestAuthToken:
             logging={"level": "warning", "format": "console", "audit_file": None},
             modules={"enabled": ["filesystem"]},
             security={"api_token": "secret-token", "permission_profile": "unrestricted"},
+            security_advanced={"enable_decorators": False},
         )
         app = create_app(settings=settings)
         with TestClient(app, raise_server_exceptions=False) as c:

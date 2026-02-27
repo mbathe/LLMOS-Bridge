@@ -66,6 +66,8 @@ class ActionState:
     attempt: int = 0
     module: str = ""    # module_id (e.g. "filesystem") — populated at plan creation
     action: str = ""    # action name (e.g. "read_file")  — populated at plan creation
+    alternatives: list[str] = field(default_factory=list)  # Negotiation Protocol suggestions
+    fallback_module: str | None = None  # set if fallback was used (Graceful Degradation)
     approval_metadata: dict[str, Any] | None = None  # decision, approved_by, timestamp
 
 
@@ -277,3 +279,41 @@ class PlanStateStore:
             {"plan_id": r[0], "status": r[1], "created_at": r[2], "updated_at": r[3]}
             for r in rows
         ]
+
+    async def purge_old_plans(self, retention_seconds: float) -> int:
+        """Delete completed/failed plans older than *retention_seconds*.
+
+        Returns the number of plans purged.
+        """
+        assert self._conn is not None
+        cutoff = time.time() - retention_seconds
+        terminal_statuses = (
+            PlanStatus.COMPLETED.value,
+            PlanStatus.FAILED.value,
+            PlanStatus.CANCELLED.value,
+        )
+        async with self._lock:
+            # Find plans to purge.
+            async with self._conn.execute(
+                "SELECT plan_id FROM plans WHERE status IN (?,?,?) AND updated_at < ?",
+                (*terminal_statuses, cutoff),
+            ) as cursor:
+                plan_ids = [row[0] for row in await cursor.fetchall()]
+
+            if not plan_ids:
+                return 0
+
+            # Delete actions first (FK constraint), then plans.
+            placeholders = ",".join("?" * len(plan_ids))
+            await self._conn.execute(
+                f"DELETE FROM actions WHERE plan_id IN ({placeholders})",
+                plan_ids,
+            )
+            await self._conn.execute(
+                f"DELETE FROM plans WHERE plan_id IN ({placeholders})",
+                plan_ids,
+            )
+            await self._conn.commit()
+
+            log.info("plans_purged", count=len(plan_ids), cutoff_seconds=retention_seconds)
+            return len(plan_ids)

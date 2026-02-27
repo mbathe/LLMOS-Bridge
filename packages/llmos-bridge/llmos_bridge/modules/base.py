@@ -20,7 +20,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from llmos_bridge.exceptions import ActionExecutionError, ActionNotFoundError
+from llmos_bridge.exceptions import (
+    ActionExecutionError,
+    ActionNotFoundError,
+    PermissionNotGrantedError,
+    RateLimitExceededError,
+)
 from llmos_bridge.modules.manifest import ModuleManifest
 
 
@@ -86,7 +91,38 @@ class BaseModule(ABC):
     SUPPORTED_PLATFORMS: list[Platform] = [Platform.ALL]
 
     def __init__(self) -> None:
+        self._security: Any | None = None
         self._check_dependencies()
+
+    def set_security(self, security: Any) -> None:
+        """Inject the SecurityManager into this module.
+
+        Called by the server startup after constructing the SecurityManager.
+        Decorators on ``_action_*`` methods access it via ``self._security``.
+        """
+        self._security = security
+
+    def _collect_security_metadata(self) -> dict[str, dict[str, Any]]:
+        """Introspect decorated ``_action_*`` methods and return security metadata.
+
+        Returns a dict keyed by action name (without the ``_action_`` prefix),
+        with values from :func:`collect_security_metadata`.  Used to auto-enrich
+        :class:`ActionSpec` entries in the manifest.
+        """
+        from llmos_bridge.security.decorators import collect_security_metadata
+
+        result: dict[str, dict[str, Any]] = {}
+        for attr_name in dir(self):
+            if not attr_name.startswith("_action_"):
+                continue
+            handler = getattr(self, attr_name, None)
+            if handler is None or not callable(handler):
+                continue
+            action_name = attr_name.removeprefix("_action_")
+            meta = collect_security_metadata(handler)
+            if meta:
+                result[action_name] = meta
+        return result
 
     def is_supported_on_current_platform(self) -> bool:
         if Platform.ALL in self.SUPPORTED_PLATFORMS:
@@ -118,6 +154,17 @@ class BaseModule(ABC):
 
         Called in ``__init__``.  Default implementation does nothing.
         """
+
+    def get_context_snippet(self) -> str | None:
+        """Return dynamic context for the LLM system prompt, or ``None``.
+
+        Modules that manage stateful resources (e.g. database connections)
+        can override this to inject live context (schemas, session info)
+        into the system prompt that guides the LLM.
+
+        Default: ``None`` (no dynamic context).
+        """
+        return None
 
     def _get_handler(self, action: str) -> Any:
         """Look up an action handler method by name.
@@ -153,7 +200,12 @@ class BaseModule(ABC):
         handler = self._get_handler(action)
         try:
             return await handler(params)
-        except (ActionNotFoundError, ActionExecutionError):
+        except (
+            ActionNotFoundError,
+            ActionExecutionError,
+            PermissionNotGrantedError,
+            RateLimitExceededError,
+        ):
             raise
         except Exception as exc:
             raise ActionExecutionError(

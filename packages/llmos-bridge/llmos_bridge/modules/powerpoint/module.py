@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 from llmos_bridge.exceptions import ModuleLoadError
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import audit_trail, requires_permission, sensitive_action
+from llmos_bridge.security.models import Permission, RiskLevel
 from llmos_bridge.protocol.params.powerpoint import (
     AddChartParams,
     AddImageParams,
@@ -270,6 +272,7 @@ class PowerPointModule(BaseModule):
     # Lifecycle actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_create_presentation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreatePresentationParams.model_validate(params)
         return await asyncio.to_thread(self._sync_create_presentation, p)
@@ -319,6 +322,8 @@ class PowerPointModule(BaseModule):
                 "layout_names": layout_names,
             }
 
+    @audit_trail("standard")
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_save_presentation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SavePresentationParams.model_validate(params)
         return await asyncio.to_thread(self._sync_save_presentation, p)
@@ -349,6 +354,7 @@ class PowerPointModule(BaseModule):
     # Slide management
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddSlideParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_slide, p)
@@ -384,6 +390,8 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"slide_index": new_index, "slide_count": len(prs.slides)}
 
+    @sensitive_action(RiskLevel.MEDIUM)
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_delete_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteSlideParams.model_validate(params)
         return await asyncio.to_thread(self._sync_delete_slide, p)
@@ -414,6 +422,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"deleted_index": p.slide_index, "slide_count": len(prs.slides)}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_duplicate_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DuplicateSlideParams.model_validate(params)
         return await asyncio.to_thread(self._sync_duplicate_slide, p)
@@ -460,6 +469,7 @@ class PowerPointModule(BaseModule):
             new_index = (p.insert_after + 1) if p.insert_after is not None else len(prs.slides) - 1
             return {"new_index": new_index, "slide_count": len(prs.slides)}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_reorder_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReorderSlideParams.model_validate(params)
         return await asyncio.to_thread(self._sync_reorder_slide, p)
@@ -617,6 +627,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"slide_index": p.slide_index, "title": p.title}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_text_box(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTextBoxParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_text_box, p)
@@ -670,6 +681,7 @@ class PowerPointModule(BaseModule):
                 "text": p.text,
             }
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_slide_notes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddSlideNotesParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_slide_notes, p)
@@ -699,6 +711,7 @@ class PowerPointModule(BaseModule):
     # Shapes
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_shape(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddShapeParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_shape, p)
@@ -785,6 +798,7 @@ class PowerPointModule(BaseModule):
                 "shape_type": p.shape_type,
             }
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_format_shape(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatShapeParams.model_validate(params)
         return await asyncio.to_thread(self._sync_format_shape, p)
@@ -869,6 +883,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"slide_index": p.slide_index, "shape_index": p.shape_index}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddImageParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_image, p)
@@ -901,6 +916,7 @@ class PowerPointModule(BaseModule):
     # Charts
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_chart(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddChartParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_chart, p)
@@ -962,6 +978,7 @@ class PowerPointModule(BaseModule):
     # Tables
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_table(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTableParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_table, p)
@@ -1070,126 +1087,129 @@ class PowerPointModule(BaseModule):
     # Background & theme
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_background(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideBackgroundParams.model_validate(params)
         return await asyncio.to_thread(self._sync_set_slide_background, p)
 
     def _sync_set_slide_background(self, p: SetSlideBackgroundParams) -> dict[str, Any]:
-        prs = self._get_prs(p.path)
+        with self._get_path_lock(p.path):
+            prs = self._get_prs(p.path)
 
-        # Determine target slides
-        if p.slide_index is not None:
-            if p.slide_index >= len(prs.slides):
-                raise IndexError(f"Slide index {p.slide_index} out of range.")
-            target_slides = [prs.slides[p.slide_index]]
-        else:
-            target_slides = list(prs.slides)
+            # Determine target slides
+            if p.slide_index is not None:
+                if p.slide_index >= len(prs.slides):
+                    raise IndexError(f"Slide index {p.slide_index} out of range.")
+                target_slides = [prs.slides[p.slide_index]]
+            else:
+                target_slides = list(prs.slides)
 
-        modified = 0
-        for slide in target_slides:
-            background = slide.background
-            fill = background.fill
+            modified = 0
+            for slide in target_slides:
+                background = slide.background
+                fill = background.fill
 
-            if p.color:
-                fill.solid()
-                fill.fore_color.rgb = self._hex_to_rgb(p.color)
-                modified += 1
+                if p.color:
+                    fill.solid()
+                    fill.fore_color.rgb = self._hex_to_rgb(p.color)
+                    modified += 1
 
-            elif p.image_path:
-                if not Path(p.image_path).exists():
-                    raise FileNotFoundError(f"Background image not found: {p.image_path}")
-                with open(p.image_path, "rb") as f:
-                    img_bytes = f.read()
-                # Determine content type
-                ext = Path(p.image_path).suffix.lower()
-                ct_map = {
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".gif": "image/gif",
-                    ".bmp": "image/bmp",
-                }
-                content_type = ct_map.get(ext, "image/png")
-                fill.background()
-                # Use blipFill via XML — python-pptx doesn't have a high-level
-                # API for slide background images; we inject XML directly.
-                from lxml import etree
+                elif p.image_path:
+                    if not Path(p.image_path).exists():
+                        raise FileNotFoundError(f"Background image not found: {p.image_path}")
+                    with open(p.image_path, "rb") as f:
+                        img_bytes = f.read()
+                    # Determine content type
+                    ext = Path(p.image_path).suffix.lower()
+                    ct_map = {
+                        ".png": "image/png",
+                        ".jpg": "image/jpeg",
+                        ".jpeg": "image/jpeg",
+                        ".gif": "image/gif",
+                        ".bmp": "image/bmp",
+                    }
+                    content_type = ct_map.get(ext, "image/png")
+                    fill.background()
+                    # Use blipFill via XML — python-pptx doesn't have a high-level
+                    # API for slide background images; we inject XML directly.
+                    from lxml import etree
 
-                ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
-                ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-                ns_p = "http://schemas.openxmlformats.org/presentationml/2006/main"
+                    ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                    ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                    ns_p = "http://schemas.openxmlformats.org/presentationml/2006/main"
 
-                # Add image part to slide
-                from pptx.opc.part import Part
-                from pptx.opc.packuri import PackURI
+                    # Add image part to slide
+                    from pptx.opc.part import Part
+                    from pptx.opc.packuri import PackURI
 
-                img_part_uri = PackURI(f"/ppt/media/bg_{id(slide)}{ext}")
-                img_part = slide.part.package.part_related_by  # just access the package
-                # Simpler: use slide.part.relate_to with a new blob part
-                from pptx.opc.constants import RELATIONSHIP_TYPE as RT
-                import pptx.opc.part as opc_part
+                    img_part_uri = PackURI(f"/ppt/media/bg_{id(slide)}{ext}")
+                    img_part = slide.part.package.part_related_by  # just access the package
+                    # Simpler: use slide.part.relate_to with a new blob part
+                    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+                    import pptx.opc.part as opc_part
 
-                image_part = opc_part.Part(
-                    img_part_uri, content_type, img_bytes
-                )
-                r_id = slide.part.relate_to(image_part, RT.IMAGE)
-
-                # Build blipFill XML
-                bg_pr = background._element
-                # Remove existing fill children
-                for child in list(bg_pr):
-                    bg_pr.remove(child)
-
-                bg_fill_xml = (
-                    f'<a:blipFill xmlns:a="{ns_a}" xmlns:r="{ns_r}">'
-                    f'<a:blip r:embed="{r_id}"/>'
-                    f'<a:stretch><a:fillRect/></a:stretch>'
-                    f'</a:blipFill>'
-                )
-                bg_fill_elem = etree.fromstring(bg_fill_xml)
-                bg_pr.append(bg_fill_elem)
-                modified += 1
-
-            elif p.gradient:
-                # Gradient fill via XML
-                from lxml import etree
-
-                ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
-                fill.background()
-
-                bg_pr = background._element
-                # Remove existing fill children
-                for child in list(bg_pr):
-                    bg_pr.remove(child)
-
-                stops = p.gradient.get("stops", [])
-                angle = p.gradient.get("angle", 0)
-                # OOXML angle is in 60000ths of a degree, clockwise from north
-                ooxml_angle = int(angle * 60000)
-
-                gs_elems = ""
-                for stop in stops:
-                    pos = int(float(stop.get("position", 0)) * 100000)
-                    color_hex = stop.get("color", "FFFFFF").lstrip("#")
-                    gs_elems += (
-                        f'<a:gs pos="{pos}">'
-                        f'<a:srgbClr val="{color_hex}"/>'
-                        f"</a:gs>"
+                    image_part = opc_part.Part(
+                        img_part_uri, content_type, img_bytes
                     )
+                    r_id = slide.part.relate_to(image_part, RT.IMAGE)
 
-                grad_xml = (
-                    f'<a:gradFill xmlns:a="{ns_a}">'
-                    f"<a:gsLst>{gs_elems}</a:gsLst>"
-                    f'<a:lin ang="{ooxml_angle}" scaled="0"/>'
-                    f"</a:gradFill>"
-                )
-                grad_elem = etree.fromstring(grad_xml)
-                bg_pr.append(grad_elem)
-                modified += 1
+                    # Build blipFill XML
+                    bg_pr = background._element
+                    # Remove existing fill children
+                    for child in list(bg_pr):
+                        bg_pr.remove(child)
 
-        self._save_prs(p.path, prs)
-        return {"modified_slides": modified}
+                    bg_fill_xml = (
+                        f'<a:blipFill xmlns:a="{ns_a}" xmlns:r="{ns_r}">'
+                        f'<a:blip r:embed="{r_id}"/>'
+                        f'<a:stretch><a:fillRect/></a:stretch>'
+                        f'</a:blipFill>'
+                    )
+                    bg_fill_elem = etree.fromstring(bg_fill_xml)
+                    bg_pr.append(bg_fill_elem)
+                    modified += 1
 
+                elif p.gradient:
+                    # Gradient fill via XML
+                    from lxml import etree
+
+                    ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                    fill.background()
+
+                    bg_pr = background._element
+                    # Remove existing fill children
+                    for child in list(bg_pr):
+                        bg_pr.remove(child)
+
+                    stops = p.gradient.get("stops", [])
+                    angle = p.gradient.get("angle", 0)
+                    # OOXML angle is in 60000ths of a degree, clockwise from north
+                    ooxml_angle = int(angle * 60000)
+
+                    gs_elems = ""
+                    for stop in stops:
+                        pos = int(float(stop.get("position", 0)) * 100000)
+                        color_hex = stop.get("color", "FFFFFF").lstrip("#")
+                        gs_elems += (
+                            f'<a:gs pos="{pos}">'
+                            f'<a:srgbClr val="{color_hex}"/>'
+                            f"</a:gs>"
+                        )
+
+                    grad_xml = (
+                        f'<a:gradFill xmlns:a="{ns_a}">'
+                        f"<a:gsLst>{gs_elems}</a:gsLst>"
+                        f'<a:lin ang="{ooxml_angle}" scaled="0"/>'
+                        f"</a:gradFill>"
+                    )
+                    grad_elem = etree.fromstring(grad_xml)
+                    bg_pr.append(grad_elem)
+                    modified += 1
+
+            self._save_prs(p.path, prs)
+            return {"modified_slides": modified}
+
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_apply_theme(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyThemeParams.model_validate(params)
         return await asyncio.to_thread(self._sync_apply_theme, p)
@@ -1200,11 +1220,12 @@ class PowerPointModule(BaseModule):
         if not Path(p.theme_path).exists():
             raise FileNotFoundError(f"Theme file not found: {p.theme_path}")
 
-        prs = self._get_prs(p.path)
-        self._copy_theme_xml(p.theme_path, prs)
+        with self._get_path_lock(p.path):
+            prs = self._get_prs(p.path)
+            self._copy_theme_xml(p.theme_path, prs)
 
-        self._save_prs(p.path, prs)
-        return {"applied_from": p.theme_path}
+            self._save_prs(p.path, prs)
+            return {"applied_from": p.theme_path}
 
     def _copy_theme_xml(self, source_path: str, target_prs: Any) -> None:
         """Copy theme XML from source .pptx into target presentation."""
@@ -1238,6 +1259,7 @@ class PowerPointModule(BaseModule):
             # Theme copying is best-effort
             pass
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_transition(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTransitionParams.model_validate(params)
         return await asyncio.to_thread(self._sync_add_transition, p)
@@ -1245,53 +1267,54 @@ class PowerPointModule(BaseModule):
     def _sync_add_transition(self, p: AddTransitionParams) -> dict[str, Any]:
         from lxml import etree
 
-        prs = self._get_prs(p.path)
+        with self._get_path_lock(p.path):
+            prs = self._get_prs(p.path)
 
-        if p.slide_index is not None:
-            if p.slide_index >= len(prs.slides):
-                raise IndexError(f"Slide index {p.slide_index} out of range.")
-            target_slides = [prs.slides[p.slide_index]]
-        else:
-            target_slides = list(prs.slides)
+            if p.slide_index is not None:
+                if p.slide_index >= len(prs.slides):
+                    raise IndexError(f"Slide index {p.slide_index} out of range.")
+                target_slides = [prs.slides[p.slide_index]]
+            else:
+                target_slides = list(prs.slides)
 
-        ns_p = "http://schemas.openxmlformats.org/presentationml/2006/main"
-        # Duration in milliseconds for OOXML
-        dur_ms = int(p.duration * 1000)
+            ns_p = "http://schemas.openxmlformats.org/presentationml/2006/main"
+            # Duration in milliseconds for OOXML
+            dur_ms = int(p.duration * 1000)
 
-        for slide in target_slides:
-            sp_tree = slide._element
-            # Remove existing transition if any
-            existing = sp_tree.find(f"{{{ns_p}}}transition")
-            if existing is not None:
-                sp_tree.remove(existing)
+            for slide in target_slides:
+                sp_tree = slide._element
+                # Remove existing transition if any
+                existing = sp_tree.find(f"{{{ns_p}}}transition")
+                if existing is not None:
+                    sp_tree.remove(existing)
 
-            if p.transition == "none":
-                continue
+                if p.transition == "none":
+                    continue
 
-            trans_elem = etree.SubElement(sp_tree, f"{{{ns_p}}}transition")
-            trans_elem.set("dur", str(dur_ms))
-            trans_elem.set("advClick", "1" if p.advance_on_click else "0")
+                trans_elem = etree.SubElement(sp_tree, f"{{{ns_p}}}transition")
+                trans_elem.set("dur", str(dur_ms))
+                trans_elem.set("advClick", "1" if p.advance_on_click else "0")
 
-            if p.advance_after is not None:
-                trans_elem.set("advTm", str(int(p.advance_after * 1000)))
+                if p.advance_after is not None:
+                    trans_elem.set("advTm", str(int(p.advance_after * 1000)))
 
-            # Add the specific transition child element
-            tag_name = _TRANSITION_MAP.get(p.transition, "fade")
-            if tag_name:
-                child = etree.SubElement(trans_elem, f"{{{ns_p}}}{tag_name}")
-                if p.transition == "push":
-                    child.set("dir", "l")
-                elif p.transition == "wipe":
-                    child.set("dir", "l")
-                elif p.transition == "split":
-                    child.set("orient", "horz")
-                    child.set("dir", "out")
+                # Add the specific transition child element
+                tag_name = _TRANSITION_MAP.get(p.transition, "fade")
+                if tag_name:
+                    child = etree.SubElement(trans_elem, f"{{{ns_p}}}{tag_name}")
+                    if p.transition == "push":
+                        child.set("dir", "l")
+                    elif p.transition == "wipe":
+                        child.set("dir", "l")
+                    elif p.transition == "split":
+                        child.set("orient", "horz")
+                        child.set("dir", "out")
 
-        self._save_prs(p.path, prs)
-        return {
-            "transition": p.transition,
-            "modified_slides": len(target_slides),
-        }
+            self._save_prs(p.path, prs)
+            return {
+                "transition": p.transition,
+                "modified_slides": len(target_slides),
+            }
 
     # ------------------------------------------------------------------
     # Export
@@ -1302,67 +1325,29 @@ class PowerPointModule(BaseModule):
         return await asyncio.to_thread(self._sync_export_to_pdf, p)
 
     def _sync_export_to_pdf(self, p: ExportToPdfParams) -> dict[str, Any]:
-        if not Path(p.path).exists():
-            raise FileNotFoundError(f"Presentation not found: {p.path}")
+        with self._get_path_lock(p.path):
+            if not Path(p.path).exists():
+                raise FileNotFoundError(f"Presentation not found: {p.path}")
 
-        # Ensure the presentation is saved to disk first
-        if p.path in self._prs_cache:
-            self._prs_cache[p.path].save(p.path)
+            # Ensure the presentation is saved to disk first
+            if p.path in self._prs_cache:
+                self._prs_cache[p.path].save(p.path)
 
-        output_dir = str(Path(p.output_path).parent)
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+            output_dir = str(Path(p.output_path).parent)
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-        lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
-        if lo_bin is None:
-            raise RuntimeError(
-                "LibreOffice not found. Install it with: apt install libreoffice"
-            )
+            lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
+            if lo_bin is None:
+                raise RuntimeError(
+                    "LibreOffice not found. Install it with: apt install libreoffice"
+                )
 
-        result = subprocess.run(
-            [
-                lo_bin,
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", output_dir,
-                p.path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"LibreOffice PDF export failed: {result.stderr}")
-
-        # LibreOffice names the output after the input filename
-        expected = Path(output_dir) / (Path(p.path).stem + ".pdf")
-        if expected.exists() and str(expected) != p.output_path:
-            expected.rename(p.output_path)
-
-        return {"pdf_path": p.output_path}
-
-    async def _action_export_slide_as_image(self, params: dict[str, Any]) -> dict[str, Any]:
-        p = ExportSlideAsImageParams.model_validate(params)
-        return await asyncio.to_thread(self._sync_export_slide_as_image, p)
-
-    def _sync_export_slide_as_image(self, p: ExportSlideAsImageParams) -> dict[str, Any]:
-        if not Path(p.path).exists():
-            raise FileNotFoundError(f"Presentation not found: {p.path}")
-
-        if p.path in self._prs_cache:
-            self._prs_cache[p.path].save(p.path)
-
-        lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
-        if lo_bin is None:
-            raise RuntimeError("LibreOffice not found.")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Export all slides as PNG images to tmpdir
             result = subprocess.run(
                 [
                     lo_bin,
                     "--headless",
-                    "--convert-to", "png",
-                    "--outdir", tmpdir,
+                    "--convert-to", "pdf",
+                    "--outdir", output_dir,
                     p.path,
                 ],
                 capture_output=True,
@@ -1370,44 +1355,84 @@ class PowerPointModule(BaseModule):
                 timeout=120,
             )
             if result.returncode != 0:
-                raise RuntimeError(f"LibreOffice image export failed: {result.stderr}")
+                raise RuntimeError(f"LibreOffice PDF export failed: {result.stderr}")
 
-            # LibreOffice exports slides as <name>1.png, <name>2.png, ...
-            stem = Path(p.path).stem
-            # Slide index is 0-based, LibreOffice filenames are 1-based
-            lo_idx = p.slide_index + 1
-            exported = Path(tmpdir) / f"{stem}{lo_idx}.png"
+            # LibreOffice names the output after the input filename
+            expected = Path(output_dir) / (Path(p.path).stem + ".pdf")
+            if expected.exists() and str(expected) != p.output_path:
+                expected.rename(p.output_path)
 
-            if not exported.exists():
-                # Fallback: check if only one file was exported
-                pngs = sorted(Path(tmpdir).glob("*.png"))
-                if not pngs:
-                    raise RuntimeError("No PNG files generated by LibreOffice.")
-                if p.slide_index < len(pngs):
-                    exported = pngs[p.slide_index]
-                else:
-                    raise IndexError(
-                        f"Slide index {p.slide_index} not found in export "
-                        f"({len(pngs)} slides exported)."
-                    )
+            return {"pdf_path": p.output_path}
 
-            # Resize if width differs from default
-            if p.width != 1920:
-                try:
-                    from PIL import Image
+    async def _action_export_slide_as_image(self, params: dict[str, Any]) -> dict[str, Any]:
+        p = ExportSlideAsImageParams.model_validate(params)
+        return await asyncio.to_thread(self._sync_export_slide_as_image, p)
 
-                    img = Image.open(exported)
-                    ratio = p.width / img.width
-                    new_height = int(img.height * ratio)
-                    img = img.resize((p.width, new_height), Image.LANCZOS)
-                    img.save(str(exported))
-                except ImportError:
-                    pass  # PIL not available — skip resize
+    def _sync_export_slide_as_image(self, p: ExportSlideAsImageParams) -> dict[str, Any]:
+        with self._get_path_lock(p.path):
+            if not Path(p.path).exists():
+                raise FileNotFoundError(f"Presentation not found: {p.path}")
 
-            Path(p.output_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(exported), p.output_path)
+            if p.path in self._prs_cache:
+                self._prs_cache[p.path].save(p.path)
 
-        return {"image_path": p.output_path, "slide_index": p.slide_index}
+            lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
+            if lo_bin is None:
+                raise RuntimeError("LibreOffice not found.")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Export all slides as PNG images to tmpdir
+                result = subprocess.run(
+                    [
+                        lo_bin,
+                        "--headless",
+                        "--convert-to", "png",
+                        "--outdir", tmpdir,
+                        p.path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(f"LibreOffice image export failed: {result.stderr}")
+
+                # LibreOffice exports slides as <name>1.png, <name>2.png, ...
+                stem = Path(p.path).stem
+                # Slide index is 0-based, LibreOffice filenames are 1-based
+                lo_idx = p.slide_index + 1
+                exported = Path(tmpdir) / f"{stem}{lo_idx}.png"
+
+                if not exported.exists():
+                    # Fallback: check if only one file was exported
+                    pngs = sorted(Path(tmpdir).glob("*.png"))
+                    if not pngs:
+                        raise RuntimeError("No PNG files generated by LibreOffice.")
+                    if p.slide_index < len(pngs):
+                        exported = pngs[p.slide_index]
+                    else:
+                        raise IndexError(
+                            f"Slide index {p.slide_index} not found in export "
+                            f"({len(pngs)} slides exported)."
+                        )
+
+                # Resize if width differs from default
+                if p.width != 1920:
+                    try:
+                        from PIL import Image
+
+                        img = Image.open(exported)
+                        ratio = p.width / img.width
+                        new_height = int(img.height * ratio)
+                        img = img.resize((p.width, new_height), Image.LANCZOS)
+                        img.save(str(exported))
+                    except ImportError:
+                        pass  # PIL not available — skip resize
+
+                Path(p.output_path).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(exported), p.output_path)
+
+            return {"image_path": p.output_path, "slide_index": p.slide_index}
 
     # ------------------------------------------------------------------
     # Manifest

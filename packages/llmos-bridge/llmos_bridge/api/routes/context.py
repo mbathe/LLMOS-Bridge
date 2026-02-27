@@ -55,6 +55,7 @@ async def get_context(
     response with metadata.
     """
     manifests = _collect_manifests(registry)
+    context_snippets = _collect_context_snippets(registry)
 
     generator = SystemPromptGenerator(
         manifests=manifests,
@@ -63,6 +64,7 @@ async def get_context(
         include_schemas=include_schemas,
         include_examples=include_examples,
         max_actions_per_module=max_actions_per_module,
+        context_snippets=context_snippets,
     )
 
     if format == "prompt":
@@ -85,3 +87,17 @@ def _collect_manifests(registry: RegistryDep) -> list:
             except Exception:
                 pass
     return manifests
+
+
+def _collect_context_snippets(registry: RegistryDep) -> dict[str, str]:
+    """Collect dynamic context snippets from loaded modules."""
+    snippets: dict[str, str] = {}
+    for module_id in registry.list_available():
+        try:
+            module = registry.get(module_id)
+            snippet = module.get_context_snippet()
+            if snippet:
+                snippets[module_id] = snippet
+        except Exception:
+            pass
+    return snippets

@@ -12,7 +12,11 @@ Hierarchy:
     ├── SecurityError
     │   ├── PermissionDeniedError
     │   ├── ApprovalRequiredError
-    │   └── SanitizationError
+    │   ├── PermissionNotGrantedError
+    │   ├── RateLimitExceededError
+    │   ├── SanitizationError
+    │   ├── IntentVerificationError
+    │   └── SuspiciousIntentError
     ├── OrchestrationError
     │   ├── DAGCycleError
     │   ├── DependencyError
@@ -118,8 +122,110 @@ class ApprovalRequiredError(SecurityError):
         self.plan_id = plan_id
 
 
+class PermissionNotGrantedError(SecurityError):
+    """A required OS resource permission has not been granted."""
+
+    def __init__(
+        self,
+        permission: str,
+        module_id: str,
+        action: str = "",
+        risk_level: str = "medium",
+    ) -> None:
+        super().__init__(
+            f"Permission '{permission}' not granted for module '{module_id}'"
+            + (f" (action '{action}')" if action else ""),
+            context={
+                "permission": permission,
+                "module_id": module_id,
+                "action": action,
+                "risk_level": risk_level,
+            },
+        )
+        self.permission = permission
+        self.module_id = module_id
+        self.action = action
+        self.risk_level = risk_level
+
+
+class RateLimitExceededError(SecurityError):
+    """An action has exceeded its configured rate limit."""
+
+    def __init__(self, action_key: str, limit: int, window: str = "minute") -> None:
+        super().__init__(
+            f"Rate limit exceeded for '{action_key}': max {limit} per {window}",
+            context={"action_key": action_key, "limit": limit, "window": window},
+        )
+        self.action_key = action_key
+        self.limit = limit
+        self.window = window
+
+
 class SanitizationError(SecurityError):
     """An output sanitisation rule was violated."""
+
+
+class IntentVerificationError(SecurityError):
+    """The intent verification LLM call failed or returned an unparseable result."""
+
+    def __init__(self, plan_id: str, reason: str) -> None:
+        super().__init__(
+            f"Intent verification failed for plan '{plan_id}': {reason}",
+            context={"plan_id": plan_id, "reason": reason},
+        )
+        self.plan_id = plan_id
+        self.reason = reason
+
+
+class SuspiciousIntentError(SecurityError):
+    """The intent verifier detected a security threat in the plan."""
+
+    def __init__(
+        self,
+        plan_id: str,
+        reasoning: str,
+        threats: list[str] | None = None,
+        risk_level: str = "high",
+    ) -> None:
+        super().__init__(
+            f"Suspicious intent detected in plan '{plan_id}': {reasoning}",
+            context={
+                "plan_id": plan_id,
+                "reasoning": reasoning,
+                "threats": threats or [],
+                "risk_level": risk_level,
+            },
+        )
+        self.plan_id = plan_id
+        self.reasoning = reasoning
+        self.threats = threats or []
+        self.risk_level = risk_level
+
+
+class InputScanRejectedError(SecurityError):
+    """The input scanner pipeline rejected the plan as malicious."""
+
+    def __init__(
+        self,
+        plan_id: str,
+        verdict: str,
+        risk_score: float,
+        scanners: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            f"Scanner pipeline rejected plan '{plan_id}': "
+            f"verdict={verdict}, risk={risk_score:.2f}",
+            context={
+                "plan_id": plan_id,
+                "verdict": verdict,
+                "risk_score": risk_score,
+                "scanners": scanners or [],
+            },
+        )
+        self.plan_id = plan_id
+        self.verdict = verdict
+        self.risk_score = risk_score
+        self.scanners = scanners or []
 
 
 # ---------------------------------------------------------------------------

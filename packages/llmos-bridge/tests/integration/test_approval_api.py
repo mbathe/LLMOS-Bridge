@@ -34,6 +34,7 @@ def approval_settings(tmp_path: Path) -> Settings:
             "require_approval_for": ["os_exec.run_command"],
             "approval_timeout_seconds": 30,
         },
+        security_advanced={"enable_decorators": False},
     )
 
 
@@ -48,6 +49,7 @@ def no_approval_settings(tmp_path: Path) -> Settings:
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem", "os_exec"]},
         security={"require_approval_for": []},
+        security_advanced={"enable_decorators": False},
     )
 
 

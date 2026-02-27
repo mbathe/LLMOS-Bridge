@@ -183,13 +183,18 @@ class TestSystemPromptOptions:
         assert "Examples" not in prompt
 
     def test_max_actions_per_module(self, fs_manifest: ModuleManifest) -> None:
+        # Under local_worker, filesystem has 2 allowed (read_file, write_file)
+        # and 1 denied (delete_file). With max=1, we show 1 + "... and 1 more".
         gen = SystemPromptGenerator(
             manifests=[fs_manifest],
             max_actions_per_module=1,
         )
         prompt = gen.generate()
         assert "read_file" in prompt
-        assert "... and 2 more actions" in prompt
+        assert "... and 1 more actions" in prompt
+        # delete_file should appear in the denied section
+        assert "Denied by current profile" in prompt
+        assert "`delete_file`" in prompt
 
     def test_empty_manifests(self) -> None:
         gen = SystemPromptGenerator(manifests=[])
@@ -278,8 +283,18 @@ class TestPermissionDisplayInActions:
         prompt = gen.generate()
         # read_file has permission_required="readonly" which is != local_worker default
         assert "Permission: `readonly`" in prompt
-        # delete_file has power_user
+        # delete_file (power_user) is denied under local_worker → shown in denied section
+        assert "Denied by current profile" in prompt
+        assert "`delete_file`" in prompt
+
+    def test_non_default_permission_shown_power_user(self, fs_manifest: ModuleManifest) -> None:
+        """Under power_user, delete_file is allowed and shows its permission level."""
+        gen = SystemPromptGenerator(
+            manifests=[fs_manifest], permission_profile="power_user"
+        )
+        prompt = gen.generate()
         assert "Permission: `power_user`" in prompt
+        assert "Denied by current profile" not in prompt
 
     def test_default_permission_not_shown(self, fs_manifest: ModuleManifest) -> None:
         gen = SystemPromptGenerator(manifests=[fs_manifest])

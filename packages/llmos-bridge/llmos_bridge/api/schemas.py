@@ -74,6 +74,10 @@ class ActionResponse(BaseModel):
     finished_at: float | None = None
     result: Any = None
     error: str | None = None
+    alternatives: list[str] = Field(
+        default_factory=list,
+        description="Actionable alternatives suggested on failure (Negotiation Protocol).",
+    )
     attempt: int = 0
     approval_metadata: dict[str, Any] | None = None
 
@@ -119,6 +123,12 @@ class ModuleManifestResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class ModuleStatusDetail(BaseModel):
+    available: list[str] = Field(default_factory=list)
+    failed: dict[str, str] = Field(default_factory=dict)
+    platform_excluded: dict[str, str] = Field(default_factory=dict)
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
@@ -126,6 +136,11 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     modules_loaded: int
     modules_failed: int
+    modules: ModuleStatusDetail | None = Field(
+        default=None,
+        description="Per-module status breakdown (available, failed, excluded).",
+    )
+    active_plans: int = Field(default=0, description="Number of plans currently running.")
     timestamp: float = Field(default_factory=time.time)
 
 
@@ -165,6 +180,10 @@ class ApprovalRequestResponse(BaseModel):
     risk_level: str
     description: str
     requires_approval_reason: str
+    clarification_options: list[str] = Field(
+        default_factory=list,
+        description="Structured choices for intent clarification (if non-empty).",
+    )
     requested_at: float
 
 
@@ -186,3 +205,34 @@ class WSMessage(BaseModel):
     type: str  # "plan_status" | "action_status" | "approval_request" | "error"
     payload: dict[str, Any]
     timestamp: float = Field(default_factory=time.time)
+
+
+# ---------------------------------------------------------------------------
+# Plan Group schemas
+# ---------------------------------------------------------------------------
+
+
+class SubmitPlanGroupRequest(BaseModel):
+    """POST /plan-groups — Submit multiple plans for parallel execution."""
+
+    group_id: str | None = Field(
+        default=None, description="Optional group ID (generated if omitted)."
+    )
+    plans: list[dict[str, Any]] = Field(
+        min_length=1, max_length=50, description="List of IML plan payloads."
+    )
+    max_concurrent: int = Field(default=10, ge=1, le=50)
+    timeout: int = Field(
+        default=300, ge=10, le=3600, description="Total timeout for the group (seconds)."
+    )
+
+
+class PlanGroupResponse(BaseModel):
+    """Response from plan group execution."""
+
+    group_id: str
+    status: str  # "completed" | "partial_failure" | "failed"
+    summary: dict[str, int]  # {total, completed, failed}
+    results: dict[str, Any]
+    errors: dict[str, str]
+    duration: float

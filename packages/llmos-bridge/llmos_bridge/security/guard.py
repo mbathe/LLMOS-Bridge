@@ -7,14 +7,30 @@ Checks performed (in order):
   1. Plan action count limit
   2. Action allowed by profile
   3. Explicit approval requirement (config + action flag)
-  4. Sandbox path enforcement (filesystem actions only)
+  4. Sandbox path enforcement (all modules with path-like params)
 """
 
 from __future__ import annotations
 
+import os.path
+from typing import Any
+
 from llmos_bridge.exceptions import ApprovalRequiredError, PermissionDeniedError
 from llmos_bridge.protocol.models import IMLAction, IMLPlan
 from llmos_bridge.security.profiles import PermissionProfileConfig
+
+# All known parameter keys that carry file paths across all modules.
+_PATH_PARAM_KEYS = (
+    "path",
+    "source",
+    "destination",
+    "output_path",
+    "image_path",
+    "file_path",
+    "theme_path",
+    "screenshot_path",
+    "database",
+)
 
 
 class PermissionGuard:
@@ -93,8 +109,25 @@ class PermissionGuard:
                 profile=self._profile.profile.value,
             )
 
-        if action.module == "filesystem":
-            self._check_sandbox(action)
+        # Sandbox check applies to ALL modules — any param containing a file
+        # path is validated against the configured sandbox directories.
+        self._check_sandbox(action)
+
+    def check_sandbox_params(
+        self, module: str, action: str, params: dict[str, Any]
+    ) -> None:
+        """Re-check sandbox with resolved params after template resolution.
+
+        The pre-flight ``_check_sandbox`` skips paths containing ``{{``
+        template expressions.  This method is called by the executor *after*
+        template resolution so that resolved paths are validated too.
+        """
+        if not self._sandbox_paths:
+            return
+        for key in _PATH_PARAM_KEYS:
+            value = params.get(key)
+            if value and isinstance(value, str) and "{{" not in value:
+                self._validate_sandbox_path(value, module, action)
 
     def is_allowed(self, module_id: str, action_name: str) -> bool:
         """Check without raising — useful for UI feature flags."""
@@ -111,22 +144,24 @@ class PermissionGuard:
         return key in self._require_approval_for
 
     def _check_sandbox(self, action: IMLAction) -> None:
-        """Reject filesystem actions that target paths outside the sandbox."""
+        """Reject actions that target paths outside the sandbox."""
         if not self._sandbox_paths:
-            return  # No sandbox configured.
-
-        path: str | None = action.params.get("path") or action.params.get("source")
-        if path is None:
             return
 
-        # Resolve template expressions conservatively — if the path contains
-        # a template, skip sandbox check (it will be re-checked at runtime
-        # after resolution with the actual resolved value).
-        if "{{" in path:
-            return
+        for key in _PATH_PARAM_KEYS:
+            path = action.params.get(key)
+            if not path or not isinstance(path, str):
+                continue
 
-        import os.path
+            # Template expressions are skipped here — they will be
+            # re-checked via check_sandbox_params() after resolution.
+            if "{{" in path:
+                continue
 
+            self._validate_sandbox_path(path, action.module, action.action)
+
+    def _validate_sandbox_path(self, path: str, module: str, action: str) -> None:
+        """Raise PermissionDeniedError if *path* is outside all sandbox dirs."""
         abs_path = os.path.abspath(path)
         for sandbox in self._sandbox_paths:
             abs_sandbox = os.path.abspath(sandbox)
@@ -134,7 +169,7 @@ class PermissionGuard:
                 return
 
         raise PermissionDeniedError(
-            action=action.action,
-            module=action.module,
+            action=action,
+            module=module,
             profile=self._profile.profile.value,
         )

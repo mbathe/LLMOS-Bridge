@@ -42,6 +42,8 @@ from typing import Any
 
 from llmos_bridge.exceptions import ActionExecutionError, ModuleLoadError
 from llmos_bridge.modules.base import Platform
+from llmos_bridge.security.decorators import requires_permission
+from llmos_bridge.security.models import Permission
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
 from llmos_bridge.modules.perception_vision.base import (
     BaseVisionModule,
@@ -253,6 +255,7 @@ class OmniParserModule(BaseVisionModule):
     # Actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Parses screen content")
     async def _action_parse_screen(self, params: dict[str, Any]) -> dict[str, Any]:
         screenshot_path: str | None = params.get("screenshot_path")
         box_threshold: float | None = params.get("box_threshold")
@@ -270,6 +273,7 @@ class OmniParserModule(BaseVisionModule):
         )
         return result.to_dict()
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Captures and parses screen")
     async def _action_capture_and_parse(self, params: dict[str, Any]) -> dict[str, Any]:
         monitor: int = params.get("monitor", 0)
         region: dict[str, int] | None = params.get("region")
@@ -282,6 +286,7 @@ class OmniParserModule(BaseVisionModule):
         )
         return result.to_dict()
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Finds element on screen")
     async def _action_find_element(self, params: dict[str, Any]) -> dict[str, Any]:
         query: str = params["query"]
         element_type: str | None = params.get("element_type")
@@ -311,6 +316,7 @@ class OmniParserModule(BaseVisionModule):
             "pixel_y": py,
         }
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Extracts text from screen")
     async def _action_get_screen_text(self, params: dict[str, Any]) -> dict[str, Any]:
         screenshot_path: str | None = params.get("screenshot_path")
 

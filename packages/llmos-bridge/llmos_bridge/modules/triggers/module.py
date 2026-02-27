@@ -32,6 +32,12 @@ from typing import Any
 
 from llmos_bridge.modules.base import ActionResult, BaseModule
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
+from llmos_bridge.security.decorators import (
+    audit_trail,
+    requires_permission,
+    sensitive_action,
+)
+from llmos_bridge.security.models import Permission, RiskLevel
 from llmos_bridge.triggers.models import (
     TriggerCondition,
     TriggerDefinition,
@@ -115,6 +121,8 @@ class TriggerModule(BaseModule):
     # Action implementations
     # ---------------------------------------------------------------------------
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Creates automated execution trigger")
+    @audit_trail("standard")
     async def _action_register_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available — triggers not enabled in config")
@@ -151,18 +159,23 @@ class TriggerModule(BaseModule):
             "enabled": registered.enabled,
         }
 
+    @audit_trail("standard")
     async def _action_activate_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available")
         await self._daemon.activate(params["trigger_id"])
         return {"trigger_id": params["trigger_id"], "state": "active"}
 
+    @audit_trail("standard")
     async def _action_deactivate_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available")
         await self._daemon.deactivate(params["trigger_id"])
         return {"trigger_id": params["trigger_id"], "state": "inactive"}
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Removes automated execution trigger")
+    @sensitive_action(RiskLevel.MEDIUM)
+    @audit_trail("standard")
     async def _action_delete_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available")

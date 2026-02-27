@@ -25,6 +25,7 @@ def client(tmp_path: Path):
         },
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem", "os_exec"]},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:

@@ -30,6 +30,7 @@ def client_no_recording(tmp_path: Path) -> TestClient:
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem"]},
         security={"permission_profile": "unrestricted", "require_approval_for": []},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -44,6 +45,7 @@ def client(tmp_path: Path) -> TestClient:
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem", "recording"]},
         security={"permission_profile": "unrestricted", "require_approval_for": []},
+        security_advanced={"enable_decorators": False},
         recording={"enabled": True, "db_path": str(tmp_path / "recordings.db")},
     )
     app = create_app(settings=settings)

@@ -35,6 +35,14 @@ from typing import Any
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import (
+    audit_trail,
+    data_classification,
+    rate_limited,
+    requires_permission,
+    sensitive_action,
+)
+from llmos_bridge.security.models import DataClassification, Permission, RiskLevel
 from llmos_bridge.protocol.params.api_http import (
     CheckUrlAvailabilityParams,
     CloseSessionParams,
@@ -68,6 +76,7 @@ class ApiHttpModule(BaseModule):
 
     def __init__(self) -> None:
         self._sessions: dict[str, Any] = {}  # session_id -> httpx.AsyncClient
+        self._session_lock = asyncio.Lock()
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -124,6 +133,7 @@ class ApiHttpModule(BaseModule):
     # HTTP Methods
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_READ, reason="HTTP GET request")
     async def _action_http_get(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpGetParams.model_validate(params)
         async with _httpx.AsyncClient(
@@ -136,6 +146,7 @@ class ApiHttpModule(BaseModule):
             response = await client.get(p.url, headers=p.headers, params=p.params)
         return self._build_response(response)
 
+    @requires_permission(Permission.NETWORK_READ, reason="HTTP HEAD request")
     async def _action_http_head(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpHeadParams.model_validate(params)
         async with _httpx.AsyncClient(
@@ -157,6 +168,8 @@ class ApiHttpModule(BaseModule):
             "is_success": response.is_success,
         }
 
+    @requires_permission(Permission.NETWORK_SEND, reason="HTTP POST request")
+    @rate_limited(calls_per_minute=30)
     async def _action_http_post(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPostParams.model_validate(params)
 
@@ -181,6 +194,8 @@ class ApiHttpModule(BaseModule):
             response = await client.post(p.url, headers=p.headers, **kwargs)
         return self._build_response(response)
 
+    @requires_permission(Permission.NETWORK_SEND, reason="HTTP PUT request")
+    @rate_limited(calls_per_minute=30)
     async def _action_http_put(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPutParams.model_validate(params)
 
@@ -200,6 +215,7 @@ class ApiHttpModule(BaseModule):
             response = await client.put(p.url, headers=p.headers, **kwargs)
         return self._build_response(response)
 
+    @requires_permission(Permission.NETWORK_SEND, reason="HTTP PATCH request")
     async def _action_http_patch(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPatchParams.model_validate(params)
 
@@ -216,6 +232,9 @@ class ApiHttpModule(BaseModule):
             response = await client.patch(p.url, headers=p.headers, **kwargs)
         return self._build_response(response)
 
+    @requires_permission(Permission.NETWORK_SEND, reason="HTTP DELETE request")
+    @sensitive_action(RiskLevel.MEDIUM)
+    @rate_limited(calls_per_minute=30)
     async def _action_http_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpDeleteParams.model_validate(params)
 
@@ -234,6 +253,7 @@ class ApiHttpModule(BaseModule):
     # File transfer
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_READ, reason="Download file")
     async def _action_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DownloadFileParams.model_validate(params)
         destination = Path(p.destination)
@@ -267,6 +287,7 @@ class ApiHttpModule(BaseModule):
             "elapsed_ms": elapsed_ms,
         }
 
+    @requires_permission(Permission.NETWORK_SEND, reason="Upload file")
     async def _action_upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UploadFileParams.model_validate(params)
         file_path = Path(p.file_path)
@@ -297,6 +318,7 @@ class ApiHttpModule(BaseModule):
     # GraphQL
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_SEND, reason="GraphQL query/mutation")
     async def _action_graphql_query(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GraphqlQueryParams.model_validate(params)
 
@@ -329,6 +351,9 @@ class ApiHttpModule(BaseModule):
     # OAuth2
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_SEND, Permission.CREDENTIALS, reason="OAuth2 token acquisition")
+    @sensitive_action(RiskLevel.HIGH)
+    @data_classification(DataClassification.CONFIDENTIAL)
     async def _action_oauth2_get_token(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OAuth2GetTokenParams.model_validate(params)
 
@@ -389,6 +414,7 @@ class ApiHttpModule(BaseModule):
     # HTML parsing
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_READ, reason="Parse HTML content")
     async def _action_parse_html(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ParseHtmlParams.model_validate(params)
 
@@ -524,6 +550,7 @@ class ApiHttpModule(BaseModule):
     # URL health
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_READ, reason="Check URL availability")
     async def _action_check_url_availability(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CheckUrlAvailabilityParams.model_validate(params)
         start = time.monotonic()
@@ -566,6 +593,10 @@ class ApiHttpModule(BaseModule):
     # Email — outbound (SMTP)
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.EMAIL_SEND, reason="Send email")
+    @sensitive_action(RiskLevel.HIGH, irreversible=True)
+    @rate_limited(calls_per_minute=30)
+    @audit_trail("detailed")
     async def _action_send_email(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SendEmailParams.model_validate(params)
         return await asyncio.to_thread(self._send_email_sync, p)
@@ -629,6 +660,8 @@ class ApiHttpModule(BaseModule):
     # Email — inbound (IMAP)
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.EMAIL_READ, reason="Read email messages")
+    @data_classification(DataClassification.CONFIDENTIAL)
     async def _action_read_email(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadEmailParams.model_validate(params)
         messages = await asyncio.to_thread(self._read_email_sync, p)
@@ -742,6 +775,8 @@ class ApiHttpModule(BaseModule):
     # Webhooks
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_SEND, reason="Trigger webhook")
+    @audit_trail("standard")
     async def _action_webhook_trigger(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WebhookTriggerParams.model_validate(params)
 
@@ -822,26 +857,27 @@ class ApiHttpModule(BaseModule):
     async def _action_set_session(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSessionParams.model_validate(params)
 
-        # Close existing session with same ID if present
-        if p.session_id in self._sessions:
-            try:
-                await self._sessions[p.session_id].aclose()
-            except Exception:
-                pass
+        async with self._session_lock:
+            # Close existing session with same ID if present
+            if p.session_id in self._sessions:
+                try:
+                    await self._sessions[p.session_id].aclose()
+                except Exception:
+                    pass
 
-        client_kwargs: dict[str, Any] = {
-            "verify": p.verify_ssl,
-            "timeout": p.timeout,
-            "headers": p.headers,
-            "cookies": p.cookies,
-        }
-        if p.base_url:
-            client_kwargs["base_url"] = p.base_url
-        if p.auth:
-            client_kwargs["auth"] = _httpx.BasicAuth(p.auth[0], p.auth[1])
+            client_kwargs: dict[str, Any] = {
+                "verify": p.verify_ssl,
+                "timeout": p.timeout,
+                "headers": p.headers,
+                "cookies": p.cookies,
+            }
+            if p.base_url:
+                client_kwargs["base_url"] = p.base_url
+            if p.auth:
+                client_kwargs["auth"] = _httpx.BasicAuth(p.auth[0], p.auth[1])
 
-        client = _httpx.AsyncClient(**client_kwargs)
-        self._sessions[p.session_id] = client
+            client = _httpx.AsyncClient(**client_kwargs)
+            self._sessions[p.session_id] = client
 
         return {
             "session_id": p.session_id,
@@ -852,10 +888,12 @@ class ApiHttpModule(BaseModule):
     async def _action_close_session(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CloseSessionParams.model_validate(params)
 
-        if p.session_id not in self._sessions:
-            return {"session_id": p.session_id, "closed": False, "reason": "Session not found."}
+        async with self._session_lock:
+            if p.session_id not in self._sessions:
+                return {"session_id": p.session_id, "closed": False, "reason": "Session not found."}
 
-        client = self._sessions.pop(p.session_id)
+            client = self._sessions.pop(p.session_id)
+
         try:
             await client.aclose()
         except Exception as exc:

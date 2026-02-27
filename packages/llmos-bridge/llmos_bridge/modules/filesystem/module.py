@@ -17,6 +17,13 @@ from typing import Any
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import (
+    audit_trail,
+    rate_limited,
+    requires_permission,
+    sensitive_action,
+)
+from llmos_bridge.security.models import Permission, RiskLevel
 from llmos_bridge.protocol.params.filesystem import (
     AppendFileParams,
     ComputeChecksumParams,
@@ -43,6 +50,7 @@ class FilesystemModule(BaseModule):
     # Actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Read file contents")
     async def _action_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadFileParams.model_validate(params)
         path = Path(p.path)
@@ -68,6 +76,9 @@ class FilesystemModule(BaseModule):
             content = content.encode(p.encoding)[: p.max_bytes].decode(p.encoding, errors="replace")
         return content
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Write file to disk")
+    @rate_limited(calls_per_minute=60)
+    @audit_trail("standard")
     async def _action_write_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteFileParams.model_validate(params)
         path = Path(p.path)
@@ -82,6 +93,8 @@ class FilesystemModule(BaseModule):
         )
         return {"path": str(path), "bytes_written": len(p.content.encode(p.encoding))}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Append to file")
+    @rate_limited(calls_per_minute=60)
     async def _action_append_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AppendFileParams.model_validate(params)
         path = Path(p.path)
@@ -94,6 +107,8 @@ class FilesystemModule(BaseModule):
         await asyncio.to_thread(_append)
         return {"path": str(path), "bytes_appended": len(text.encode(p.encoding))}
 
+    @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Copy file")
+    @rate_limited(calls_per_minute=60)
     async def _action_copy_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopyFileParams.model_validate(params)
         src, dst = Path(p.source), Path(p.destination)
@@ -104,6 +119,8 @@ class FilesystemModule(BaseModule):
         await asyncio.to_thread(shutil.copy2, src, dst)
         return {"source": str(src), "destination": str(dst)}
 
+    @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Move file")
+    @rate_limited(calls_per_minute=60)
     async def _action_move_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = MoveFileParams.model_validate(params)
         src, dst = Path(p.source), Path(p.destination)
@@ -114,6 +131,10 @@ class FilesystemModule(BaseModule):
         await asyncio.to_thread(shutil.move, str(src), dst)
         return {"source": str(src), "destination": str(dst)}
 
+    @requires_permission(Permission.FILESYSTEM_DELETE, reason="Delete file or directory")
+    @sensitive_action(RiskLevel.HIGH, irreversible=True)
+    @rate_limited(calls_per_minute=60)
+    @audit_trail("detailed")
     async def _action_delete_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteFileParams.model_validate(params)
         path = Path(p.path)
@@ -132,12 +153,14 @@ class FilesystemModule(BaseModule):
 
         return {"deleted": str(path)}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Create directory")
     async def _action_create_directory(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateDirectoryParams.model_validate(params)
         path = Path(p.path)
         await asyncio.to_thread(path.mkdir, parents=p.parents, exist_ok=p.exist_ok)
         return {"path": str(path), "created": True}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="List directory contents")
     async def _action_list_directory(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListDirectoryParams.model_validate(params)
         base = Path(p.path)
@@ -175,6 +198,7 @@ class FilesystemModule(BaseModule):
         entries = await asyncio.to_thread(_list)
         return {"path": str(base), "entries": entries, "count": len(entries)}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Search files by pattern")
     async def _action_search_files(self, params: dict[str, Any]) -> dict[str, Any]:
         import re
 
@@ -207,6 +231,7 @@ class FilesystemModule(BaseModule):
         results = await asyncio.to_thread(_search)
         return {"matches": results, "count": len(results)}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads file metadata")
     async def _action_get_file_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetFileInfoParams.model_validate(params)
         path = Path(p.path)
@@ -227,6 +252,7 @@ class FilesystemModule(BaseModule):
             "suffix": path.suffix,
         }
 
+    @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Create archive")
     async def _action_create_archive(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateArchiveParams.model_validate(params)
         src = Path(p.source)
@@ -245,6 +271,7 @@ class FilesystemModule(BaseModule):
         )
         return {"archive": str(dest), "source": str(src)}
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Extract archive to disk")
     async def _action_extract_archive(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExtractArchiveParams.model_validate(params)
         src, dst = Path(p.source), Path(p.destination)
@@ -252,6 +279,7 @@ class FilesystemModule(BaseModule):
         await asyncio.to_thread(shutil.unpack_archive, src, dst)
         return {"source": str(src), "destination": str(dst)}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Compute file checksum")
     async def _action_compute_checksum(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ComputeChecksumParams.model_validate(params)
         path = Path(p.path)
@@ -266,6 +294,7 @@ class FilesystemModule(BaseModule):
         checksum = await asyncio.to_thread(_hash)
         return {"path": str(path), "algorithm": p.algorithm, "checksum": checksum}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Watch path for changes")
     async def _action_watch_path(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.filesystem import WatchPathParams
 

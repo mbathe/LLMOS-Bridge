@@ -27,6 +27,7 @@ from typing import Any
 
 from llmos_bridge.modules.base import ActionResult, BaseModule
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
+from llmos_bridge.security.decorators import audit_trail
 
 
 class RecordingModule(BaseModule):
@@ -105,6 +106,7 @@ class RecordingModule(BaseModule):
     # Action implementations
     # ------------------------------------------------------------------
 
+    @audit_trail("standard")
     async def _action_start_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available — recording not enabled")
@@ -114,6 +116,7 @@ class RecordingModule(BaseModule):
         )
         return recording.to_summary_dict()
 
+    @audit_trail("standard")
     async def _action_stop_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available")
@@ -148,6 +151,7 @@ class RecordingModule(BaseModule):
             )
         return recording.to_full_dict()
 
+    @audit_trail("detailed")
     async def _action_generate_replay_plan(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available")

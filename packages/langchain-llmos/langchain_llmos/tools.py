@@ -90,6 +90,9 @@ def _extract_action_result(plan_result: dict[str, Any]) -> str:
     Returns the first action's result as JSON, or the full plan response
     if no action results are found.  If the action is awaiting approval,
     returns a structured status message so the LLM can inform the user.
+
+    Includes structured alternatives (Negotiation Protocol) when an action
+    fails, so the LLM can propose recovery actions.
     """
     actions = plan_result.get("actions", [])
     if actions and len(actions) == 1:
@@ -97,16 +100,59 @@ def _extract_action_result(plan_result: dict[str, Any]) -> str:
         # Handle approval-related statuses.
         action_status = action.get("status")
         if action_status == "awaiting_approval":
-            return json.dumps({
+            resp: dict[str, Any] = {
                 "status": "awaiting_approval",
                 "message": "This action requires user approval before execution.",
                 "plan_id": plan_result.get("plan_id"),
                 "action_id": action.get("action_id"),
-            }, default=str)
+            }
+            # Include clarification options if the approval supports them.
+            if action.get("clarification_options"):
+                resp["clarification_options"] = action["clarification_options"]
+            return json.dumps(resp, default=str)
         if action.get("result") is not None:
             return json.dumps(action["result"], default=str)
         if action.get("error"):
-            return json.dumps({"error": action["error"]}, default=str)
+            error_msg = str(action["error"])
+            error_resp: dict[str, Any] = {"error": error_msg}
+
+            # Permission error: provide structured recovery guidance
+            if "PermissionNotGrantedError" in error_msg or "permission" in error_msg.lower():
+                error_resp["status"] = "permission_denied"
+                error_resp["recovery"] = {
+                    "action": "request_permission",
+                    "module": "security",
+                    "guidance": (
+                        "The required OS-level permission has not been granted. "
+                        "Use the security module's 'request_permission' action to "
+                        "request it before retrying this action."
+                    ),
+                }
+            # Rate limit error: provide retry guidance
+            elif "RateLimitExceededError" in error_msg or "rate limit" in error_msg.lower():
+                error_resp["status"] = "rate_limited"
+                error_resp["recovery"] = {
+                    "guidance": (
+                        "This action has been rate-limited. Wait a moment "
+                        "before retrying."
+                    ),
+                }
+            # Intent verification rejection
+            elif "SuspiciousIntentError" in error_msg or "IntentVerification" in error_msg:
+                error_resp["status"] = "intent_rejected"
+                error_resp["recovery"] = {
+                    "guidance": (
+                        "The plan was flagged by the security analysis layer. "
+                        "Review the threat details and either modify the plan to "
+                        "address the concerns or request the user to adjust permissions."
+                    ),
+                }
+
+            # Negotiation Protocol: include structured alternatives for the LLM.
+            alternatives = action.get("alternatives", [])
+            if alternatives:
+                error_resp["alternatives"] = alternatives
+            return json.dumps(error_resp, default=str)
     return json.dumps(plan_result, default=str)
 
 

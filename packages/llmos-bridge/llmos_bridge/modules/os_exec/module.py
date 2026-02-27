@@ -19,6 +19,13 @@ import psutil
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import (
+    audit_trail,
+    rate_limited,
+    requires_permission,
+    sensitive_action,
+)
+from llmos_bridge.security.models import Permission, RiskLevel
 from llmos_bridge.protocol.params.os_exec import (
     CloseApplicationParams,
     GetEnvVarParams,
@@ -45,6 +52,10 @@ class OSExecModule(BaseModule):
 
             raise ModuleLoadError("os_exec", "psutil is required: pip install psutil") from exc
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Execute system command")
+    @sensitive_action(RiskLevel.MEDIUM)
+    @rate_limited(calls_per_minute=30)
+    @audit_trail("detailed")
     async def _action_run_command(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RunCommandParams.model_validate(params)
 
@@ -108,6 +119,9 @@ class OSExecModule(BaseModule):
 
         return {"processes": processes, "count": len(processes)}
 
+    @requires_permission(Permission.PROCESS_KILL, reason="Terminate process")
+    @sensitive_action(RiskLevel.HIGH, irreversible=True)
+    @audit_trail("detailed")
     async def _action_kill_process(self, params: dict[str, Any]) -> dict[str, Any]:
         p = KillProcessParams.model_validate(params)
         import signal as _signal
@@ -141,6 +155,8 @@ class OSExecModule(BaseModule):
         except psutil.NoSuchProcess:
             raise ProcessLookupError(f"No process with PID {p.pid}")
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Launch application")
+    @audit_trail("standard")
     async def _action_open_application(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OpenApplicationParams.model_validate(params)
         cmd = [p.application] + p.arguments
@@ -151,6 +167,8 @@ class OSExecModule(BaseModule):
         )
         return {"application": p.application, "pid": proc.pid}
 
+    @requires_permission(Permission.PROCESS_KILL, reason="Close application")
+    @sensitive_action(RiskLevel.MEDIUM)
     async def _action_close_application(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CloseApplicationParams.model_validate(params)
         closed = []

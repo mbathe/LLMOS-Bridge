@@ -162,6 +162,72 @@ class LLMOSToolkit:
                         pass
         return self._manifests
 
+    def execute_parallel(
+        self,
+        actions: list[dict[str, Any]],
+        max_concurrent: int = 10,
+        timeout: int = 300,
+        group_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute multiple actions in parallel via PlanGroup.
+
+        Each action dict is wrapped into a single-action IML plan, then
+        all plans are submitted as a group for parallel execution.
+
+        Args:
+            actions:        List of action dicts, each with keys:
+                            ``module``, ``action``, ``params``, and optionally ``id``.
+            max_concurrent: Maximum number of plans running concurrently.
+            timeout:        Total timeout for the group (seconds).
+            group_id:       Optional group identifier.
+
+        Returns:
+            Plan group response dict with ``status``, ``summary``, ``results``,
+            ``errors``, ``duration``.
+        """
+        import uuid
+
+        plans: list[dict[str, Any]] = []
+        for i, action in enumerate(actions):
+            action_id = action.get("id", f"a{i}")
+            plan_id = f"parallel-{uuid.uuid4().hex[:8]}-{i}"
+            plans.append({
+                "plan_id": plan_id,
+                "protocol_version": "2.0",
+                "description": f"{action.get('module', '?')}.{action.get('action', '?')}",
+                "actions": [
+                    {
+                        "id": action_id,
+                        "module": action["module"],
+                        "action": action["action"],
+                        "params": action.get("params", {}),
+                    }
+                ],
+            })
+
+        return self._client.submit_plan_group(
+            plans=plans,
+            group_id=group_id,
+            max_concurrent=max_concurrent,
+            timeout=timeout,
+        )
+
+    # ------------------------------------------------------------------
+    # Intent Verifier convenience methods
+    # ------------------------------------------------------------------
+
+    def get_intent_verifier_status(self) -> dict[str, Any]:
+        """Check if intent verification is active and its configuration."""
+        return self._client.get_intent_verifier_status()
+
+    def verify_plan_preview(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """Preview verification result without executing the plan."""
+        return self._client.verify_plan_preview(plan)
+
+    def get_threat_categories(self) -> list[dict[str, Any]]:
+        """List all registered threat categories."""
+        return self._client.get_threat_categories()
+
     def refresh(self) -> None:
         """Force a refresh of the module manifest and system prompt cache."""
         self._manifests = None

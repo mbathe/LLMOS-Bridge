@@ -70,6 +70,15 @@ _READONLY_ALLOWED: frozenset[str] = frozenset(
         "database.fetch_results",
         "database.list_tables",
         "database.get_table_schema",
+        # db_gateway — read-only operations
+        "db_gateway.connect",
+        "db_gateway.disconnect",
+        "db_gateway.introspect",
+        "db_gateway.find",
+        "db_gateway.find_one",
+        "db_gateway.count",
+        "db_gateway.search",
+        "db_gateway.aggregate",
     ]
 )
 
@@ -99,6 +108,10 @@ _LOCAL_WORKER_ALLOWED: frozenset[str] = _READONLY_ALLOWED | frozenset(
         "database.insert_record",
         "database.update_record",
         "database.create_table",
+        # db_gateway — write operations
+        "db_gateway.create",
+        "db_gateway.create_many",
+        "db_gateway.update",
     ]
 )
 
@@ -107,6 +120,7 @@ _LOCAL_WORKER_DENIED: frozenset[str] = frozenset(
         "filesystem.delete_file",
         "os_exec.kill_process",
         "database.delete_record",
+        "db_gateway.delete",
         "api_http.send_email",
     ]
 )
@@ -119,6 +133,7 @@ _POWER_USER_ALLOWED: frozenset[str] = _LOCAL_WORKER_ALLOWED | frozenset(
         "browser.*",
         "gui.*",
         "database.*",
+        "db_gateway.*",
         "api_http.send_email",
         "iot.*",
     ]

@@ -1,6 +1,6 @@
 # LLMOS Bridge — Cahier des Charges Consolidé & Bilan
 
-## Derniere mise a jour : 2026-02-26 — Post Level 1
+## Derniere mise a jour : 2026-02-27 — Analyse Totale Pre-Sprint 2
 
 ---
 
@@ -75,6 +75,12 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | Rollback transactionnel | FAIT | `orchestration/rollback.py` — compensation actions |
 | submit_plan() non-bloquant | FAIT | Pour TriggerDaemon, asyncio.create_task |
 | cancel_plan() | FAIT | Annulation de la tache asyncio |
+| PlanGroup — Execution parallele N plans | FAIT | `orchestration/plan_group.py` — fan-out/fan-in |
+| ResourceManager — Semaphores par module | FAIT | `orchestration/resource_manager.py` — limites configurables |
+| Cache Locks — Protection concurrence modules | FAIT | `threading.Lock` par chemin (Excel/Word/PPT), `asyncio.Lock` (API HTTP) |
+| Graceful Degradation — Fallback chains | FAIT | `executor.py` — si module primaire echoue, essai fallback configure |
+| Negotiation Protocol — Alternatives sur echec | FAIT | `executor.py` — `_suggest_alternatives()` enrichit les erreurs |
+| Intent Clarification — Options structurees | FAIT | `ApprovalConfig.clarification_options` → choix dans approval UI |
 
 ### 2.3 Perception Loop — Les yeux du LLM
 
@@ -247,7 +253,10 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | _extract_action_result() | FAIT | Extrait resultat action du plan response |
 | _json_schema_to_pydantic() | FAIT | JSONSchema → Pydantic model pour args |
 | Shared AsyncLLMOSClient pour tools | FAIT | toolkit._get_async_client() |
+| submit_plan_group() (sync + async) | FAIT | `client.py` — execution parallele N plans |
+| execute_parallel() (toolkit) | FAIT | `toolkit.py` — actions → plans → group, convenience |
 | Script exemple E2E | FAIT | `examples/hello_world.py` |
+| Script test parallele | FAIT | `scripts/test_parallel_llm.py` — test reel daemon |
 | LangGraph integration | A FAIRE | Phase 5 |
 
 ### 2.12 System Prompt Generator
@@ -279,6 +288,7 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | GET /modules/{id} | FAIT | Manifeste complet |
 | GET /modules/{id}/actions/{action}/schema | FAIT | JSONSchema params |
 | GET /context | FAIT | System prompt dynamique |
+| POST /plan-groups | FAIT | Execution parallele N plans (fan-out/fan-in) |
 | WS /ws/stream | FAIT | Evenements temps reel |
 | WS /ws/plans/{id} | FAIT | Suivi plan specifique |
 | GET/POST/DELETE /triggers | FAIT | CRUD triggers (si enabled) |
@@ -307,6 +317,31 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | Federated Bridge P2P | Phase 7+ | Multi-Bridges collaborent |
 | Natural Language Debugger | Phase 7+ | Questions en langage naturel sur historique |
 | Reality Check Engine | Phase 7+ | Detecte incertitude LLM → validation humaine |
+
+### 2.16 Features Evaluees — Discussion IA (2026-02-27)
+
+Les 10 features ci-dessous ont ete evaluees et triees. 3 ont ete implementees immediatement,
+les autres sont assignees a des phases futures pour ne pas les oublier.
+
+#### Implementees (Sprint Parallel)
+
+| Feature | Statut | Fichiers | Description |
+|---------|--------|----------|-------------|
+| **Graceful Degradation** | FAIT | `config.py`, `executor.py`, `server.py` | Fallback chains par module — si un module echoue, l'executor essaie les modules de secours dans l'ordre configure. Ex: excel → filesystem. Config `modules.fallbacks`. |
+| **Negotiation Protocol** | FAIT | `executor.py` | Enrichissement des erreurs avec des alternatives concretes. `_suggest_alternatives()` analyse l'erreur et les fallback chains pour proposer des actions correctives au LLM. |
+| **Intent Clarification** | FAIT | `protocol/models.py`, `orchestration/approval.py`, `executor.py` | `clarification_options: list[str]` dans `ApprovalConfig` — permet de presenter des choix structures a l'approbateur au lieu de juste approve/reject. Options transmises dans `ApprovalRequest.to_dict()`. |
+
+#### Assignees a des phases futures
+
+| Feature | Phase | Justification | Description |
+|---------|-------|---------------|-------------|
+| **Workflow Versioning** | Phase 6 | Necessite une refonte du format de stockage des workflows. Lie au Plugin Registry et au Marketplace. | Versionnage semantique des workflows enregistres, migration automatique, diff entre versions. |
+| **Schema Evolution** | Hors scope | Le protocole IML v2 a deja `protocol_version` + `MigrationPipeline`. Pas besoin de mecanisme supplementaire. | Evolution automatique des schemas d'actions entre versions de modules. |
+| **Cost Intelligence** | Hors scope | La comptabilite des couts LLM releve du SDK/LangChain, pas du Bridge. Le Bridge ne voit pas les tokens consommes. | Tracking des couts par action/plan, budgets, alertes. |
+| **Cross-Session Intelligence** | Phase 7+ | Necessite un vrai systeme de memoire long terme (ChromaDB existe mais pas exploite a ce niveau). Tres ambitieux. | Apprentissage entre sessions — le Bridge retient les patterns de succes/echec et adapte son comportement. |
+| **Output Signing** | Phase 5 | Fait partie du module "Securite avancee" deja prevu. SHA-256 + RSA-PSS sur les resultats d'action. | Signature cryptographique des resultats pour garantir l'integrite et la non-repudiation. |
+| **Adaptive Context Window** | Hors scope | C'est le role du SDK LangChain et de l'agent, pas du daemon. Le Bridge fournit `max_actions_per_module` dans GET /context. | Gestion dynamique de la fenetre de contexte du LLM en fonction de la tache. |
+| **Multi-Modal Output** | Phase 6+ | Les modules communautaires (via le Plugin Registry) pourront definir des formats de sortie riches. | Sorties structurees multi-modales (texte, images, tableaux, graphiques) des actions. |
 
 ### 2.15 Live Testing & Developpement
 
@@ -341,6 +376,7 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | 9 | Fondations distribuees (BaseNode, NodeConfig, target_node) | FAIT | Sprint 1.7 | inclus |
 | 10 | Shadow Recorder | FAIT | Sprint 1.8 | 57 |
 | 11 | SDK LangChain + System Prompt + GET /context | FAIT | Level 1 | 77 |
+| 11b | Execution parallele (Cache Locks + ResourceManager + PlanGroup + SDK) | FAIT | Parallel | 64 |
 | 12 | Browser automation (Playwright) | A FAIRE | Phase 3 | — |
 | 13 | GUI control (PyAutoGUI/xdotool) | A FAIRE | Phase 3 | — |
 | 14 | Database module (SQLite, PostgreSQL, MySQL) | A FAIRE | Phase 3 | — |
@@ -487,21 +523,22 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 ### 4.1 Etat des tests
 
 ```
-Total : 996 tests, 0 echec (2026-02-26)
+Total : 1133 tests, 0 echec (2026-02-27) — Coverage 80.29%
 
-llmos-bridge (955 tests) :
+llmos-bridge (1092 tests) :
   unit/protocol/       ~120  — parser, validator, models, template, repair, compat, schema
   unit/security/        ~60  — guard, profiles, sanitizer, audit
-  unit/orchestration/   ~90  — dag, executor, state, rollback, nodes
-  unit/modules/         ~80  — registry, filesystem, os_exec, excel, word, pptx, http, iot
+  unit/orchestration/  ~143  — dag, executor, state, rollback, nodes, resource_manager (11), plan_group (10), fallback_chains (9), negotiation (12), intent_clarification (11)
+  unit/modules/         ~89  — registry, filesystem, os_exec, excel, word, pptx, http, iot, cache_locks (9)
   unit/memory/          ~40  — kv store, vector, context builder
   unit/events/          ~52  — UniversalEvent, EventRouter, SessionPropagator
   unit/triggers/       ~127  — models, store, watchers, daemon, module
   unit/recording/       ~37  — models, store, replayer, recorder
-  unit/api/             ~62  — middleware, websocket, prompt generator (22 NOUVEAUX)
+  unit/api/             ~62  — middleware, websocket, prompt generator
   unit/cli/             ~60  — main, daemon, modules, plans, schema
-  unit/test_config.py   ~15  — Settings, NodeConfig, RecordingConfig
-  integration/         ~111  — Plans API, Recordings API, Context API (14 NOUVEAUX), E2E LLM
+  unit/test_config.py   ~15  — Settings, NodeConfig, RecordingConfig, ResourceConfig
+  integration/         ~124  — Plans API, Recordings API, Context API, Plan Groups API (13)
+  e2e/                  ~43  — SDK Integration, SDK Approval, SDK Parallel (14)
 
 langchain-llmos (41 tests) :
   test_client.py        ~13  — LLMOSClient sync + AsyncLLMOSClient
@@ -516,6 +553,7 @@ Sprint 1.6 : 794 tests   ← TriggerDaemon + EventBus
 Sprint 1.7 : 825 tests   ← Fondations distribuees + E2E fixes
 Sprint 1.8 : 919 tests   ← Shadow Recorder + integration tests
 Level 1    : 996 tests   ← SDK LangChain + System Prompt + Context API (+77)
+Parallel   : 1060 tests  ← Cache locks + ResourceManager + PlanGroup + SDK parallel (+64)
 ```
 
 ---
@@ -577,6 +615,40 @@ PlanExecutor.run(plan)
     |
     v
 Response JSON → LLMOSClient → _extract_action_result() → LLM
+
+--- Parallel Execution Path (nouveau) ---
+
+LLM Agent (multi-tasks)
+    |
+    |  toolkit.execute_parallel([
+    |      {"module": "excel", "action": "read_cell", "params": {...}},
+    |      {"module": "word", "action": "read_document", "params": {...}},
+    |      {"module": "filesystem", "action": "read_file", "params": {...}},
+    |  ], max_concurrent=3)
+    |       |
+    |       v
+    |  LLMOSClient.submit_plan_group(plans, max_concurrent=3)
+    |       |
+    v       v
+FastAPI POST /plan-groups
+    |
+    +-- IMLParser.parse() × N plans
+    +-- IMLValidator.validate() × N plans
+    |
+    v
+PlanGroupExecutor.execute()
+    |
+    +-- asyncio.Semaphore(max_concurrent) → limite la concurrence
+    +-- Pour chaque plan (en parallele) :
+    |   +-- ResourceManager.acquire(module_id) → semaphore par module
+    |   +-- PlanExecutor.run(plan) → flux standard ci-dessus
+    |   +-- Cache Locks (threading.Lock par fichier pour Excel/Word/PPT)
+    |
+    v
+PlanGroupResult → aggregated {status, summary, results, errors, duration}
+    |
+    v
+PlanGroupResponse JSON → SDK → LLM
 ```
 
 ### 5.2 Bugs E2E corriges
@@ -599,19 +671,164 @@ Aucun bug E2E connu a ce jour.
 - ~~SDK LangChain incomplet~~ → FAIT (LLMOSToolkit + tools + async client)
 - ~~System prompt LLM non ecrit~~ → FAIT (SystemPromptGenerator + GET /context)
 - ~~Pas d'exemple E2E~~ → FAIT (examples/hello_world.py)
+- ~~Race conditions caches modules Office~~ → FAIT (threading.Lock par fichier, 97 actions protegees)
+- ~~Pas de controle concurrence par module~~ → FAIT (ResourceManager + config limites)
+- ~~Pas d'execution parallele multi-plans~~ → FAIT (PlanGroup + POST /plan-groups + SDK)
+- ~~Pas de resilience sur echec module~~ → FAIT (Graceful Degradation — fallback chains configurables)
+- ~~Erreurs opaques pour le LLM~~ → FAIT (Negotiation Protocol — alternatives concretes dans les messages d'erreur)
+- ~~Approbation binaire approve/reject~~ → FAIT (Intent Clarification — clarification_options structurees)
 
-### 6.2 Gaps restants bloquant la production
+### 6.2 Inventaire global du projet
 
-| Gap | Impact | Priorite |
-|-----|--------|----------|
-| 3 modules Sprint 2 manquants (Browser, GUI, Database) | Cas d'usage web/desktop/DB impossibles | HAUTE |
-| Rate limiting sur POST /plans | Risque DOS en production | MOYENNE |
-| Test IMLRepair boucle de correction (repair → resubmit → success) | Robustesse LLM non validee | MOYENNE |
-| Module auto-discovery (plugin loader) | Modules communautaires impossibles | BASSE (Phase 6) |
+```
+Fichiers Python :       172 (93 core + 4 SDK + 61 tests + 6 template + 5 scripts + 3 configs)
+Packages architecturaux: 18 (api, cli, protocol, orchestration, modules, perception, memory, security, events, triggers, recording...)
+Modules built-in :       10 (~160 actions IML)
+Endpoints REST :         17+
+WebSocket routes :        2
+Tests :                1133 (0 echec)
+Coverage :            80.29%
+Params futurs :           3 fichiers deja crees (browser.py, gui.py, database.py)
+```
 
-### 6.3 Priorites pour la prochaine phase : Sprint 2
+### 6.3 Fonctionnalites partiellement faites
+
+| Feature | Etat actuel | Manque |
+|---------|-------------|--------|
+| Perception Applicative (Canal 2) | Pipeline existe | Contexte app actif (fenetre active, clipboard) limite |
+| Universal Data Pipeline | PerceptionPipeline + OmniParser | Pas de pipeline unifie visual/structured/raw |
+| Niveaux de perception (LIGHT/STANDARD/FULL) | capture_before/after configurables | Pas de enum formelle, pas de budget |
+| Shadow Recorder Mode Guided | title + description | Pas d'UI guidee, pas de contexte enrichi |
+| Module Loader | Enregistrement manuel server.py | Pas d'auto-discovery plugins |
+| Self-Healing | Retry + IMLRepair existants | Path healing, selector healing, deadlock absent |
+
+### 6.4 TOUTES les fonctionnalites restantes — Tracking complet
+
+#### Phase 3 — Perception & Web (SPRINT 2 EN COURS)
+
+| # | Feature | Effort | Params existants | Statut |
+|---|---------|--------|-----------------|--------|
+| 3.1 | Module Database (SQLite + PostgreSQL/MySQL optional) | 2-3j | `params/database.py` OUI | A FAIRE |
+| 3.2 | Module Browser (Playwright) | 3-4j | `params/browser.py` OUI | A FAIRE |
+| 3.3 | Module GUI (PyAutoGUI + Pillow) | 2-3j | `params/gui.py` OUI | A FAIRE |
+| 3.4 | Rate limiting sur POST /plans | 2h | — | A FAIRE |
+| 3.5 | Test boucle IMLRepair (repair → resubmit → success) | 3h | — | A FAIRE |
+| 3.6 | Health check enrichi (GET /health → etat modules) | 2h | — | A FAIRE |
+| 3.7 | Purge auto plans anciens | 1h | — | A FAIRE |
+| 3.8 | Taille max resultats (truncation avant injection LLM) | 2h | — | A FAIRE |
+
+#### Phase 4 — Distribue + Reactivite Avancee
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 4.1 | RemoteNode (HTTP/gRPC) | CdC §22 | Execution d'actions sur machines distantes |
+| 4.2 | Node Discovery (mDNS/zeroconf) | CdC §22 | Decouverte automatique des noeuds |
+| 4.3 | Distributed Perception Loop | CdC §22 | Capture ecran sur noeuds distants |
+| 4.4 | mTLS inter-noeuds | CdC §22 | Securite communications inter-bridges |
+| 4.5 | Node quarantaine | CdC §22 | Isolation automatique noeuds suspects |
+| 4.6 | Re-routing | CdC §22 | Si noeud indisponible, rediriger |
+| 4.7 | target_group / broadcast | CdC §22 | Actions sur plusieurs noeuds |
+| 4.8 | Triggers Application | CdC §17 | DatabaseWatch, EmailTrigger, APIWebhook |
+| 4.9 | Triggers IoT | CdC §17 | SensorThreshold, GPIOEdge, MQTTMessage |
+| 4.10 | Event Normalizer | CdC §7 | IoT/Webhook/Email → UniversalEvent |
+| 4.11 | Redis/Kafka EventBus | CdC §7 | Swap FanoutEventBus → RedisStreamsBus (1 fichier) |
+
+#### Phase 5 — Securite Avancee + UX + Resilience
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 5.1 | Multi-Agent Coordination | CdC §18 | Orchestrateur/sous-agents, pipeline, sessions isolees |
+| 5.2 | Self-Healing complet | CdC §19 | Path healing, selector healing, deadlock detection, session recovery |
+| 5.3 | Dashboard Monitoring | CdC §20 | Vue temps reel, historique, metriques, centre approbations |
+| 5.4 | Cryptographic Signing | CdC §21 | SHA-256 + RSA-PSS sur plans + resultats |
+| 5.5 | Output Signing | IA Feature | Signature resultats pour integrite/non-repudiation |
+| 5.6 | Behavioral Analysis | CdC §21 | Detection escalade, exfiltration |
+| 5.7 | Real-Time Security Score | CdC §21 | Score de securite en temps reel |
+| 5.8 | Module Sandbox Isolation | CdC §21 | Whitelist syscall par module |
+| 5.9 | Hot Reload modules | CdC §15 | Recharger module sans redemarrage |
+| 5.10 | TTL + nonce anti-replay | CdC §4 | Champs dans IMLPlan |
+| 5.11 | LangGraph integration | CdC §13 | Workflow graphs dans LangChain |
+| 5.12 | Live Debug Cockpit | CdC §25 | LLM Thoughts / Bridge Actions / PC Screen |
+| 5.13 | Thought Inspector | CdC §25 | Chain-of-thought visible |
+| 5.14 | Plan Interceptor | CdC §25 | Pause/modifier/skip/rollback avant action |
+| 5.15 | Chaos Mode | CdC §25 | Injection erreurs controlees |
+| 5.16 | State Snapshot Diff | CdC §25 | Diff fichiers/processus/connexions |
+
+#### Phase 6 — Open Source Launch
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 6.1 | Plugin Registry | CdC §23 | Auto-discovery, installation, badge "LLMOS Certified" |
+| 6.2 | Systeme Decorateurs | CdC §15 | @module, @action (zero friction plugins) |
+| 6.3 | Workflow Versioning | IA Feature | Versionnage semantique workflows, migration, diff |
+| 6.4 | Multi-Modal Output | IA Feature | Sorties riches (texte, images, tableaux, graphiques) |
+| 6.5 | Security Certification | CdC §21 | Niveaux 1-3, conformite AI Act |
+| 6.6 | LLM Comparator | CdC §25 | Meme tache → plusieurs LLMs → metriques |
+| 6.7 | Workflow Marketplace | CdC §24 | Publication, notation, installation, verification crypto |
+| 6.8 | Documentation PyPI | CdC §23 | Package publie, docs completes |
+
+#### Phase 7+ — Ecosysteme & Innovation
+
+| # | Feature | Source | Description |
+|---|---------|--------|-------------|
+| 7.1 | Cross-Session Intelligence | IA Feature | Apprentissage entre sessions (ChromaDB) |
+| 7.2 | Auto-Programming Engine | CdC §24 | LLM explore app → genere module → valide → publie |
+| 7.3 | Consensus Engine | CdC §24 | Multi-LLMs votent sur actions critiques |
+| 7.4 | Predictive Executor | CdC §24 | Pre-execution actions lecture |
+| 7.5 | Causal Debugger | CdC §24 | Remonte chaine causale, regles prevention |
+| 7.6 | Mirror Mode | CdC §24 | Observe expert → extrait modele mental |
+| 7.7 | Emotional Context Analyzer | CdC §24 | Detecte urgence/stress, adapte priorite |
+| 7.8 | Simulation Sandbox | CdC §24 | Clone virtuel, execution simulee |
+| 7.9 | Semantic Diff | CdC §24 | Compare 2 etats semantiquement |
+| 7.10 | Federated Bridge P2P | CdC §24 | Multi-Bridges collaborent |
+| 7.11 | Natural Language Debugger | CdC §24 | Questions en langage naturel sur historique |
+| 7.12 | Reality Check Engine | CdC §24 | Detecte incertitude LLM → validation humaine |
+
+#### Shadow Recorder — Phases B-D (independant)
+
+| Phase | Feature | Description |
+|-------|---------|-------------|
+| B | Semantic Interpreter | Accessibility tree, OCR, vision LLM |
+| B | Intent Detector | Comprendre l'intention derriere les actions |
+| C | Pattern Detector | Motifs temporels, structurels, donnees |
+| C | Reproduction intelligente | Adaptation variables, contexte |
+| D | Export/Import JSON | Workflows partageables |
+| D | Marketplace workflows | Publication, installation |
+
+#### Features IA — Decisions finales
+
+| Feature | Decision | Phase |
+|---------|----------|-------|
+| Graceful Degradation | **IMPLEMENTEE** | Done |
+| Negotiation Protocol | **IMPLEMENTEE** | Done |
+| Intent Clarification | **IMPLEMENTEE** | Done |
+| Schema Evolution | **HORS SCOPE** | Deja couvert par MigrationPipeline |
+| Cost Intelligence | **HORS SCOPE** | Responsabilite SDK/LangChain |
+| Adaptive Context Window | **HORS SCOPE** | Responsabilite agent LLM |
+| Output Signing | **REPORTEE** | Phase 5 |
+| Workflow Versioning | **REPORTEE** | Phase 6 |
+| Multi-Modal Output | **REPORTEE** | Phase 6+ |
+| Cross-Session Intelligence | **REPORTEE** | Phase 7+ |
+
+### 6.5 Score d'avancement global
+
+| Phase | Avancement | Commentaire |
+|-------|-----------|-------------|
+| Phase 1 — Foundation Core | **100%** | Protocole, Securite, Orchestration, Modules de base |
+| Phase 2 — Office Suite | **100%** | Excel 41, Word 30, PPT 25, HTTP 17 |
+| Phase 3 — Perception & Web | **~75%** | Perception FAIT, API FAIT, Browser/GUI/DB manquants |
+| Phase 4 — Distribue | **~15%** | Fondations FAIT (BaseNode, config), RemoteNode absent |
+| Phase 5 — Securite avancee | **~20%** | Retry + IMLRepair + Approval existants |
+| Phase 6 — Open Source | **~5%** | Module template existe, le reste a faire |
+| Phase 7+ — Ecosysteme | **0%** | Innovation future |
+
+**Fonctionnalites completes : ~75/120 soit ~63% du CdC total**
+**Fonctionnalites bloquant la production (Phase 3) : 8 items restants**
+
+### 6.6 Priorites Sprint 2 (Phase 3)
 
 **Objectif : completer les 3 modules manquants du CdC §15 + robustesse production.**
+**Estimation : 9-13 jours**
 
 #### Priorite 1 — Module Database (2-3 jours)
 
@@ -620,9 +837,9 @@ Pourquoi en premier :
 - Zero dependance externe pour SQLite (stdlib)
 - PostgreSQL/MySQL en optional extras
 - Patterns d'implementation identiques aux modules existants
-- Deverrouille les triggers DatabaseWatch
+- Deverrouille les triggers DatabaseWatch (Phase 4)
 
-Actions prevues :
+Actions prevues (~13) :
 ```
 connect, disconnect, execute_query, fetch_results,
 insert_record, update_record, delete_record,
@@ -638,7 +855,7 @@ Pourquoi en deuxieme :
 - La Perception Loop peut deja capturer les screenshots browser
 - Deverrouille les triggers BrowserEvent
 
-Actions prevues :
+Actions prevues (~13) :
 ```
 navigate, click, fill, screenshot, wait_for_selector,
 execute_script, get_page_content, get_cookies, set_cookies,
@@ -651,9 +868,9 @@ Pourquoi en troisieme :
 - Depend de PyAutoGUI + Pillow (optionnel)
 - Moins prioritaire que Browser (web > desktop automation)
 - Perception Loop deja prete pour les captures ecran
-- Tres lié a OmniParser (vision module existant)
+- Tres lie a OmniParser (vision module existant)
 
-Actions prevues :
+Actions prevues (~12) :
 ```
 screenshot, click_position, click_image, type_text,
 key_press, key_combo, find_on_screen, wait_for_image,
@@ -671,13 +888,13 @@ get_mouse_position, move_mouse, scroll, get_active_window
 | Purge automatique plans anciens | 1h |
 | Session recovery au redemarrage | 3h |
 
-### 6.4 Vue globale — Phases restantes
+### 6.7 Vue globale — Phases restantes
 
 | Phase | Contenu | Statut |
 |-------|---------|--------|
 | Phase 1 — Foundation Core | Protocole, Securite, Orchestration, Modules de base | FAIT 100% |
 | Phase 2 — Office Suite + Rollback | Excel, Word, PowerPoint, Rollback | FAIT 100% |
-| Phase 3 — Perception & Web (**PROCHAIN**) | Browser, GUI, Database, Context Builder, Rate limiting | EN COURS ~75% |
+| Phase 3 — Perception & Web (**SPRINT 2 EN COURS**) | Browser, GUI, Database, Context Builder, Rate limiting | EN COURS ~75% |
 | Phase 4 — Distribue + Reactivite avancee | RemoteNode, mDNS, Redis/Kafka EventBus, watchers IoT/App | A FAIRE |
 | Phase 5 — Securite avancee + UX | Multi-Agent, Self-Healing, Dashboard, Crypto signing | A FAIRE |
 | Phase 6 — Open Source Launch | PyPI, Plugin Registry, Marketplace, Documentation | A FAIRE |
@@ -688,41 +905,53 @@ get_mouse_position, move_mouse, scroll, get_active_window
 ## 7. Resume executif
 
 ```
-LLMOS Bridge au 2026-02-26 — Post Level 1
+LLMOS Bridge au 2026-02-27 — Analyse Totale Pre-Sprint 2
 ====================================================================
 
-FAIT :
-  996 tests, 0 echec
-  11 composants implementes (1-10 + SDK LangChain)
+INVENTAIRE :
+  172 fichiers Python, 18 packages architecturaux
+  1133 tests, 0 echec — Coverage 80.29%
+  12 composants implementes (1-10 + SDK LangChain + Execution Parallele)
   10 modules built-in, ~160 actions IML
-  Protocole IML v2 complet (parser + validator + repair + migration)
-  Securite (4 profils, approval, sandbox, audit, anti-injection)
-  Orchestration DAG (parallel, sequential, reactive, rollback)
+  17+ endpoints REST, 2 WebSocket routes
+  Score d'avancement global : ~63% du CdC total (75/120 features)
+
+FAIT :
+  Protocole IML v2 complet (parser + validator + repair + migration + compiler mode)
+  Securite (4 profils, approval 5 decisions, sandbox, audit, anti-injection)
+  Orchestration DAG (parallel, sequential, reactive, rollback, cascade failure)
+  Execution parallele multi-plans (PlanGroup, ResourceManager, Cache Locks)
+  Graceful Degradation (fallback chains par module)
+  Negotiation Protocol (alternatives structurees sur echec)
+  Intent Clarification (options structurees dans approval)
   TriggerDaemon (7 types watchers, scheduler, persistence, chainage)
   Universal EventBus (causalite, session, 8 topics, 3 backends)
   Shadow Recorder (enregistrement, replay, auto-tagging, API REST)
   Fondations distribuees (BaseNode, NodeConfig, target_node)
-  SDK LangChain complet (sync + async, tools, system prompt, GET /context)
-  Exemple E2E (examples/hello_world.py)
-
+  SDK LangChain complet (sync + async, tools, system prompt, parallel)
   Chaine complete LLM → SDK → API → Executor → Module → Resultat : OPERATIONNELLE
 
-A FAIRE (prochain sprint) :
-  3 modules Sprint 2 : Database, Browser, GUI
-  Robustesse : rate limiting, truncation, IMLRepair test, health check
+PARTIELLEMENT FAIT (6 items) :
+  Perception Applicative (Canal 2), Universal Data Pipeline,
+  Niveaux de perception, Shadow Recorder Guided, Module Loader, Self-Healing
 
-NON DEMARRE (phases futures) :
-  Mode distribue complet (RemoteNode, mDNS, mTLS)
-  Multi-Agent Coordination
-  Self-Healing avance (path/selector healing, recovery)
-  Dashboard de Monitoring
-  Securite avancee (crypto signing, behavioral analysis)
-  Publication Open Source + Plugin Registry
-  Features Phase 7+ (Consensus, Predictive, Mirror Mode, Digital Twin...)
+SPRINT 2 EN COURS (Phase 3 — 8 items) :
+  3 modules : Database, Browser, GUI
+  5 robustesse : rate limiting, truncation, IMLRepair, health check, purge
+
+PHASES FUTURES :
+  Phase 4 (11 items) : Distribue, Triggers avances, Redis/Kafka
+  Phase 5 (16 items) : Multi-Agent, Self-Healing, Dashboard, Crypto, Debug tools
+  Phase 6  (8 items) : Plugin Registry, Decorateurs, Marketplace, PyPI
+  Phase 7+ (12 items) : Cross-Session, Consensus, Predictive, Mirror Mode...
+  Shadow Recorder B-D (6 items) : Semantic, Patterns, Export, Marketplace
+
+FEATURES IA EVALUEES (10) :
+  3 implementees, 3 hors scope, 4 reportees (Phase 5/6/7+)
 
 KPIs CdC §26 :
   Modules built-in : 10 (cible Phase 1 = 2)   → DEPASSE x5
-  Coverage tests : >85% (cible 70%)            → DEPASSE
+  Coverage tests : 80.29% (cible 70%)          → DEPASSE
   Latence action simple : ~100ms (cible <300ms) → RESPECTE
   Actions IML totales : ~160 (cible = "core")  → DEPASSE
 ```

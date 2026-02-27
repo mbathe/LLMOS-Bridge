@@ -23,6 +23,11 @@ from __future__ import annotations
 from typing import Any
 
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
+from llmos_bridge.security.profiles import (
+    BUILTIN_PROFILES,
+    PermissionProfile,
+    PermissionProfileConfig,
+)
 
 
 _IML_PROTOCOL_SECTION = """\
@@ -147,7 +152,8 @@ Downstream actions can reference perception data:
 - GUI automation: verify a button click changed the screen
 - Document generation: verify a PDF was created correctly
 - Web scraping: detect page changes after navigation
-- **Do NOT use perception for pure data operations** (file I/O, API calls) — it adds overhead
+- **Do NOT use perception for pure data operations** (file I/O, API calls, database queries) — \
+the LLM learns what happened from the action result dict, not from screenshots.
 """
 
 _MEMORY_SECTION = """\
@@ -208,6 +214,65 @@ _GUIDELINES_SECTION = """\
 - Use **memory** to persist data across plans; use **depends_on + templates** within a plan.
 """
 
+_DB_GATEWAY_GUIDELINES = """\
+## Database Operations (db_gateway)
+
+### Workflow
+
+1. Call `connect()` to open a connection (you get a `connection_id`).
+2. Call `introspect()` to discover tables, columns, types, FKs, indexes.
+3. Use read actions: `find()`, `find_one()`, `count()`, `search()`, `aggregate()`.
+4. Use write actions: `create()`, `create_many()`, `update()`, `delete()` (if allowed).
+5. Call `disconnect()` when done. Always pass `connection_id` in every action.
+
+### Filter syntax (MongoDB-like)
+
+All filter params use MongoDB-like operators — **never write raw SQL**:
+
+- **Exact match**: `{"name": "Alice"}`
+- **Comparison**: `{"age": {"$gt": 18}}`, `{"$gte": 18}`, `{"$lt": 100}`, `{"$lte": 50}`
+- **Not equal**: `{"status": {"$ne": "deleted"}}`
+- **In / Not in**: `{"role": {"$in": ["admin", "manager"]}}`, `{"$nin": [...]}`
+- **Between**: `{"score": {"$between": [70, 90]}}`
+- **Logical OR**: `{"$or": [{"status": "active"}, {"role": "admin"}]}`
+- **Logical AND**: `{"$and": [{"age": {"$gte": 18}}, {"age": {"$lte": 65}}]}`
+
+### Handling large result sets
+
+- `find()` defaults to `limit: 100`. Use `offset` for pagination.
+- Check `truncated` in the result: if `true`, more rows exist.
+- Example pagination: `find({limit: 100, offset: 0})` → if truncated, \
+`find({limit: 100, offset: 100})` → repeat until `truncated=false`.
+
+### Aggregate column aliases
+
+When using `aggregate()`, result columns are named `{function}_{column}`:
+- `{"salary": "avg"}` → column alias: `avg_salary`
+- `{"id": "count"}` → column alias: `count_id`
+- Use these aliases in `having` and `order_by`: `{"having": {"count_id": {"$gte": 5}}}`
+
+### Template chaining with results
+
+Use `{{result.<action_id>.<field>}}` to reference database results:
+- `{{result.find_users.rows}}` — all rows from a find action
+- `{{result.find_users.row_count}}` — number of rows found
+- `{{result.count_items.count}}` — count result
+- `{{result.create_user.inserted_id}}` — ID of the created record
+
+### Error recovery
+
+- If a table is not found, call `introspect()` to refresh and check table names.
+- If a column filter fails, verify column names via `introspect()`.
+- If connection fails, check driver, host, port, and credentials.
+
+### Security
+
+- Respect the **DB user privileges** shown in the database context section (if present).
+- If the DB user cannot INSERT, do not generate `create`/`create_many` actions.
+- If the DB user cannot DELETE, do not generate `delete` actions.
+- The `delete` action requires `confirm: true` as a safety flag.
+"""
+
 
 class SystemPromptGenerator:
     """Generates a complete LLM system prompt from module manifests.
@@ -229,6 +294,8 @@ class SystemPromptGenerator:
         include_schemas: bool = True,
         include_examples: bool = True,
         max_actions_per_module: int | None = None,
+        context_snippets: dict[str, str] | None = None,
+        intent_verifier_active: bool = False,
     ) -> None:
         self._manifests = manifests
         self._permission_profile = permission_profile
@@ -236,6 +303,23 @@ class SystemPromptGenerator:
         self._include_schemas = include_schemas
         self._include_examples = include_examples
         self._max_actions_per_module = max_actions_per_module
+        self._context_snippets = context_snippets or {}
+        self._intent_verifier_active = intent_verifier_active
+        self._profile_config = self._resolve_profile_config()
+
+    def _resolve_profile_config(self) -> PermissionProfileConfig | None:
+        """Resolve the active profile to its config (if it's a built-in)."""
+        try:
+            profile_enum = PermissionProfile(self._permission_profile)
+            return BUILTIN_PROFILES[profile_enum]
+        except (ValueError, KeyError):
+            return None
+
+    def _is_action_allowed(self, module_id: str, action_name: str) -> bool:
+        """Check if the active profile allows this action."""
+        if self._profile_config is None:
+            return True  # Unknown profile → show everything
+        return self._profile_config.is_allowed(module_id, action_name)
 
     def generate(self) -> str:
         """Generate the full system prompt."""
@@ -244,16 +328,40 @@ class SystemPromptGenerator:
             _IML_PROTOCOL_SECTION,
             self._build_capabilities(),
             self._build_permission_section(),
+        ]
+
+        # Dynamic context from modules (e.g. database schemas)
+        ctx = self._build_context_snippets()
+        if ctx:
+            sections.append(ctx)
+
+        sections.extend([
+            self._build_security_prompt_section(),
+            self._build_intent_verifier_section(),
             _PERCEPTION_SECTION,
             _MEMORY_SECTION,
             _GUIDELINES_SECTION,
-        ]
+        ])
+
+        # Add module-specific guidelines
+        has_db_gateway = any(m.module_id == "db_gateway" for m in self._manifests)
+        if has_db_gateway:
+            sections.append(_DB_GATEWAY_GUIDELINES)
 
         examples = self._build_examples()
         if examples:
             sections.append(examples)
 
         return "\n".join(sections)
+
+    def _build_context_snippets(self) -> str:
+        """Build dynamic context section from module snippets."""
+        if not self._context_snippets:
+            return ""
+        parts = []
+        for _module_id, snippet in self._context_snippets.items():
+            parts.append(snippet)
+        return "\n\n".join(parts) + "\n"
 
     def _build_identity(self) -> str:
         version_str = f" v{self._daemon_version}" if self._daemon_version else ""
@@ -278,32 +386,61 @@ class SystemPromptGenerator:
         parts = ["## Available Modules\n"]
 
         for manifest in self._manifests:
+            # Partition actions into allowed vs. denied by the active profile
+            allowed_actions: list[ActionSpec] = []
+            denied_actions: list[ActionSpec] = []
+            for action in manifest.actions:
+                if self._is_action_allowed(manifest.module_id, action.name):
+                    allowed_actions.append(action)
+                else:
+                    denied_actions.append(action)
+
             parts.append(
                 f"\n### {manifest.module_id} (v{manifest.version})\n"
                 f"{manifest.description}\n"
             )
 
-            actions = manifest.actions
+            actions = allowed_actions
             if self._max_actions_per_module is not None:
                 actions = actions[: self._max_actions_per_module]
 
             for action in actions:
-                parts.append(self._format_action(action))
+                parts.append(self._format_action(action, manifest.module_id))
 
             if (
                 self._max_actions_per_module is not None
-                and len(manifest.actions) > self._max_actions_per_module
+                and len(allowed_actions) > self._max_actions_per_module
             ):
-                remaining = len(manifest.actions) - self._max_actions_per_module
+                remaining = len(allowed_actions) - self._max_actions_per_module
                 parts.append(f"\n  ... and {remaining} more actions.\n")
+
+            # Explicitly list denied actions so the LLM does NOT try to use them
+            if denied_actions:
+                names = ", ".join(f"`{a.name}`" for a in denied_actions)
+                parts.append(
+                    f"\n  **Denied by current profile ({self._permission_profile}):** "
+                    f"{names} — do NOT use these actions.\n"
+                )
 
         return "\n".join(parts)
 
-    def _format_action(self, action: ActionSpec) -> str:
+    def _format_action(self, action: ActionSpec, module_id: str = "") -> str:
         lines = [f"\n- **{action.name}**: {action.description}"]
 
         if action.permission_required != "local_worker":
             lines.append(f"  - Permission: `{action.permission_required}`")
+
+        if action.permissions:
+            lines.append(f"  - Required OS permissions: {', '.join(f'`{p}`' for p in action.permissions)}")
+
+        if action.risk_level:
+            risk_str = action.risk_level.upper()
+            if action.irreversible:
+                risk_str += " (irreversible)"
+            lines.append(f"  - Risk level: **{risk_str}**")
+
+        if action.returns_description:
+            lines.append(f"  - Returns: {action.returns_description}")
 
         if self._include_schemas and action.params:
             lines.append("  - Parameters:")
@@ -325,13 +462,14 @@ class SystemPromptGenerator:
             ),
             "local_worker": (
                 "You can read/write files, run safe commands, call HTTP APIs, "
-                "and manage Office documents. Destructive actions (delete files, "
-                "kill processes) require explicit user approval."
+                "manage Office documents, and query/write databases. "
+                "Destructive actions (delete files, delete DB records, "
+                "kill processes) are **denied** — do NOT generate plans that use them."
             ),
             "power_user": (
                 "Full access to local operations plus browser automation, GUI "
-                "control, database writes, and IoT devices. Destructive actions "
-                "are allowed without approval."
+                "control, database writes/deletes, and IoT devices. Destructive "
+                "actions are allowed without approval."
             ),
             "unrestricted": (
                 "All actions are allowed without restrictions. Use with extreme caution."
@@ -340,12 +478,72 @@ class SystemPromptGenerator:
 
         desc = descriptions.get(profile, descriptions["local_worker"])
 
-        return (
+        parts = [
             f"## Permission Model\n\n"
             f"Current profile: **{profile}**\n\n"
             f"{desc}\n\n"
-            f"If an action is denied by the permission system, do NOT retry it. "
-            f"Inform the user that the action requires a higher permission level.\n"
+            f"**IMPORTANT**: Never generate an IML plan that uses a denied action. "
+            f"If the user asks for a denied operation, inform them that it requires "
+            f"a higher permission level.\n"
+        ]
+
+        # Build explicit denied actions list from all loaded manifests
+        if self._profile_config:
+            denied_list: list[str] = []
+            for manifest in self._manifests:
+                for action in manifest.actions:
+                    if not self._profile_config.is_allowed(
+                        manifest.module_id, action.name
+                    ):
+                        denied_list.append(f"`{manifest.module_id}.{action.name}`")
+            if denied_list:
+                parts.append(
+                    f"\n**Denied actions under {profile}**: "
+                    + ", ".join(denied_list)
+                    + "\n"
+                )
+
+        return "\n".join(parts)
+
+    def _build_security_prompt_section(self) -> str:
+        """Build the OS-level permission system explanation."""
+        return (
+            "## OS-Level Permission System\n\n"
+            "Every module action that accesses a sensitive resource (filesystem, "
+            "network, database, camera, processes) requires an **OS-level permission**. "
+            "This works like Android/iOS: permissions must be explicitly granted.\n\n"
+            "### How permissions work\n\n"
+            "- **LOW risk** (e.g. `filesystem.read`, `network.read`): Auto-granted on first use.\n"
+            "- **MEDIUM risk** (e.g. `filesystem.write`, `network.send`): Granted on first use, logged.\n"
+            "- **HIGH risk** (e.g. `filesystem.delete`, `os.process.kill`): Requires explicit approval.\n"
+            "- **CRITICAL risk** (e.g. `data.credentials`, `os.admin`): Requires explicit approval.\n\n"
+            "### Managing permissions via IML\n\n"
+            "Use the `security` module to query and manage permissions:\n\n"
+            "- `security.list_permissions` — List all granted permissions\n"
+            "- `security.check_permission` — Check if a permission is granted\n"
+            "- `security.request_permission` — Request a new permission\n"
+            "- `security.revoke_permission` — Revoke a permission\n"
+            "- `security.get_security_status` — Security overview\n\n"
+            "### If a permission is denied\n\n"
+            "When an action fails with `PermissionNotGrantedError`, use "
+            "`security.request_permission` to request the missing permission, "
+            "then retry the original action.\n"
+        )
+
+    def _build_intent_verifier_section(self) -> str:
+        """Tell the LLM about the active security analysis layer."""
+        if not self._intent_verifier_active:
+            return ""
+        return (
+            "## Intent Verification (Security Layer)\n\n"
+            "All plans you generate are analysed by a dedicated security LLM before "
+            "execution. Plans containing prompt injection, privilege escalation, data "
+            "exfiltration, or intent misalignment will be **rejected**.\n\n"
+            "### Implications for your plans\n\n"
+            "- Keep plan descriptions accurate and specific.\n"
+            "- Do not embed instructions in parameters.\n"
+            "- Avoid overly broad plans — split complex tasks into focused steps.\n"
+            "- Use `requires_approval: true` for sensitive operations.\n"
         )
 
     def _build_examples(self) -> str:

@@ -215,6 +215,15 @@ class ApprovalConfig(BaseModel):
         default="reject",
         description="What to do when approval times out: reject (fail) or skip.",
     )
+    clarification_options: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Structured options presented to the approver for intent clarification. "
+            "When non-empty, the approval UI shows these as selectable choices "
+            "rather than just approve/reject. The selected option is returned in "
+            "the approval response metadata."
+        ),
+    )
 
 
 class PlanMetadata(BaseModel):

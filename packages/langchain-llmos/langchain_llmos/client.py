@@ -149,6 +149,63 @@ class LLMOSClient:
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 
+    def submit_plan_group(
+        self,
+        plans: list[dict[str, Any]],
+        group_id: str | None = None,
+        max_concurrent: int = 10,
+        timeout: int = 300,
+    ) -> dict[str, Any]:
+        """Submit multiple plans for parallel execution."""
+        body: dict[str, Any] = {
+            "plans": plans,
+            "max_concurrent": max_concurrent,
+            "timeout": timeout,
+        }
+        if group_id:
+            body["group_id"] = group_id
+        resp = self._http.post(
+            "/plan-groups",
+            json=body,
+            timeout=float(timeout) + 10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Intent Verifier endpoints
+    # ------------------------------------------------------------------
+
+    def get_intent_verifier_status(self) -> dict[str, Any]:
+        """Get the current intent verifier status and configuration."""
+        resp = self._http.get("/intent-verifier/status")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def verify_plan_preview(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """Verify an IML plan without executing it (dry-run)."""
+        resp = self._http.post("/intent-verifier/verify", json={"plan": plan})
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def get_threat_categories(self) -> list[dict[str, Any]]:
+        """List all threat categories (built-in + custom)."""
+        resp = self._http.get("/intent-verifier/categories")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def register_threat_category(self, category: dict[str, Any]) -> dict[str, Any]:
+        """Register a custom threat category at runtime."""
+        resp = self._http.post("/intent-verifier/categories", json=category)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    def remove_threat_category(self, category_id: str) -> dict[str, Any]:
+        """Remove a custom threat category."""
+        resp = self._http.delete(f"/intent-verifier/categories/{category_id}")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
     def close(self) -> None:
         self._http.close()
 
@@ -275,6 +332,63 @@ class AsyncLLMOSClient:
     async def get_pending_approvals(self, plan_id: str) -> list[dict[str, Any]]:
         """List pending approval requests for a plan."""
         resp = await self._http.get(f"/plans/{plan_id}/pending-approvals")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def submit_plan_group(
+        self,
+        plans: list[dict[str, Any]],
+        group_id: str | None = None,
+        max_concurrent: int = 10,
+        timeout: int = 300,
+    ) -> dict[str, Any]:
+        """Submit multiple plans for parallel execution."""
+        body: dict[str, Any] = {
+            "plans": plans,
+            "max_concurrent": max_concurrent,
+            "timeout": timeout,
+        }
+        if group_id:
+            body["group_id"] = group_id
+        resp = await self._http.post(
+            "/plan-groups",
+            json=body,
+            timeout=float(timeout) + 10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Intent Verifier endpoints
+    # ------------------------------------------------------------------
+
+    async def get_intent_verifier_status(self) -> dict[str, Any]:
+        """Get the current intent verifier status and configuration."""
+        resp = await self._http.get("/intent-verifier/status")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def verify_plan_preview(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """Verify an IML plan without executing it (dry-run)."""
+        resp = await self._http.post("/intent-verifier/verify", json={"plan": plan})
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def get_threat_categories(self) -> list[dict[str, Any]]:
+        """List all threat categories (built-in + custom)."""
+        resp = await self._http.get("/intent-verifier/categories")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def register_threat_category(self, category: dict[str, Any]) -> dict[str, Any]:
+        """Register a custom threat category at runtime."""
+        resp = await self._http.post("/intent-verifier/categories", json=category)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def remove_threat_category(self, category_id: str) -> dict[str, Any]:
+        """Remove a custom threat category."""
+        resp = await self._http.delete(f"/intent-verifier/categories/{category_id}")
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
 

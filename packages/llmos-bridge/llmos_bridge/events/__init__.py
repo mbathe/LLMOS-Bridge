@@ -28,6 +28,7 @@ from llmos_bridge.events.bus import (
     TOPIC_FILESYSTEM,
     TOPIC_IOT,
     TOPIC_PERCEPTION,
+    TOPIC_PERMISSIONS,
     TOPIC_PLANS,
     TOPIC_SECURITY,
     EventBus,
@@ -52,4 +53,5 @@ __all__ = [
     "TOPIC_IOT",
     "TOPIC_DB",
     "TOPIC_FILESYSTEM",
+    "TOPIC_PERMISSIONS",
 ]

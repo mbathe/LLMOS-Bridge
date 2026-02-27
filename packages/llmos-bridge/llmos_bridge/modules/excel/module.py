@@ -24,6 +24,8 @@ except ImportError:
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.security.decorators import audit_trail, requires_permission
+from llmos_bridge.security.models import Permission
 from llmos_bridge.protocol.params.excel import (
     AddAutoFilterParams,
     AddCommentParams,
@@ -198,6 +200,7 @@ class ExcelModule(BaseModule):
     # Workbook lifecycle
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateWorkbookParams.model_validate(params)
 
@@ -259,6 +262,8 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_close)
 
+    @audit_trail("standard")
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_save_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SaveWorkbookParams.model_validate(params)
 
@@ -305,6 +310,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateSheetParams.model_validate(params)
 
@@ -317,6 +323,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_create)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteSheetParams.model_validate(params)
 
@@ -331,6 +338,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_rename_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RenameSheetParams.model_validate(params)
 
@@ -494,6 +502,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_write_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteCellParams.model_validate(params)
 
@@ -551,6 +560,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_write_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteRangeParams.model_validate(params)
 
@@ -683,6 +693,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_merge_cells(self, params: dict[str, Any]) -> dict[str, Any]:
         p = MergeCellsParams.model_validate(params)
 
@@ -696,6 +707,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_merge)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_unmerge_cells(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UnmergeCellsParams.model_validate(params)
 
@@ -709,6 +721,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_unmerge)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_freeze_panes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FreezePanesParams.model_validate(params)
 
@@ -724,6 +737,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_freeze)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_column_width(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetColumnWidthParams.model_validate(params)
 
@@ -766,6 +780,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_set_width)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_row_height(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetRowHeightParams.model_validate(params)
 
@@ -903,23 +918,24 @@ class ExcelModule(BaseModule):
         def _add() -> dict[str, Any]:
             from openpyxl.workbook.defined_name import DefinedName
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
 
-            attr_text = f"'{p.sheet}'!{p.range}"
+                attr_text = f"'{p.sheet}'!{p.range}"
 
-            if p.scope == "workbook":
-                dn = DefinedName(name=p.name, attr_text=attr_text)
-                wb.defined_names.add(dn)
-            else:
-                # Sheet-scoped: assign localSheetId
-                sheet_id = wb.sheetnames.index(p.sheet)
-                dn = DefinedName(name=p.name, attr_text=attr_text, localSheetId=sheet_id)
-                wb.defined_names.add(dn)
+                if p.scope == "workbook":
+                    dn = DefinedName(name=p.name, attr_text=attr_text)
+                    wb.defined_names.add(dn)
+                else:
+                    # Sheet-scoped: assign localSheetId
+                    sheet_id = wb.sheetnames.index(p.sheet)
+                    dn = DefinedName(name=p.name, attr_text=attr_text, localSheetId=sheet_id)
+                    wb.defined_names.add(dn)
 
-            self._save_wb(p.path, wb)
-            return {"added": True, "name": p.name, "range": attr_text, "scope": p.scope}
+                self._save_wb(p.path, wb)
+                return {"added": True, "name": p.name, "range": attr_text, "scope": p.scope}
 
         return await asyncio.to_thread(_add)
 
@@ -927,97 +943,100 @@ class ExcelModule(BaseModule):
     # Formatting
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_format_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatRangeParams.model_validate(params)
 
         def _format() -> dict[str, Any]:
             from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
-            min_row, max_row, min_col, max_col = self._parse_range(p.range, ws)
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
+                min_row, max_row, min_col, max_col = self._parse_range(p.range, ws)
 
-            # Build font kwargs.
-            font_kwargs: dict[str, Any] = {}
-            if p.bold is not None:
-                font_kwargs["bold"] = p.bold
-            if p.italic is not None:
-                font_kwargs["italic"] = p.italic
-            if p.underline is not None:
-                font_kwargs["underline"] = "single" if p.underline else None
-            if p.strikethrough is not None:
-                font_kwargs["strike"] = p.strikethrough
-            if p.font_name is not None:
-                font_kwargs["name"] = p.font_name
-            if p.font_size is not None:
-                font_kwargs["size"] = p.font_size
-            if p.font_color is not None:
-                font_kwargs["color"] = p.font_color.lstrip("#")
+                # Build font kwargs.
+                font_kwargs: dict[str, Any] = {}
+                if p.bold is not None:
+                    font_kwargs["bold"] = p.bold
+                if p.italic is not None:
+                    font_kwargs["italic"] = p.italic
+                if p.underline is not None:
+                    font_kwargs["underline"] = "single" if p.underline else None
+                if p.strikethrough is not None:
+                    font_kwargs["strike"] = p.strikethrough
+                if p.font_name is not None:
+                    font_kwargs["name"] = p.font_name
+                if p.font_size is not None:
+                    font_kwargs["size"] = p.font_size
+                if p.font_color is not None:
+                    font_kwargs["color"] = p.font_color.lstrip("#")
 
-            # Build fill.
-            fill = None
-            if p.fill_color is not None:
-                fill_type = p.fill_type or "solid"
-                if fill_type == "none":
-                    fill = PatternFill(fill_type=None)
-                else:
-                    fill = PatternFill(
-                        fill_type="solid",
-                        fgColor=p.fill_color.lstrip("#"),
+                # Build fill.
+                fill = None
+                if p.fill_color is not None:
+                    fill_type = p.fill_type or "solid"
+                    if fill_type == "none":
+                        fill = PatternFill(fill_type=None)
+                    else:
+                        fill = PatternFill(
+                            fill_type="solid",
+                            fgColor=p.fill_color.lstrip("#"),
+                        )
+
+                # Build border.
+                border = None
+                if p.border_style is not None and p.border_style != "none":
+                    border_color = (p.border_color or "000000").lstrip("#")
+                    side = Side(style=p.border_style, color=border_color)
+                    sides = p.border_sides or ["all"]
+
+                    if "all" in sides or "outline" in sides:
+                        border = Border(left=side, right=side, top=side, bottom=side)
+                    else:
+                        border = Border(
+                            left=side if "left" in sides else None,
+                            right=side if "right" in sides else None,
+                            top=side if "top" in sides else None,
+                            bottom=side if "bottom" in sides else None,
+                        )
+
+                # Build alignment.
+                alignment = None
+                if any(v is not None for v in [p.alignment_horizontal, p.alignment_vertical, p.wrap_text]):
+                    alignment = Alignment(
+                        horizontal=p.alignment_horizontal,
+                        vertical=p.alignment_vertical,
+                        wrap_text=p.wrap_text,
                     )
 
-            # Build border.
-            border = None
-            if p.border_style is not None and p.border_style != "none":
-                border_color = (p.border_color or "000000").lstrip("#")
-                side = Side(style=p.border_style, color=border_color)
-                sides = p.border_sides or ["all"]
+                cells_formatted = 0
+                for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+                    for cell in row:
+                        if font_kwargs:
+                            import copy as copy_mod
+                            existing = copy_mod.copy(cell.font)
+                            for k, v in font_kwargs.items():
+                                setattr(existing, k, v)
+                            cell.font = existing
+                        if fill is not None:
+                            cell.fill = fill
+                        if border is not None:
+                            cell.border = border
+                        if alignment is not None:
+                            cell.alignment = alignment
+                        if p.number_format is not None:
+                            cell.number_format = p.number_format
+                        cells_formatted += 1
 
-                if "all" in sides or "outline" in sides:
-                    border = Border(left=side, right=side, top=side, bottom=side)
-                else:
-                    border = Border(
-                        left=side if "left" in sides else None,
-                        right=side if "right" in sides else None,
-                        top=side if "top" in sides else None,
-                        bottom=side if "bottom" in sides else None,
-                    )
-
-            # Build alignment.
-            alignment = None
-            if any(v is not None for v in [p.alignment_horizontal, p.alignment_vertical, p.wrap_text]):
-                alignment = Alignment(
-                    horizontal=p.alignment_horizontal,
-                    vertical=p.alignment_vertical,
-                    wrap_text=p.wrap_text,
-                )
-
-            cells_formatted = 0
-            for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
-                for cell in row:
-                    if font_kwargs:
-                        import copy as copy_mod
-                        existing = copy_mod.copy(cell.font)
-                        for k, v in font_kwargs.items():
-                            setattr(existing, k, v)
-                        cell.font = existing
-                    if fill is not None:
-                        cell.fill = fill
-                    if border is not None:
-                        cell.border = border
-                    if alignment is not None:
-                        cell.alignment = alignment
-                    if p.number_format is not None:
-                        cell.number_format = p.number_format
-                    cells_formatted += 1
-
-            self._save_wb(p.path, wb)
-            return {"formatted": True, "cells_formatted": cells_formatted, "range": p.range}
+                self._save_wb(p.path, wb)
+                return {"formatted": True, "cells_formatted": cells_formatted, "range": p.range}
 
         return await asyncio.to_thread(_format)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_apply_conditional_format(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyConditionalFormatParams.model_validate(params)
 
@@ -1030,116 +1049,121 @@ class ExcelModule(BaseModule):
             )
             from openpyxl.styles import Font, PatternFill
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
 
-            rule: Any = None
+                rule: Any = None
 
-            if p.format_type == "color_scale":
-                if p.mid_color:
-                    rule = ColorScaleRule(
-                        start_type="min", start_color=p.min_color.lstrip("#"),
-                        mid_type="percentile", mid_value=50, mid_color=p.mid_color.lstrip("#"),
-                        end_type="max", end_color=p.max_color.lstrip("#"),
+                if p.format_type == "color_scale":
+                    if p.mid_color:
+                        rule = ColorScaleRule(
+                            start_type="min", start_color=p.min_color.lstrip("#"),
+                            mid_type="percentile", mid_value=50, mid_color=p.mid_color.lstrip("#"),
+                            end_type="max", end_color=p.max_color.lstrip("#"),
+                        )
+                    else:
+                        rule = ColorScaleRule(
+                            start_type="min", start_color=p.min_color.lstrip("#"),
+                            end_type="max", end_color=p.max_color.lstrip("#"),
+                        )
+
+                elif p.format_type == "data_bar":
+                    rule = DataBarRule(
+                        start_type="min", start_value=0,
+                        end_type="max", end_value=100,
+                        color=p.max_color.lstrip("#"),
                     )
-                else:
-                    rule = ColorScaleRule(
-                        start_type="min", start_color=p.min_color.lstrip("#"),
-                        end_type="max", end_color=p.max_color.lstrip("#"),
+
+                elif p.format_type == "icon_set":
+                    rule = IconSetRule(icon_style="3Arrows", type="percent", values=[0, 33, 67])
+
+                elif p.format_type == "cell_is":
+                    from openpyxl.formatting.rule import CellIsRule
+
+                    # Build the differential formatting object.
+                    dxf_font = Font(bold=p.bold, color=p.font_color.lstrip("#") if p.font_color else None) if (p.bold or p.font_color) else None
+                    dxf_fill = PatternFill(fill_type="solid", fgColor=p.fill_color.lstrip("#")) if p.fill_color else None
+
+                    values: list[Any] = [p.value] if p.value is not None else []
+                    if p.value2 is not None:
+                        values.append(p.value2)
+
+                    rule = CellIsRule(
+                        operator=p.operator or "greaterThan",
+                        formula=values,
+                        font=dxf_font,
+                        fill=dxf_fill,
                     )
 
-            elif p.format_type == "data_bar":
-                rule = DataBarRule(
-                    start_type="min", start_value=0,
-                    end_type="max", end_value=100,
-                    color=p.max_color.lstrip("#"),
-                )
+                elif p.format_type == "formula":
+                    dxf_font = Font(bold=p.bold, color=p.font_color.lstrip("#") if p.font_color else None) if (p.bold or p.font_color) else None
+                    dxf_fill = PatternFill(fill_type="solid", fgColor=p.fill_color.lstrip("#")) if p.fill_color else None
+                    rule = FormulaRule(
+                        formula=[p.formula or "TRUE"],
+                        font=dxf_font,
+                        fill=dxf_fill,
+                    )
 
-            elif p.format_type == "icon_set":
-                rule = IconSetRule(icon_style="3Arrows", type="percent", values=[0, 33, 67])
+                if rule is not None:
+                    ws.conditional_formatting.add(p.range, rule)
 
-            elif p.format_type == "cell_is":
-                from openpyxl.formatting.rule import CellIsRule
-
-                # Build the differential formatting object.
-                dxf_font = Font(bold=p.bold, color=p.font_color.lstrip("#") if p.font_color else None) if (p.bold or p.font_color) else None
-                dxf_fill = PatternFill(fill_type="solid", fgColor=p.fill_color.lstrip("#")) if p.fill_color else None
-
-                values: list[Any] = [p.value] if p.value is not None else []
-                if p.value2 is not None:
-                    values.append(p.value2)
-
-                rule = CellIsRule(
-                    operator=p.operator or "greaterThan",
-                    formula=values,
-                    font=dxf_font,
-                    fill=dxf_fill,
-                )
-
-            elif p.format_type == "formula":
-                dxf_font = Font(bold=p.bold, color=p.font_color.lstrip("#") if p.font_color else None) if (p.bold or p.font_color) else None
-                dxf_fill = PatternFill(fill_type="solid", fgColor=p.fill_color.lstrip("#")) if p.fill_color else None
-                rule = FormulaRule(
-                    formula=[p.formula or "TRUE"],
-                    font=dxf_font,
-                    fill=dxf_fill,
-                )
-
-            if rule is not None:
-                ws.conditional_formatting.add(p.range, rule)
-
-            self._save_wb(p.path, wb)
-            return {"applied": True, "format_type": p.format_type, "range": p.range}
+                self._save_wb(p.path, wb)
+                return {"applied": True, "format_type": p.format_type, "range": p.range}
 
         return await asyncio.to_thread(_apply_cf)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_data_validation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddDataValidationParams.model_validate(params)
 
         def _add_dv() -> dict[str, Any]:
             from openpyxl.worksheet.datavalidation import DataValidation
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
 
-            dv = DataValidation(
-                type=p.validation_type,
-                operator=p.operator,
-                formula1=p.formula1,
-                formula2=p.formula2,
-                allow_blank=p.allow_blank,
-                showDropDown=not p.show_dropdown,
-                showInputMessage=p.show_input_message,
-                showErrorMessage=p.show_error_alert,
-                promptTitle=p.input_title,
-                prompt=p.input_message,
-                errorTitle=p.error_title,
-                error=p.error_message,
-                errorStyle=p.error_style,
-            )
-            dv.sqref = p.range
-            ws.add_data_validation(dv)
+                dv = DataValidation(
+                    type=p.validation_type,
+                    operator=p.operator,
+                    formula1=p.formula1,
+                    formula2=p.formula2,
+                    allow_blank=p.allow_blank,
+                    showDropDown=not p.show_dropdown,
+                    showInputMessage=p.show_input_message,
+                    showErrorMessage=p.show_error_alert,
+                    promptTitle=p.input_title,
+                    prompt=p.input_message,
+                    errorTitle=p.error_title,
+                    error=p.error_message,
+                    errorStyle=p.error_style,
+                )
+                dv.sqref = p.range
+                ws.add_data_validation(dv)
 
-            self._save_wb(p.path, wb)
-            return {"added": True, "validation_type": p.validation_type, "range": p.range}
+                self._save_wb(p.path, wb)
+                return {"added": True, "validation_type": p.validation_type, "range": p.range}
 
         return await asyncio.to_thread(_add_dv)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_autofilter(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddAutoFilterParams.model_validate(params)
 
         def _add_af() -> dict[str, Any]:
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
-            ws.auto_filter.ref = p.range if p.range else ws.dimensions
-            self._save_wb(p.path, wb)
-            return {"added": True, "range": ws.auto_filter.ref, "sheet": p.sheet}
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
+                ws.auto_filter.ref = p.range if p.range else ws.dimensions
+                self._save_wb(p.path, wb)
+                return {"added": True, "range": ws.auto_filter.ref, "sheet": p.sheet}
 
         return await asyncio.to_thread(_add_af)
 
@@ -1147,6 +1171,7 @@ class ExcelModule(BaseModule):
     # Charts
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_chart(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateChartParams.model_validate(params)
 
@@ -1163,93 +1188,94 @@ class ExcelModule(BaseModule):
             from openpyxl.chart import Reference
             from openpyxl.utils import column_index_from_string
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
 
-            # Map chart_type string to class.
-            chart_map: dict[str, Any] = {
-                "bar": BarChart,
-                "col": BarChart,
-                "line": LineChart,
-                "pie": PieChart,
-                "doughnut": DoughnutChart,
-                "scatter": ScatterChart,
-                "area": AreaChart,
-                "radar": RadarChart,
-            }
+                # Map chart_type string to class.
+                chart_map: dict[str, Any] = {
+                    "bar": BarChart,
+                    "col": BarChart,
+                    "line": LineChart,
+                    "pie": PieChart,
+                    "doughnut": DoughnutChart,
+                    "scatter": ScatterChart,
+                    "area": AreaChart,
+                    "radar": RadarChart,
+                }
 
-            chart_cls = chart_map.get(p.chart_type, BarChart)
-            chart = chart_cls()
+                chart_cls = chart_map.get(p.chart_type, BarChart)
+                chart = chart_cls()
 
-            if p.chart_type == "col":
-                chart.type = "col"
-            elif p.chart_type == "bar":
-                chart.type = "bar"
+                if p.chart_type == "col":
+                    chart.type = "col"
+                elif p.chart_type == "bar":
+                    chart.type = "bar"
 
-            chart.style = p.style
-            if p.title:
-                chart.title = p.title
+                chart.style = p.style
+                if p.title:
+                    chart.title = p.title
 
-            # Axis titles where applicable.
-            if hasattr(chart, "x_axis") and p.x_axis_title:
-                chart.x_axis.title = p.x_axis_title
-            if hasattr(chart, "y_axis") and p.y_axis_title:
-                chart.y_axis.title = p.y_axis_title
+                # Axis titles where applicable.
+                if hasattr(chart, "x_axis") and p.x_axis_title:
+                    chart.x_axis.title = p.x_axis_title
+                if hasattr(chart, "y_axis") and p.y_axis_title:
+                    chart.y_axis.title = p.y_axis_title
 
-            if hasattr(chart, "grouping"):
-                try:
-                    chart.grouping = p.grouping
-                except Exception:
-                    # Some chart types (e.g. LineChart) don't support "clustered".
-                    pass
-
-            chart.legend = None if not p.has_legend else chart.legend
-
-            # Parse data range into a Reference.
-            min_row, max_row, min_col, max_col = self._parse_range(p.data_range, ws)
-            data_ref = Reference(
-                ws,
-                min_row=min_row,
-                max_row=max_row,
-                min_col=min_col,
-                max_col=max_col,
-            )
-
-            if isinstance(chart, ScatterChart):
-                from openpyxl.chart import Series
-
-                # For scatter: x = first col, y = remaining cols.
-                x_ref = Reference(ws, min_row=min_row, max_row=max_row, min_col=min_col)
-                for col_idx in range(min_col + 1, max_col + 1):
-                    y_ref = Reference(ws, min_row=min_row, max_row=max_row, min_col=col_idx)
-                    series = Series(y_ref, x_ref)
-                    chart.series.append(series)
-            else:
-                titles_from = 1 if p.series_labels else None
-                chart.add_data(data_ref, titles_from_data=p.series_labels)
-                if p.series_labels and (max_row > min_row or max_col > min_col):
+                if hasattr(chart, "grouping"):
                     try:
-                        cats_ref = Reference(ws, min_row=min_row + 1, max_row=max_row, min_col=min_col)
-                        chart.set_categories(cats_ref)
+                        chart.grouping = p.grouping
                     except Exception:
+                        # Some chart types (e.g. LineChart) don't support "clustered".
                         pass
 
-            # Set dimensions.
-            from openpyxl.utils.units import cm_to_EMU
+                chart.legend = None if not p.has_legend else chart.legend
 
-            chart.width = p.width
-            chart.height = p.height
+                # Parse data range into a Reference.
+                min_row, max_row, min_col, max_col = self._parse_range(p.data_range, ws)
+                data_ref = Reference(
+                    ws,
+                    min_row=min_row,
+                    max_row=max_row,
+                    min_col=min_col,
+                    max_col=max_col,
+                )
 
-            ws.add_chart(chart, p.position)
-            self._save_wb(p.path, wb)
-            return {
-                "created": True,
-                "chart_type": p.chart_type,
-                "position": p.position,
-                "data_range": p.data_range,
-            }
+                if isinstance(chart, ScatterChart):
+                    from openpyxl.chart import Series
+
+                    # For scatter: x = first col, y = remaining cols.
+                    x_ref = Reference(ws, min_row=min_row, max_row=max_row, min_col=min_col)
+                    for col_idx in range(min_col + 1, max_col + 1):
+                        y_ref = Reference(ws, min_row=min_row, max_row=max_row, min_col=col_idx)
+                        series = Series(y_ref, x_ref)
+                        chart.series.append(series)
+                else:
+                    titles_from = 1 if p.series_labels else None
+                    chart.add_data(data_ref, titles_from_data=p.series_labels)
+                    if p.series_labels and (max_row > min_row or max_col > min_col):
+                        try:
+                            cats_ref = Reference(ws, min_row=min_row + 1, max_row=max_row, min_col=min_col)
+                            chart.set_categories(cats_ref)
+                        except Exception:
+                            pass
+
+                # Set dimensions.
+                from openpyxl.utils.units import cm_to_EMU
+
+                chart.width = p.width
+                chart.height = p.height
+
+                ws.add_chart(chart, p.position)
+                self._save_wb(p.path, wb)
+                return {
+                    "created": True,
+                    "chart_type": p.chart_type,
+                    "position": p.position,
+                    "data_range": p.data_range,
+                }
 
         return await asyncio.to_thread(_create_chart)
 
@@ -1257,31 +1283,33 @@ class ExcelModule(BaseModule):
     # Images
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertImageParams.model_validate(params)
 
         def _insert_img() -> dict[str, Any]:
             from openpyxl.drawing.image import Image
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
 
-            img = Image(p.image_path)
-            if p.width is not None:
-                img.width = p.width
-            if p.height is not None:
-                img.height = p.height
+                img = Image(p.image_path)
+                if p.width is not None:
+                    img.width = p.width
+                if p.height is not None:
+                    img.height = p.height
 
-            ws.add_image(img, p.cell)
-            self._save_wb(p.path, wb)
-            return {
-                "inserted": True,
-                "image_path": p.image_path,
-                "cell": p.cell,
-                "sheet": p.sheet,
-            }
+                ws.add_image(img, p.cell)
+                self._save_wb(p.path, wb)
+                return {
+                    "inserted": True,
+                    "image_path": p.image_path,
+                    "cell": p.cell,
+                    "sheet": p.sheet,
+                }
 
         return await asyncio.to_thread(_insert_img)
 
@@ -1295,16 +1323,17 @@ class ExcelModule(BaseModule):
         def _add_comment() -> dict[str, Any]:
             from openpyxl.comments import Comment
 
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
-            comment = Comment(p.text, p.author)
-            comment.width = p.width
-            comment.height = p.height
-            ws[p.cell].comment = comment
-            self._save_wb(p.path, wb)
-            return {"added": True, "cell": p.cell, "author": p.author}
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
+                comment = Comment(p.text, p.author)
+                comment.width = p.width
+                comment.height = p.height
+                ws[p.cell].comment = comment
+                self._save_wb(p.path, wb)
+                return {"added": True, "cell": p.cell, "author": p.author}
 
         return await asyncio.to_thread(_add_comment)
 
@@ -1312,13 +1341,14 @@ class ExcelModule(BaseModule):
         p = DeleteCommentParams.model_validate(params)
 
         def _del_comment() -> dict[str, Any]:
-            wb = self._get_wb(p.path, data_only=False)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
-            ws[p.cell].comment = None
-            self._save_wb(p.path, wb)
-            return {"deleted": True, "cell": p.cell}
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=False)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
+                ws[p.cell].comment = None
+                self._save_wb(p.path, wb)
+                return {"deleted": True, "cell": p.cell}
 
         return await asyncio.to_thread(_del_comment)
 
@@ -1330,29 +1360,30 @@ class ExcelModule(BaseModule):
         p = ExportToCsvParams.model_validate(params)
 
         def _export_csv() -> dict[str, Any]:
-            wb = self._get_wb(p.path, data_only=True)
-            if p.sheet not in wb.sheetnames:
-                raise KeyError(f"Sheet '{p.sheet}' not found.")
-            ws = wb[p.sheet]
+            with self._get_path_lock(p.path):
+                wb = self._get_wb(p.path, data_only=True)
+                if p.sheet not in wb.sheetnames:
+                    raise KeyError(f"Sheet '{p.sheet}' not found.")
+                ws = wb[p.sheet]
 
-            output_path = Path(p.output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path = Path(p.output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            rows_written = 0
-            with output_path.open("w", newline="", encoding=p.encoding) as f:
-                writer = csv.writer(f, delimiter=p.delimiter)
-                for r_idx, row in enumerate(ws.iter_rows(values_only=True)):
-                    if r_idx == 0 and not p.include_header:
-                        continue
-                    writer.writerow(row)
-                    rows_written += 1
+                rows_written = 0
+                with output_path.open("w", newline="", encoding=p.encoding) as f:
+                    writer = csv.writer(f, delimiter=p.delimiter)
+                    for r_idx, row in enumerate(ws.iter_rows(values_only=True)):
+                        if r_idx == 0 and not p.include_header:
+                            continue
+                        writer.writerow(row)
+                        rows_written += 1
 
-            return {
-                "exported": True,
-                "output_path": str(output_path),
-                "rows_written": rows_written,
-                "sheet": p.sheet,
-            }
+                return {
+                    "exported": True,
+                    "output_path": str(output_path),
+                    "rows_written": rows_written,
+                    "sheet": p.sheet,
+                }
 
         return await asyncio.to_thread(_export_csv)
 
@@ -1360,38 +1391,39 @@ class ExcelModule(BaseModule):
         p = ExportToPdfParams.model_validate(params)
 
         def _export_pdf() -> dict[str, Any]:
-            src_path = str(Path(p.path).resolve())
-            output_dir = str(Path(p.output_path).parent.resolve())
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            with self._get_path_lock(p.path):
+                src_path = str(Path(p.path).resolve())
+                output_dir = str(Path(p.output_path).parent.resolve())
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-            if not p.use_libreoffice:
-                raise RuntimeError("Only LibreOffice-based PDF export is supported. Set use_libreoffice=True.")
+                if not p.use_libreoffice:
+                    raise RuntimeError("Only LibreOffice-based PDF export is supported. Set use_libreoffice=True.")
 
-            cmd = [
-                "libreoffice",
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", output_dir,
-                src_path,
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"LibreOffice conversion failed (exit {result.returncode}): {result.stderr.strip()}"
-                )
+                cmd = [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to", "pdf",
+                    "--outdir", output_dir,
+                    src_path,
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"LibreOffice conversion failed (exit {result.returncode}): {result.stderr.strip()}"
+                    )
 
-            # LibreOffice creates a file with same name but .pdf extension.
-            generated_pdf = Path(output_dir) / (Path(src_path).stem + ".pdf")
-            # Rename to requested output path if different.
-            desired = Path(p.output_path).resolve()
-            if generated_pdf.resolve() != desired:
-                generated_pdf.rename(desired)
+                # LibreOffice creates a file with same name but .pdf extension.
+                generated_pdf = Path(output_dir) / (Path(src_path).stem + ".pdf")
+                # Rename to requested output path if different.
+                desired = Path(p.output_path).resolve()
+                if generated_pdf.resolve() != desired:
+                    generated_pdf.rename(desired)
 
-            return {
-                "exported": True,
-                "output_path": str(desired),
-                "source": src_path,
-            }
+                return {
+                    "exported": True,
+                    "output_path": str(desired),
+                    "source": src_path,
+                }
 
         return await asyncio.to_thread(_export_pdf)
 

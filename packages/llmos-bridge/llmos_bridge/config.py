@@ -38,6 +38,21 @@ class ServerConfig(BaseModel):
             "Increase for plans with long-running actions."
         ),
     )
+    rate_limit_per_minute: Annotated[int, Field(ge=1, le=1000)] = Field(
+        default=60,
+        description="Max POST /plans requests per minute per client IP.",
+    )
+    max_result_size: Annotated[int, Field(ge=1024, le=10_485_760)] = Field(
+        default=524_288,
+        description=(
+            "Max action result size in bytes before truncation (default 512KB). "
+            "Prevents massive outputs from overflowing LLM context."
+        ),
+    )
+    plan_retention_hours: Annotated[int, Field(ge=1, le=8760)] = Field(
+        default=168,
+        description="Hours to keep completed/failed plans before auto-purge (default 7 days).",
+    )
 
 
 class SecurityConfig(BaseModel):
@@ -79,12 +94,24 @@ class SecurityConfig(BaseModel):
 
 class ModuleConfig(BaseModel):
     enabled: list[str] = Field(
-        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "triggers"],
+        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers"],
         description="List of module IDs to load at startup.",
     )
     disabled: list[str] = Field(
         default_factory=list,
         description="Explicitly disabled modules (overrides 'enabled').",
+    )
+    fallbacks: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "excel": ["filesystem"],
+            "word": ["filesystem"],
+            "powerpoint": ["filesystem"],
+        },
+        description=(
+            "Fallback chains per module. When a module fails (unavailable or "
+            "action error), the executor tries the next module in the chain. "
+            "Example: excel → filesystem means 'if Excel is down, try filesystem'."
+        ),
     )
 
 
@@ -153,6 +180,164 @@ class TriggerConfig(BaseModel):
     )
 
 
+class ResourceConfig(BaseModel):
+    """Per-module concurrency limits for parallel execution."""
+
+    default_concurrency: Annotated[int, Field(ge=1, le=100)] = 10
+    module_limits: dict[str, int] = Field(
+        default_factory=lambda: {
+            "excel": 3,
+            "word": 3,
+            "powerpoint": 3,
+            "api_http": 10,
+            "filesystem": 20,
+            "os_exec": 5,
+        },
+        description="Maximum concurrent actions per module.",
+    )
+
+
+class DatabaseGatewayConfig(BaseModel):
+    """Configuration for the Database Gateway (db_gateway) module."""
+
+    max_connections: Annotated[int, Field(ge=1, le=50)] = 10
+    default_row_limit: Annotated[int, Field(ge=1, le=100_000)] = 1000
+    schema_cache_ttl: Annotated[int, Field(ge=0, le=3600)] = 300
+    auto_introspect: bool = Field(
+        default=True,
+        description="Automatically introspect schema on connect.",
+    )
+
+
+class CustomThreatCategoryConfig(BaseModel):
+    """Configuration for a user-defined threat category.
+
+    Custom categories are injected into the IntentVerifier's system prompt
+    alongside the built-in categories.  Each category provides a detection
+    guidance section that tells the security LLM what to look for.
+    """
+
+    id: str = Field(description="Unique identifier for this category (e.g. 'data_retention').")
+    name: str = Field(description="Human-readable name (e.g. 'Data Retention Violations').")
+    description: str = Field(description="Detection guidance text injected into the system prompt.")
+    threat_type: str = Field(
+        default="custom",
+        description="Threat type for result classification. Default 'custom'.",
+    )
+
+
+class IntentVerifierConfig(BaseModel):
+    """Configuration for the LLM-based intent verification layer (Couche 1).
+
+    When enabled, every incoming IML plan is analysed by a dedicated LLM
+    before reaching the PermissionGuard.  The security LLM detects prompt
+    injection, privilege escalation, data exfiltration, and intent
+    misalignment.
+
+    Enabled by default — uses NullLLMClient (zero overhead) until a real
+    provider is configured.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable LLM-based intent verification on incoming plans.",
+    )
+    strict: bool = Field(
+        default=False,
+        description=(
+            "When True, verification failure blocks plan execution. "
+            "When False, failures are logged but execution continues."
+        ),
+    )
+    provider: Literal["null", "openai", "anthropic", "ollama", "custom"] = Field(
+        default="null",
+        description="LLM provider for the security analysis model.",
+    )
+    model: str = Field(
+        default="",
+        description="Model ID (e.g. 'gpt-4o-mini', 'claude-sonnet-4-20250514'). Provider-specific.",
+    )
+    api_key: str | None = Field(
+        default=None,
+        description="API key for the LLM provider. Also settable via LLMOS_INTENT_VERIFIER__API_KEY.",
+    )
+    api_base_url: str | None = Field(
+        default=None,
+        description="Custom API base URL (for proxies, Azure, or self-hosted models).",
+    )
+    timeout_seconds: Annotated[float, Field(ge=5.0, le=120.0)] = Field(
+        default=30.0,
+        description="Maximum seconds to wait for the LLM response.",
+    )
+    cache_size: Annotated[int, Field(ge=0, le=10000)] = Field(
+        default=256,
+        description="Number of plan verification results to cache (LRU). 0 = no caching.",
+    )
+    cache_ttl_seconds: Annotated[float, Field(ge=0, le=3600)] = Field(
+        default=300.0,
+        description="TTL for cached verification results in seconds. 0 = no TTL.",
+    )
+    max_plan_actions_for_verification: Annotated[int, Field(ge=1, le=500)] = Field(
+        default=50,
+        description="Plans with more actions than this skip LLM verification (too large).",
+    )
+    skip_modules: list[str] = Field(
+        default_factory=list,
+        description="Module IDs to skip during verification (e.g. 'recording').",
+    )
+    max_retries: Annotated[int, Field(ge=0, le=5)] = Field(
+        default=2,
+        description="Maximum retry attempts on transient LLM provider errors.",
+    )
+    custom_threat_categories: list[CustomThreatCategoryConfig] = Field(
+        default_factory=list,
+        description="Additional threat categories injected into the security system prompt.",
+    )
+    disabled_threat_categories: list[str] = Field(
+        default_factory=list,
+        description="IDs of built-in threat categories to disable (e.g. ['resource_abuse']).",
+    )
+    custom_system_prompt_suffix: str = Field(
+        default="",
+        description="Extra text appended to the security analysis system prompt.",
+    )
+    custom_provider_class: str | None = Field(
+        default=None,
+        description=(
+            "Fully-qualified class path for a custom LLMClient "
+            "(e.g. 'myapp.security.MyClient'). Only used when provider='custom'."
+        ),
+    )
+    custom_verifier_class: str | None = Field(
+        default=None,
+        description=(
+            "Fully-qualified class path for a custom IntentVerifier subclass. "
+            "When set, replaces the default IntentVerifier entirely."
+        ),
+    )
+
+
+class SecurityAdvancedConfig(BaseModel):
+    """Configuration for the OS-level permission system."""
+
+    permissions_db_path: Path = Field(
+        default=Path("~/.llmos/permissions.db"),
+        description="SQLite database path for permission grant persistence.",
+    )
+    auto_grant_low_risk: bool = Field(
+        default=True,
+        description="Auto-grant LOW-risk permissions on first check (no user prompt).",
+    )
+    enable_decorators: bool = Field(
+        default=True,
+        description="Enable runtime enforcement of security decorators.",
+    )
+    enable_rate_limiting: bool = Field(
+        default=True,
+        description="Enable per-action rate limiting.",
+    )
+
+
 class RecordingConfig(BaseModel):
     """Configuration for the Shadow Recorder (LLMOS-native workflow recording)."""
 
@@ -163,6 +348,73 @@ class RecordingConfig(BaseModel):
     db_path: Path = Field(
         default=Path("~/.llmos/recordings.db"),
         description="SQLite database path for recording persistence.",
+    )
+
+
+class ScannerPatternConfig(BaseModel):
+    """Configuration for a user-defined heuristic scanner pattern."""
+
+    id: str = Field(description="Unique pattern ID.")
+    category: str = Field(description="Threat category (e.g. 'prompt_injection').")
+    pattern: str = Field(description="Regex pattern string.")
+    severity: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.5,
+        description="Risk score contribution (0.0-1.0).",
+    )
+    description: str = Field(default="", description="Human-readable description.")
+
+
+class ScannerPipelineConfig(BaseModel):
+    """Configuration for the pre-LLM security scanner pipeline.
+
+    The scanner pipeline runs ultra-fast heuristic and (optionally)
+    ML-based scanners BEFORE the LLM-based IntentVerifier.  This
+    catches obvious attacks in <1ms without incurring API costs.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the scanner pipeline. When disabled, no scanners run.",
+    )
+    fail_fast: bool = Field(
+        default=True,
+        description="Short-circuit on first REJECT verdict (fastest path).",
+    )
+    reject_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.7,
+        description="Aggregate risk score above which the plan is rejected.",
+    )
+    warn_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.3,
+        description="Risk score above which a warning is emitted.",
+    )
+    heuristic_enabled: bool = Field(
+        default=True,
+        description="Enable the built-in HeuristicScanner (Layer 1, zero deps).",
+    )
+    heuristic_disabled_patterns: list[str] = Field(
+        default_factory=list,
+        description="Pattern IDs to disable in the HeuristicScanner.",
+    )
+    heuristic_extra_patterns: list[ScannerPatternConfig] = Field(
+        default_factory=list,
+        description="Additional regex patterns for the HeuristicScanner.",
+    )
+    llm_guard_enabled: bool = Field(
+        default=False,
+        description="Enable LLM Guard adapter (requires: pip install llm-guard).",
+    )
+    llm_guard_scanners: list[str] = Field(
+        default_factory=lambda: ["PromptInjection"],
+        description="LLM Guard scanner names to enable.",
+    )
+    prompt_guard_enabled: bool = Field(
+        default=False,
+        description="Enable Meta Prompt Guard adapter (requires: pip install transformers torch).",
+    )
+    prompt_guard_model: str = Field(
+        default="meta-llama/Prompt-Guard-86M",
+        description="HuggingFace model ID for Prompt Guard.",
     )
 
 
@@ -194,6 +446,11 @@ class Settings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     triggers: TriggerConfig = Field(default_factory=TriggerConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
+    resources: ResourceConfig = Field(default_factory=ResourceConfig)
+    db_gateway: DatabaseGatewayConfig = Field(default_factory=DatabaseGatewayConfig)
+    security_advanced: SecurityAdvancedConfig = Field(default_factory=SecurityAdvancedConfig)
+    intent_verifier: IntentVerifierConfig = Field(default_factory=IntentVerifierConfig)
+    scanner_pipeline: ScannerPipelineConfig = Field(default_factory=ScannerPipelineConfig)
     node: NodeConfig = Field(default_factory=NodeConfig)
 
     @field_validator("memory", mode="before")

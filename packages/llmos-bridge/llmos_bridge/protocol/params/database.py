@@ -93,6 +93,19 @@ class GetTableSchemaParams(BaseModel):
     connection_id: str = "default"
 
 
+class BeginTransactionParams(BaseModel):
+    connection_id: str = "default"
+    isolation_level: Literal["deferred", "immediate", "exclusive", "read_committed", "serializable"] = "deferred"
+
+
+class CommitTransactionParams(BaseModel):
+    connection_id: str = "default"
+
+
+class RollbackTransactionParams(BaseModel):
+    connection_id: str = "default"
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -108,4 +121,7 @@ PARAMS_MAP: dict[str, type[BaseModel]] = {
     "create_table": CreateTableParams,
     "list_tables": ListTablesParams,
     "get_table_schema": GetTableSchemaParams,
+    "begin_transaction": BeginTransactionParams,
+    "commit_transaction": CommitTransactionParams,
+    "rollback_transaction": RollbackTransactionParams,
 }

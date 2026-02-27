@@ -43,6 +43,11 @@ class ActionSpec:
     permission_required: str = "local_worker"
     platforms: list[str] = field(default_factory=lambda: ["all"])
     tags: list[str] = field(default_factory=list)
+    # Security decorator metadata (auto-populated by _collect_security_metadata)
+    permissions: list[str] = field(default_factory=list)
+    risk_level: str = ""
+    irreversible: bool = False
+    data_classification: str = ""
 
     def to_json_schema(self) -> dict[str, Any]:
         """Generate a JSONSchema dict for the params of this action."""
@@ -157,6 +162,10 @@ class ModuleManifest:
                     "platforms": a.platforms,
                     "examples": a.examples,
                     "tags": a.tags,
+                    "permissions": a.permissions,
+                    "risk_level": a.risk_level,
+                    "irreversible": a.irreversible,
+                    "data_classification": a.data_classification,
                 }
                 for a in self.actions
             ],

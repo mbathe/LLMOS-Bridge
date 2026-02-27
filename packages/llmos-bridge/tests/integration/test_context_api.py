@@ -29,6 +29,7 @@ def client(tmp_path: Path) -> TestClient:
         },
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem", "os_exec"]},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -44,6 +45,7 @@ def client_single_module(tmp_path: Path) -> TestClient:
         },
         logging={"level": "warning", "format": "console", "audit_file": None},
         modules={"enabled": ["filesystem"]},
+        security_advanced={"enable_decorators": False},
     )
     app = create_app(settings=settings)
     with TestClient(app, raise_server_exceptions=True) as c:
@@ -146,8 +148,11 @@ class TestContextEndpointParams:
         assert "Examples" not in prompt
 
     def test_max_actions_per_module(self, client: TestClient) -> None:
+        # Under local_worker, filesystem has 2 allowed actions (read_file,
+        # write_file) and 1 denied (delete_file).  With max=1 we see 1
+        # allowed action + "... and 1 more actions".
         data = client.get(
-            "/context", params={"max_actions_per_module": 2}
+            "/context", params={"max_actions_per_module": 1}
         ).json()
         prompt = data["system_prompt"]
         assert "more actions" in prompt
@@ -175,6 +180,7 @@ class TestContextEdgeCases:
             },
             logging={"level": "warning", "format": "console", "audit_file": None},
             modules={"enabled": []},
+            security_advanced={"enable_decorators": False},
         )
         app = create_app(settings=settings)
         with TestClient(app, raise_server_exceptions=True) as c:

@@ -382,6 +382,7 @@ class TriggerDaemon:
         plan.setdefault("protocol_version", "2.0")
         plan.setdefault("execution_mode", "reactive")
         plan.setdefault("metadata", {})
+        plan["metadata"]["execution_source"] = "trigger_daemon"
         plan["metadata"]["trigger_id"] = trigger.trigger_id
         plan["metadata"]["trigger_name"] = trigger.name
         plan["metadata"]["event_type"] = fire_event.event_type

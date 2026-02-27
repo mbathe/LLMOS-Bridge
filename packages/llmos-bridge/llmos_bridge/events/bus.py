@@ -58,6 +58,7 @@ TOPIC_PERCEPTION = "llmos.perception"
 TOPIC_IOT = "llmos.iot"
 TOPIC_DB = "llmos.db.changes"
 TOPIC_FILESYSTEM = "llmos.filesystem"
+TOPIC_PERMISSIONS = "llmos.permissions"
 
 
 # ---------------------------------------------------------------------------

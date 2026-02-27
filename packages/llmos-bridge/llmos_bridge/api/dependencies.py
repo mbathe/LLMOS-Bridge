@@ -54,6 +54,11 @@ def get_recorder(request: Request) -> "WorkflowRecorder | None":
     return getattr(request.app.state, "workflow_recorder", None)  # type: ignore[return-value]
 
 
+def get_security_manager(request: Request) -> Any:
+    """Return SecurityManager if configured, else None."""
+    return getattr(request.app.state, "security_manager", None)
+
+
 async def verify_api_token(
     request: Request,
     x_llmos_token: Annotated[str | None, Header(alias=HEADER_API_TOKEN)] = None,
@@ -85,3 +90,20 @@ ApprovalGateDep = Annotated[ApprovalGate, Depends(get_approval_gate)]
 # Nullable — returns None when recording subsystem is disabled (does not raise 503).
 # Note: Use Any instead of forward-ref string to avoid FastAPI treating it as a query param.
 RecorderDep = Annotated[Any, Depends(get_recorder)]
+SecurityManagerDep = Annotated[Any, Depends(get_security_manager)]
+
+
+def get_intent_verifier(request: Request) -> Any:
+    """Return IntentVerifier if configured, else None."""
+    return getattr(request.app.state, "intent_verifier", None)
+
+
+IntentVerifierDep = Annotated[Any, Depends(get_intent_verifier)]
+
+
+def get_scanner_pipeline(request: Request) -> Any:
+    """Return SecurityPipeline if configured, else None."""
+    return getattr(request.app.state, "scanner_pipeline", None)
+
+
+ScannerPipelineDep = Annotated[Any, Depends(get_scanner_pipeline)]

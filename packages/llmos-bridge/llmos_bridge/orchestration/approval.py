@@ -53,10 +53,11 @@ class ApprovalRequest:
     risk_level: str = "medium"
     description: str = ""
     requires_approval_reason: str = "config_rule"
+    clarification_options: list[str] = field(default_factory=list)
     requested_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "plan_id": self.plan_id,
             "action_id": self.action_id,
             "module": self.module,
@@ -67,6 +68,9 @@ class ApprovalRequest:
             "requires_approval_reason": self.requires_approval_reason,
             "requested_at": self.requested_at,
         }
+        if self.clarification_options:
+            d["clarification_options"] = self.clarification_options
+        return d
 
 
 @dataclass

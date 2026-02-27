@@ -2,11 +2,13 @@
 
 - Request ID injection (X-Request-ID header)
 - Structured access logging
+- Rate limiting (sliding window per IP)
 - Global exception handler → clean ErrorResponse
 """
 
 from __future__ import annotations
 
+import collections
 import time
 import uuid
 from typing import Any
@@ -60,6 +62,59 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             request_id=getattr(request.state, "request_id", None),
         )
         return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Sliding-window rate limiter for POST /plans.
+
+    Tracks per-client-IP timestamps in memory. Requests that exceed
+    ``max_per_minute`` receive HTTP 429 with a Retry-After header.
+    """
+
+    def __init__(self, app: Any, max_per_minute: int = 60) -> None:
+        super().__init__(app)
+        self._max = max_per_minute
+        self._window = 60.0  # seconds
+        # IP → deque of timestamps
+        self._hits: dict[str, collections.deque] = {}
+
+    def _client_ip(self, request: Request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    def _is_rate_limited(self, client_ip: str) -> bool:
+        now = time.time()
+        if client_ip not in self._hits:
+            self._hits[client_ip] = collections.deque()
+
+        dq = self._hits[client_ip]
+        # Purge old entries outside the window.
+        cutoff = now - self._window
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+        if len(dq) >= self._max:
+            return True
+
+        dq.append(now)
+        return False
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        # Only rate-limit POST /plans (the plan submission endpoint).
+        if request.method == "POST" and request.url.path.rstrip("/") == "/plans":
+            client_ip = self._client_ip(request)
+            if self._is_rate_limited(client_ip):
+                log.warning("rate_limited", client_ip=client_ip, path="/plans")
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": "Rate limit exceeded", "code": "rate_limited"},
+                    headers={"Retry-After": "60"},
+                )
+        return await call_next(request)
 
 
 def build_error_handler() -> Any:

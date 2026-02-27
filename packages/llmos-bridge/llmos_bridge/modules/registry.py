@@ -122,6 +122,19 @@ class ModuleRegistry:
             log.error("module_load_failed", module_id=module_id, reason=reason)
             raise ModuleLoadError(module_id=module_id, reason=reason) from exc
 
+    def register_instance(self, instance: "BaseModule") -> None:
+        """Register a pre-constructed module instance directly.
+
+        Useful for modules that need dependency injection before registration
+        (e.g. SecurityModule, RecordingModule).
+        """
+        module_id = instance.MODULE_ID
+        if not module_id:
+            raise ValueError(f"Module instance {type(instance).__name__} has no MODULE_ID.")
+        self._classes[module_id] = type(instance)
+        self._instances[module_id] = instance
+        log.debug("module_instance_registered", module_id=module_id, version=instance.VERSION)
+
     def is_available(self, module_id: str) -> bool:
         """Return True if the module is registered and can be instantiated."""
         if module_id in self._failed or module_id in self._platform_excluded:

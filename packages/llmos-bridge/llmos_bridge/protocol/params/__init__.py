@@ -12,6 +12,7 @@ The SchemaRegistry uses these maps to:
 from llmos_bridge.protocol.params.api_http import PARAMS_MAP as API_HTTP_PARAMS
 from llmos_bridge.protocol.params.browser import PARAMS_MAP as BROWSER_PARAMS
 from llmos_bridge.protocol.params.database import PARAMS_MAP as DATABASE_PARAMS
+from llmos_bridge.protocol.params.database_gateway import PARAMS_MAP as DB_GATEWAY_PARAMS
 from llmos_bridge.protocol.params.excel import PARAMS_MAP as EXCEL_PARAMS
 from llmos_bridge.protocol.params.filesystem import PARAMS_MAP as FILESYSTEM_PARAMS
 from llmos_bridge.protocol.params.gui import PARAMS_MAP as GUI_PARAMS
@@ -20,6 +21,7 @@ from llmos_bridge.protocol.params.os_exec import PARAMS_MAP as OS_EXEC_PARAMS
 from llmos_bridge.protocol.params.perception_vision import PARAMS_MAP as VISION_PARAMS
 from llmos_bridge.protocol.params.powerpoint import PARAMS_MAP as POWERPOINT_PARAMS
 from llmos_bridge.protocol.params.recording import PARAMS_MAP as RECORDING_PARAMS
+from llmos_bridge.protocol.params.security import PARAMS_MAP as SECURITY_PARAMS
 from llmos_bridge.protocol.params.word import PARAMS_MAP as WORD_PARAMS
 
 ALL_PARAMS: dict[str, dict[str, type]] = {
@@ -32,9 +34,11 @@ ALL_PARAMS: dict[str, dict[str, type]] = {
     "gui": GUI_PARAMS,
     "api_http": API_HTTP_PARAMS,
     "database": DATABASE_PARAMS,
+    "db_gateway": DB_GATEWAY_PARAMS,
     "iot": IOT_PARAMS,
     "vision": VISION_PARAMS,
     "recording": RECORDING_PARAMS,
+    "security": SECURITY_PARAMS,
 }
 
 __all__ = [
@@ -48,7 +52,9 @@ __all__ = [
     "GUI_PARAMS",
     "API_HTTP_PARAMS",
     "DATABASE_PARAMS",
+    "DB_GATEWAY_PARAMS",
     "IOT_PARAMS",
     "VISION_PARAMS",
     "RECORDING_PARAMS",
+    "SECURITY_PARAMS",
 ]
