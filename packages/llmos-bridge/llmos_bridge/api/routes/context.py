@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from llmos_bridge import __version__
-from llmos_bridge.api.dependencies import AuthDep, ConfigDep, RegistryDep
+from llmos_bridge.api.dependencies import AuthDep, ConfigDep, RegistryDep, ScannerPipelineDep
 from llmos_bridge.api.prompt import SystemPromptGenerator
 
 router = APIRouter(tags=["context"])
@@ -25,6 +25,7 @@ async def get_context(
     _auth: AuthDep,
     registry: RegistryDep,
     config: ConfigDep,
+    scanner_pipeline: ScannerPipelineDep,
     include_schemas: bool = Query(
         default=True,
         description="Include full parameter schemas for each action.",
@@ -65,6 +66,7 @@ async def get_context(
         include_examples=include_examples,
         max_actions_per_module=max_actions_per_module,
         context_snippets=context_snippets,
+        scanner_pipeline_active=scanner_pipeline is not None and scanner_pipeline.enabled,
     )
 
     if format == "prompt":

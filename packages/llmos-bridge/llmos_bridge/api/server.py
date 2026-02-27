@@ -40,6 +40,8 @@ from llmos_bridge.modules.registry import ModuleRegistry
 from llmos_bridge.modules.recording import RecordingModule
 from llmos_bridge.modules.security import SecurityModule
 from llmos_bridge.modules.triggers import TriggerModule
+from llmos_bridge.modules.computer_control import ComputerControlModule
+from llmos_bridge.modules.perception_vision import OmniParserModule
 from llmos_bridge.modules.word import WordModule
 from llmos_bridge.orchestration.executor import PlanExecutor
 from llmos_bridge.orchestration.resource_manager import ResourceManager
@@ -217,9 +219,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
                 capture = ScreenCapture()
                 ocr = OCREngine() if settings.perception.ocr_enabled else None
+
+                # Try to attach vision module for enhanced perception.
+                vision_module = None
+                if registry.is_available("vision"):
+                    try:
+                        vision_module = registry.get("vision")
+                        log.info("perception_vision_module_attached", module="vision")
+                    except Exception:
+                        pass
+
                 perception_pipeline = PerceptionPipeline(
                     capture=capture,
                     ocr=ocr,
+                    vision_module=vision_module,
                     save_screenshots=True,
                     save_dir=str(settings.memory.state_db_path.parent / "screenshots"),
                 )
@@ -303,6 +316,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recording_module.set_recorder(workflow_recorder)
 
             log.info("workflow_recorder_started", db_path=str(settings.recording.db_path))
+
+        # Wire ComputerControlModule to the registry for dynamic module access.
+        if registry.is_available("computer_control"):
+            cc_module = registry.get("computer_control")
+            if cc_module is not None and hasattr(cc_module, "set_registry"):
+                cc_module.set_registry(registry)
 
         # Start auto-purge background task.
         import asyncio as _aio
@@ -463,7 +482,7 @@ def _build_intent_verifier(cfg: Any, audit_logger: AuditLogger) -> Any:
 
 def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> None:
     """Register built-in modules according to the active configuration."""
-    builtin_map = {
+    builtin_map: dict[str, type] = {
         "filesystem": FilesystemModule,
         "os_exec": OSExecModule,
         "excel": ExcelModule,
@@ -474,16 +493,76 @@ def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> N
         "db_gateway": DatabaseGatewayModule,
         "browser": BrowserModule,
         "gui": GUIModule,
+        "computer_control": ComputerControlModule,
         "triggers": TriggerModule,
         "recording": RecordingModule,
     }
+
+    # Vision module — supports custom backends via settings.vision.backend.
     active = settings.active_modules()
+    if "vision" in active:
+        _apply_vision_config(settings)
+        if settings.vision.backend == "omniparser":
+            builtin_map["vision"] = OmniParserModule
+        else:
+            custom_cls = _load_custom_vision_backend(settings.vision.backend)
+            if custom_cls is not None:
+                builtin_map["vision"] = custom_cls
+            else:
+                builtin_map["vision"] = OmniParserModule  # Fallback to default
+
     for module_id, module_class in builtin_map.items():
         if module_id in active:
             try:
                 registry.register(module_class)
             except Exception as exc:
                 log.warning("builtin_module_register_failed", module_id=module_id, error=str(exc))
+
+
+def _apply_vision_config(settings: Settings) -> None:
+    """Set environment variables from VisionConfig for OmniParser."""
+    import os as _os
+
+    _os.environ.setdefault(
+        "LLMOS_OMNIPARSER_PATH",
+        _os.path.expanduser(settings.vision.omniparser_path),
+    )
+    _os.environ.setdefault(
+        "LLMOS_OMNIPARSER_MODEL_DIR",
+        _os.path.expanduser(settings.vision.model_dir),
+    )
+    if settings.vision.device != "auto":
+        _os.environ.setdefault("LLMOS_OMNIPARSER_DEVICE", settings.vision.device)
+    _os.environ.setdefault("LLMOS_OMNIPARSER_BOX_THRESH", str(settings.vision.box_threshold))
+    _os.environ.setdefault("LLMOS_OMNIPARSER_IOU_THRESH", str(settings.vision.iou_threshold))
+    _os.environ.setdefault("LLMOS_OMNIPARSER_CAPTION_MODEL", settings.vision.caption_model_name)
+    _os.environ.setdefault("LLMOS_OMNIPARSER_USE_PADDLEOCR", str(settings.vision.use_paddleocr).lower())
+    _os.environ.setdefault("LLMOS_OMNIPARSER_AUTO_DOWNLOAD", str(settings.vision.auto_download_weights).lower())
+
+
+def _load_custom_vision_backend(backend_path: str) -> type | None:
+    """Load a custom vision backend class from a fully-qualified path.
+
+    Args:
+        backend_path: e.g. 'mypackage.vision.MyVisionModule'
+
+    Returns:
+        The class if loaded successfully, or None on failure.
+    """
+    import importlib
+
+    module_path, _, class_name = backend_path.rpartition(".")
+    if not module_path or not class_name:
+        log.error("custom_vision_backend_invalid_path", backend=backend_path)
+        return None
+    try:
+        mod = importlib.import_module(module_path)
+        custom_cls = getattr(mod, class_name)
+        log.info("custom_vision_backend_loaded", backend=backend_path)
+        return custom_cls
+    except Exception as exc:
+        log.error("custom_vision_backend_failed", backend=backend_path, error=str(exc))
+        return None
 
 
 def _build_scanner_pipeline(

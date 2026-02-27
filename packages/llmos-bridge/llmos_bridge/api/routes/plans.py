@@ -127,6 +127,7 @@ async def submit_plan(
                 status=exec_state.plan_status,
                 message=f"Plan finished with status: {exec_state.plan_status.value}",
                 actions=action_responses,
+                rejection_details=exec_state.rejection_details,
             )
         except asyncio.TimeoutError:
             raise HTTPException(
@@ -190,6 +191,7 @@ async def get_plan(
         created_at=state.created_at,
         updated_at=state.updated_at,
         actions=actions,
+        rejection_details=state.rejection_details,
     )
 
 

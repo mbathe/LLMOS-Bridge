@@ -94,7 +94,7 @@ class SecurityConfig(BaseModel):
 
 class ModuleConfig(BaseModel):
     enabled: list[str] = Field(
-        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers"],
+        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers", "vision"],
         description="List of module IDs to load at startup.",
     )
     disabled: list[str] = Field(
@@ -418,6 +418,48 @@ class ScannerPipelineConfig(BaseModel):
     )
 
 
+class VisionConfig(BaseModel):
+    """Configuration for the visual perception (vision) module."""
+
+    backend: str = Field(
+        default="omniparser",
+        description=(
+            "Vision backend to use. 'omniparser' (default) uses Microsoft OmniParser v2. "
+            "Custom backends: subclass BaseVisionModule, install as a package, and set "
+            "the fully-qualified class path here (e.g. 'mypackage.MyVisionModule')."
+        ),
+    )
+    omniparser_path: str = Field(
+        default="~/.llmos/omniparser",
+        description=(
+            "Path to the cloned OmniParser repository. "
+            "Clone with: git clone https://github.com/microsoft/OmniParser.git ~/.llmos/omniparser"
+        ),
+    )
+    model_dir: str = Field(
+        default="~/.llmos/models/omniparser",
+        description="Directory containing model weights (icon_detect/ + icon_caption_florence/).",
+    )
+    device: str = Field(
+        default="auto",
+        description="Torch device: 'auto', 'cpu', 'cuda', 'mps'.",
+    )
+    box_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.05
+    iou_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.1
+    caption_model_name: str = Field(
+        default="florence2",
+        description="Caption model: 'florence2' (default) or 'blip2'.",
+    )
+    use_paddleocr: bool = Field(
+        default=True,
+        description="Use PaddleOCR (True) or EasyOCR (False) for text extraction.",
+    )
+    auto_download_weights: bool = Field(
+        default=True,
+        description="Auto-download model weights from HuggingFace on first use.",
+    )
+
+
 class LoggingConfig(BaseModel):
     level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     format: Literal["json", "console"] = "console"
@@ -452,6 +494,7 @@ class Settings(BaseSettings):
     intent_verifier: IntentVerifierConfig = Field(default_factory=IntentVerifierConfig)
     scanner_pipeline: ScannerPipelineConfig = Field(default_factory=ScannerPipelineConfig)
     node: NodeConfig = Field(default_factory=NodeConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
 
     @field_validator("memory", mode="before")
     @classmethod

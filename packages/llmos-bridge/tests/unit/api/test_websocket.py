@@ -20,6 +20,10 @@ from llmos_bridge.api.schemas import WSMessage
 def ws_app() -> FastAPI:
     app = FastAPI()
     app.include_router(router)
+    # Provide minimal settings so _verify_ws_token can access api_token.
+    settings_mock = MagicMock()
+    settings_mock.security.api_token = None  # No auth → local-only mode
+    app.state.settings = settings_mock
     return app
 
 

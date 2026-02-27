@@ -199,6 +199,122 @@ by later actions or future plans via `{{memory.last_config}}`.
 - Pass context from one user session to the next
 """
 
+_SCANNER_PIPELINE_SECTION = """\
+## Input Scanner Pipeline (Security Layer)
+
+All plans are pre-screened by an automated scanner pipeline before execution. \
+Scanners detect: prompt injection, role manipulation, delimiter injection, \
+encoding attacks, unicode tricks, path traversal, shell injection, \
+data exfiltration, and privilege escalation attempts.
+
+### When a plan is rejected
+
+If a plan fails with `status: "security_rejected"` in the response:
+
+1. Read the `threat_summary` and `recommendations` from the rejection details.
+2. Explain to the user **in plain language** what was flagged and why.
+3. Do **NOT** repeat the flagged content verbatim.
+4. Suggest how to rephrase or restructure the request to avoid triggering scanners.
+5. If the rejection seems like a false positive, inform the user they can adjust \
+scanner sensitivity or disable specific patterns via the security API \
+(`/security/scanners` endpoints).
+
+### When the intent verifier requests clarification
+
+If the rejection has `"verdict": "clarify"`, the security analysis needs more \
+context about the user's intent. Ask the user to clarify their request based on \
+the `clarification_needed` field.
+
+### When a plan triggers a warning
+
+If a plan succeeds but with scanner warnings, proceed normally. \
+Warnings are logged but do not block execution.
+"""
+
+_COMPUTER_CONTROL_SECTION = """\
+## Computer Control — Computer Use Protocol
+
+The `computer_control` module provides **semantic GUI automation**. You describe UI elements \
+in natural language and the module finds and interacts with them automatically using a \
+vision model (OmniParser v2) + GUI automation (PyAutoGUI).
+
+### The Computer Use Protocol (6-Step Loop)
+
+When performing GUI tasks, **always** follow this iterative protocol:
+
+1. **OBSERVE** — Call `computer_control.read_screen` to see what is currently on screen. \
+This returns all detected UI elements (buttons, inputs, text, icons) with labels and positions. \
+Use `include_screenshot: true` if you need to visually inspect the layout.
+
+2. **PLAN** — Based on the screen state, decide the **single next action** to take. \
+Think step by step: what do I see? What should I do next? Which element should I interact with?
+
+3. **ACT** — Execute **one action at a time**: `click_element`, `type_into_element`, \
+`wait_for_element`, etc. Never batch multiple GUI actions into one plan — the screen state \
+changes after each action.
+
+4. **VERIFY** — After acting, call `read_screen` again to see what changed. Did the \
+expected UI change happen? Did a dialog appear? Did the text update?
+
+5. **REPEAT** — If the task is not complete, go back to step 1. Continue until the task \
+is fully accomplished.
+
+6. **REPORT** — Once done, describe what you did and the final state to the user.
+
+### Key Principles
+
+- **Always start with `read_screen`** — Never guess what is on screen. Always look first.
+- **One action per plan** for GUI tasks — The screen changes after each click/type. \
+A multi-action plan cannot adapt to intermediate state changes.
+- **Read screen after every action** — Verify the result before deciding the next step.
+- **Use `include_screenshot: true`** when you need visual context beyond element labels \
+(e.g. to understand complex layouts, images, or graphs).
+
+### How element resolution works
+
+1. **You describe** the element: "the Submit button", "email input field", "Close icon"
+2. **The module captures** the screen and parses it with OmniParser v2 \
+(YOLO detection + Florence-2 captioning + OCR)
+3. **The module resolves** your description using multi-strategy matching:
+   - **Exact match**: label matches query exactly (case-insensitive)
+   - **Substring**: query is a substring of the element's label
+   - **Text match**: query found in the element's OCR text
+   - **Fuzzy**: Levenshtein similarity above threshold (60%)
+4. **The module acts** on the resolved element via GUI automation
+
+### When to use computer_control vs gui
+
+- **Use `computer_control`** when you know the **label or description** of the element \
+(e.g. "Click the Save button", "Type into the search field")
+- **Use `gui`** when you know the **exact pixel coordinates** or need raw mouse/keyboard \
+control (e.g. click at x=500,y=300, press Enter key)
+
+### Troubleshooting: element not found
+
+When a click or type action fails with "element not found":
+1. Call `read_screen` to see what is actually on screen
+2. Check the `text` field for OCR content — the element might have a different label
+3. Try a more general description (e.g. "Save" instead of "Save button")
+4. If the UI is still loading, use `wait_for_element` with a timeout
+5. If the element is off-screen, use `scroll_to_element` to scroll until it appears
+
+### Combining with perception
+
+Add `perception` to computer_control actions for automatic before/after validation:
+```json
+{
+  "id": "click_save",
+  "module": "computer_control",
+  "action": "click_element",
+  "params": { "target_description": "Save button" },
+  "perception": { "capture_after": true, "ocr_enabled": true, "validate_output": "contains:Saved" }
+}
+```
+
+Downstream actions can reference: `{{result.click_save._perception.after_text}}`, \
+`{{result.click_save._perception.diff_detected}}`
+"""
+
 _GUIDELINES_SECTION = """\
 ## Guidelines
 
@@ -296,6 +412,7 @@ class SystemPromptGenerator:
         max_actions_per_module: int | None = None,
         context_snippets: dict[str, str] | None = None,
         intent_verifier_active: bool = False,
+        scanner_pipeline_active: bool = False,
     ) -> None:
         self._manifests = manifests
         self._permission_profile = permission_profile
@@ -305,6 +422,7 @@ class SystemPromptGenerator:
         self._max_actions_per_module = max_actions_per_module
         self._context_snippets = context_snippets or {}
         self._intent_verifier_active = intent_verifier_active
+        self._scanner_pipeline_active = scanner_pipeline_active
         self._profile_config = self._resolve_profile_config()
 
     def _resolve_profile_config(self) -> PermissionProfileConfig | None:
@@ -337,13 +455,18 @@ class SystemPromptGenerator:
 
         sections.extend([
             self._build_security_prompt_section(),
+            self._build_scanner_pipeline_section(),
             self._build_intent_verifier_section(),
             _PERCEPTION_SECTION,
             _MEMORY_SECTION,
             _GUIDELINES_SECTION,
         ])
 
-        # Add module-specific guidelines
+        # Add module-specific guidelines.
+        has_computer_control = any(m.module_id == "computer_control" for m in self._manifests)
+        if has_computer_control:
+            sections.append(_COMPUTER_CONTROL_SECTION)
+
         has_db_gateway = any(m.module_id == "db_gateway" for m in self._manifests)
         if has_db_gateway:
             sections.append(_DB_GATEWAY_GUIDELINES)
@@ -529,6 +652,12 @@ class SystemPromptGenerator:
             "`security.request_permission` to request the missing permission, "
             "then retry the original action.\n"
         )
+
+    def _build_scanner_pipeline_section(self) -> str:
+        """Include the scanner pipeline section if active."""
+        if not self._scanner_pipeline_active:
+            return ""
+        return _SCANNER_PIPELINE_SECTION
 
     def _build_intent_verifier_section(self) -> str:
         """Tell the LLM about the active security analysis layer."""

@@ -18,8 +18,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from llmos_bridge.exceptions import IMLParseError, IMLValidationError
+from llmos_bridge.logging import get_logger
 from llmos_bridge.protocol.models import IMLPlan
 from llmos_bridge.protocol.params import ALL_PARAMS
+from llmos_bridge.protocol.repair import IMLRepair
+
+_log = get_logger(__name__)
+_repairer = IMLRepair()
 
 
 class IMLParser:
@@ -62,11 +67,20 @@ class IMLParser:
 
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise IMLParseError(
-                f"Invalid JSON: {exc.msg} at line {exc.lineno}, col {exc.colno}",
-                raw_payload=raw[:500],
-            ) from exc
+        except json.JSONDecodeError:
+            # Attempt automatic repair (trailing commas, single quotes, etc.).
+            try:
+                result = _repairer.repair(raw)
+                _log.info(
+                    "iml_auto_repair",
+                    transformations=result.transformations_applied,
+                )
+                data = result.parsed
+            except IMLParseError as repair_exc:
+                raise IMLParseError(
+                    f"Invalid JSON (repair failed): {repair_exc.message}",
+                    raw_payload=raw[:500],
+                ) from repair_exc
 
         if not isinstance(data, dict):
             raise IMLParseError(

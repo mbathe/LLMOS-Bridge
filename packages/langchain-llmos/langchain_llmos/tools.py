@@ -84,6 +84,75 @@ class LLMOSActionTool(BaseTool):
         }
 
 
+def _format_security_rejection(rejection: dict[str, Any]) -> dict[str, Any]:
+    """Format a security rejection into a structured response for the LLM."""
+    source = rejection.get("source", "unknown")
+
+    # Build a human-readable threat summary.
+    if source == "scanner_pipeline":
+        threat_types = rejection.get("threat_types", [])
+        patterns = rejection.get("matched_patterns", [])
+        summary_parts = []
+        if threat_types:
+            summary_parts.append(f"Detected threats: {', '.join(threat_types)}")
+        if patterns:
+            shown = patterns[:5]
+            suffix = f" (+{len(patterns) - 5} more)" if len(patterns) > 5 else ""
+            summary_parts.append(f"Matched patterns: {', '.join(shown)}{suffix}")
+        threat_summary = ". ".join(summary_parts) if summary_parts else "Plan flagged by scanner pipeline."
+    elif source == "intent_verifier":
+        reasoning = rejection.get("reasoning", "")
+        threats = rejection.get("threats", [])
+        if reasoning:
+            threat_summary = reasoning
+        elif threats:
+            descs = [t.get("description", t.get("type", "")) for t in threats]
+            threat_summary = "; ".join(d for d in descs if d)
+        else:
+            threat_summary = "Plan flagged by intent verification."
+    else:
+        threat_summary = "Plan rejected by security layer."
+
+    result: dict[str, Any] = {
+        "status": "security_rejected",
+        "source": source,
+        "verdict": rejection.get("verdict", "reject"),
+        "threat_summary": threat_summary,
+        "recommendations": rejection.get("recommendations", []),
+        "guidance": (
+            "Explain to the user in plain language why their request was flagged. "
+            "Do NOT repeat the flagged content. Suggest how they can rephrase or "
+            "restructure the request to avoid triggering security scanners."
+        ),
+    }
+    risk_score = rejection.get("risk_score")
+    if risk_score is not None:
+        result["risk_score"] = risk_score
+    risk_level = rejection.get("risk_level")
+    if risk_level is not None:
+        result["risk_level"] = risk_level
+    clarification = rejection.get("clarification_needed")
+    if clarification is not None:
+        result["clarification_needed"] = clarification
+        result["guidance"] = (
+            "The security layer needs clarification about the user's intent. "
+            "Ask the user to clarify their request based on the clarification details."
+        )
+    return result
+
+
+# Maximum characters for a single action result returned to the LLM.
+# Results beyond this size are truncated to avoid blowing up the context window.
+_MAX_RESULT_CHARS = 50_000
+
+
+def _truncate_result(text: str, max_chars: int = _MAX_RESULT_CHARS) -> str:
+    """Truncate *text* if it exceeds *max_chars*, appending an indicator."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n... [TRUNCATED — {len(text) - max_chars:,} chars omitted]"
+
+
 def _extract_action_result(plan_result: dict[str, Any]) -> str:
     """Extract the action result from a completed plan response.
 
@@ -94,7 +163,21 @@ def _extract_action_result(plan_result: dict[str, Any]) -> str:
     Includes structured alternatives (Negotiation Protocol) when an action
     fails, so the LLM can propose recovery actions.
     """
+    # Plan-level rejection: scanner pipeline or intent verifier.
+    plan_status = plan_result.get("status")
+    rejection = plan_result.get("rejection_details")
+    if plan_status == "failed" and rejection:
+        return json.dumps(_format_security_rejection(rejection), default=str)
+
     actions = plan_result.get("actions", [])
+
+    # Failed plan with no actions = pre-execution failure (no rejection details).
+    if plan_status == "failed" and not actions:
+        return json.dumps(
+            {"status": "failed", "error": plan_result.get("message", "Plan execution failed")},
+            default=str,
+        )
+
     if actions and len(actions) == 1:
         action = actions[0]
         # Handle approval-related statuses.
@@ -111,7 +194,7 @@ def _extract_action_result(plan_result: dict[str, Any]) -> str:
                 resp["clarification_options"] = action["clarification_options"]
             return json.dumps(resp, default=str)
         if action.get("result") is not None:
-            return json.dumps(action["result"], default=str)
+            return _truncate_result(json.dumps(action["result"], default=str))
         if action.get("error"):
             error_msg = str(action["error"])
             error_resp: dict[str, Any] = {"error": error_msg}
@@ -152,8 +235,8 @@ def _extract_action_result(plan_result: dict[str, Any]) -> str:
             alternatives = action.get("alternatives", [])
             if alternatives:
                 error_resp["alternatives"] = alternatives
-            return json.dumps(error_resp, default=str)
-    return json.dumps(plan_result, default=str)
+            return _truncate_result(json.dumps(error_resp, default=str))
+    return _truncate_result(json.dumps(plan_result, default=str))
 
 
 def _json_schema_to_pydantic(schema: dict[str, Any], model_name: str) -> Type[BaseModel]:

@@ -88,7 +88,13 @@
       "Bash(ANTHROPIC_API_KEY=\"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\" /home/paul/miniconda3/bin/python -c \":*)",
       "Bash(ANTHROPIC_API_KEY=\"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\" /home/paul/miniconda3/bin/python -m pytest tests/e2e/test_real_llm_postgres_write.py -v -s)",
       "Bash(/home/paul/miniconda3/bin/python -m pytest tests/unit/ tests/integration/ -x -q --tb=short)",
-      "Bash(/home/paul/miniconda3/bin/python -m pytest tests/unit/api/test_prompt.py -x -q --tb=short)"
+      "Bash(/home/paul/miniconda3/bin/python -m pytest tests/unit/api/test_prompt.py -x -q --tb=short)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:learnopencv.com)",
+      "Bash(python -m pytest packages/llmos-bridge/tests/ --ignore=packages/llmos-bridge/tests/unit/cli/ -q --no-cov --tb=short)",
+      "Bash(xargs cat)",
+      "Bash(python -m pytest packages/langchain-llmos/tests/ -v --no-cov --tb=short)",
+      "Bash(python -c \"import openai; print\\(''openai installed:'', openai.__version__\\)\")"
     ]
   }
 }

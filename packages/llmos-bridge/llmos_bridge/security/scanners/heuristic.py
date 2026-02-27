@@ -493,11 +493,25 @@ class HeuristicScanner(InputScanner):
                 return True
         return False
 
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Normalise text for robust pattern matching.
+
+        - NFKC decomposition maps fullwidth/compatibility chars to ASCII
+          equivalents (e.g. ``\uff49\uff47\uff4e\uff4f\uff52\uff45`` → ``ignore``).
+        - Zero-width characters are stripped so they cannot split keywords.
+        """
+        # 1. NFKC (compatibility decomposition + canonical composition)
+        normalized = unicodedata.normalize("NFKC", text)
+        # 2. Strip zero-width characters (ZWJ, ZWNJ, ZWSP, soft-hyphen, BOM)
+        _ZERO_WIDTH = frozenset("\u200b\u200c\u200d\ufeff\u00ad\u2060")
+        return "".join(ch for ch in normalized if ch not in _ZERO_WIDTH)
+
     async def scan(
         self, text: str, context: ScanContext | None = None
     ) -> ScanResult:
         """Scan text against all enabled heuristic patterns."""
-        normalized = unicodedata.normalize("NFC", text)
+        normalized = self._normalize_text(text)
 
         matched: list[str] = []
         threat_types: set[str] = set()
@@ -513,7 +527,8 @@ class HeuristicScanner(InputScanner):
                     max_severity = rule.severity
 
         # Additional non-regex heuristic: decode base64 payloads.
-        extra_score = self._check_base64_payloads(normalized)
+        # Use original text for b64 detection (normalisation may corrupt b64 padding).
+        extra_score = self._check_base64_payloads(text)
         if extra_score > 0:
             max_severity = max(max_severity, extra_score)
             if "encoding_attack" not in threat_types:

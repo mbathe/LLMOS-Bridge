@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter
 
 from llmos_bridge import __protocol_version__, __version__
-from llmos_bridge.api.dependencies import ConfigDep, RegistryDep, StateStoreDep
+from llmos_bridge.api.dependencies import ConfigDep, RegistryDep, ScannerPipelineDep, StateStoreDep
 from llmos_bridge.api.schemas import HealthResponse, ModuleStatusDetail
 from llmos_bridge.protocol.models import PlanStatus
 
@@ -21,6 +21,7 @@ async def health(
     registry: RegistryDep,
     config: ConfigDep,
     state_store: StateStoreDep,
+    scanner_pipeline: ScannerPipelineDep,
 ) -> HealthResponse:
     available = registry.list_available()
     all_modules = registry.list_modules()
@@ -41,6 +42,17 @@ async def health(
     except Exception:
         active_count = 0
 
+    # Scanner pipeline status.
+    scanner_status: dict[str, str] | None = None
+    if scanner_pipeline is not None:
+        try:
+            scanner_status = {
+                s.scanner_id: "enabled" if s.enabled else "disabled"
+                for s in scanner_pipeline.scanners
+            }
+        except Exception:
+            scanner_status = {"error": "unavailable"}
+
     return HealthResponse(
         status="ok",
         version=__version__,
@@ -50,4 +62,5 @@ async def health(
         modules_failed=failed_count,
         modules=modules_detail,
         active_plans=active_count,
+        scanner_pipeline=scanner_status,
     )

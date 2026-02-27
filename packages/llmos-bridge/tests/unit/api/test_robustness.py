@@ -65,11 +65,14 @@ class TestRateLimitMiddleware:
         # Should now accept (old entry expired during check).
         assert not mw._is_rate_limited("ip1")
 
-    def test_client_ip_from_header(self) -> None:
+    def test_client_ip_ignores_forwarded_header(self) -> None:
+        """X-Forwarded-For is ignored to prevent rate-limit spoofing."""
         mw = self._make_middleware()
         request = MagicMock()
         request.headers = {"X-Forwarded-For": "203.0.113.1, 10.0.0.1"}
-        assert mw._client_ip(request) == "203.0.113.1"
+        request.client.host = "192.168.1.1"
+        # Should use socket IP, NOT X-Forwarded-For
+        assert mw._client_ip(request) == "192.168.1.1"
 
     def test_client_ip_from_socket(self) -> None:
         mw = self._make_middleware()

@@ -1,34 +1,33 @@
-"""Visual perception module — OmniParser (Microsoft) backend.
+"""Visual perception module — OmniParser v2 (Microsoft) backend.
 
 OmniParser is an open-source GUI understanding model that converts
 screenshots into a structured list of interactable elements with labels
-and bounding boxes.  It combines:
-  - YOLO-based icon detection
-  - Florence-2 / BLIP-2 visual captioning
-  - PaddleOCR / EasyOCR for text extraction
+and bounding boxes.  It combines three pre-trained components:
 
-This module wraps OmniParser behind the ``BaseVisionModule`` contract so
-users can swap it for any alternative (e.g. GPT-4V, Gemini, a custom model)
-by registering a different class as ``MODULE_ID = "vision"``.
+  1. **YOLO v8** — fine-tuned icon/button detection on 67K screenshots
+  2. **Florence-2** — fine-tuned icon captioning (describes what each icon is)
+  3. **PaddleOCR / EasyOCR** — text extraction from the screen
 
-Optional dependency — install with::
+Integration approach:
+    The user clones the OmniParser repo locally and our module imports it
+    via ``sys.path``.  Model weights are auto-downloaded from HuggingFace
+    ``microsoft/OmniParser-v2.0`` on first use.
 
+Setup::
+
+    git clone https://github.com/microsoft/OmniParser.git ~/.llmos/omniparser
+    cd ~/.llmos/omniparser && pip install -r requirements.txt
     pip install llmos-bridge[vision]
 
-Without the dependency, the module loads but raises ``ModuleLoadError``
-on first action call, providing a clear error message.
-
-Model weights:
-    The module expects OmniParser weights at ``~/.llmos/models/omniparser/``
-    (configurable via ``LLMOS_OMNIPARSER_MODEL_DIR`` env var).
-    On first run it will instruct the user to download the weights from
-    HuggingFace: ``microsoft/OmniParser-v2.0``
+The module wraps OmniParser behind the ``BaseVisionModule`` contract so
+users can swap it for any alternative (e.g. GPT-4V, Gemini, a custom model)
+by registering a different class as ``MODULE_ID = "vision"``.
 
 Actions:
     - ``parse_screen``        — parse current screen or a given screenshot
     - ``capture_and_parse``   — take a screenshot then parse it
     - ``find_element``        — find a UI element by label/type/description
-    - ``get_screen_text``     — extract all text from the current screen (fast OCR)
+    - ``get_screen_text``     — extract all text from the current screen
 """
 
 from __future__ import annotations
@@ -36,24 +35,24 @@ from __future__ import annotations
 import base64
 import io
 import os
+import sys
 import time
-import uuid
 from typing import Any
 
 from llmos_bridge.exceptions import ActionExecutionError, ModuleLoadError
 from llmos_bridge.modules.base import Platform
-from llmos_bridge.security.decorators import requires_permission
-from llmos_bridge.security.models import Permission
-from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
+from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.modules.perception_vision.base import (
     BaseVisionModule,
     VisionElement,
     VisionParseResult,
 )
+from llmos_bridge.security.decorators import requires_permission
+from llmos_bridge.security.models import Permission
 
 # ── optional dependencies ────────────────────────────────────────────────────
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage  # noqa: F401
 
     _PIL_AVAILABLE = True
 except ImportError:
@@ -66,23 +65,25 @@ try:
 except ImportError:
     _TORCH_AVAILABLE = False
 
-_OMNIPARSER_AVAILABLE = False
-_OMNIPARSER_IMPORT_ERROR: str | None = None
 
-try:
-    # OmniParser v2 ships as a standalone utils module.
-    # Users install it via: pip install omniparser  OR  clone + pip install -e .
-    from omniparser import OmniParser as _OmniParserAPI  # type: ignore[import]
+# ── lazy OmniParser import ───────────────────────────────────────────────────
 
-    _OMNIPARSER_AVAILABLE = True
-except ImportError as _err:
-    _OMNIPARSER_IMPORT_ERROR = str(_err)
+def _import_omniparser(omniparser_path: str) -> type:
+    """Import the real ``Omniparser`` class from a local clone of the
+    Microsoft OmniParser repository via sys.path injection.
+
+    The clone is expected at *omniparser_path* (e.g. ``~/.llmos/omniparser``).
+    """
+    expanded = os.path.expanduser(omniparser_path)
+    if expanded not in sys.path:
+        sys.path.insert(0, expanded)
+    # Real import from util/omniparser.py in the cloned repo.
+    from util.omniparser import Omniparser  # type: ignore[import-untyped]
+
+    return Omniparser
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-
-_DEFAULT_MODEL_DIR = os.path.expanduser(
-    os.environ.get("LLMOS_OMNIPARSER_MODEL_DIR", "~/.llmos/models/omniparser")
-)
 
 
 class OmniParserModule(BaseVisionModule):
@@ -98,26 +99,47 @@ class OmniParserModule(BaseVisionModule):
         and it will take precedence.
 
     Configuration (env vars):
-        LLMOS_OMNIPARSER_MODEL_DIR   Path to OmniParser weight directory
-                                     (default: ~/.llmos/models/omniparser)
-        LLMOS_OMNIPARSER_DEVICE      torch device, e.g. "cpu", "cuda", "mps"
-                                     (default: auto-detect)
-        LLMOS_OMNIPARSER_BOX_THRESH  Detection confidence threshold [0-1]
-                                     (default: 0.05)
-        LLMOS_OMNIPARSER_IOU_THRESH  NMS IoU threshold [0-1]
-                                     (default: 0.1)
+        LLMOS_OMNIPARSER_PATH          Path to the cloned OmniParser repo
+                                       (default: ~/.llmos/omniparser)
+        LLMOS_OMNIPARSER_MODEL_DIR     Path to model weights directory
+                                       (default: ~/.llmos/models/omniparser)
+        LLMOS_OMNIPARSER_DEVICE        torch device, e.g. "cpu", "cuda", "mps"
+                                       (default: auto-detect)
+        LLMOS_OMNIPARSER_BOX_THRESH    Detection confidence threshold [0-1]
+                                       (default: 0.05)
+        LLMOS_OMNIPARSER_IOU_THRESH    NMS IoU threshold [0-1]
+                                       (default: 0.1)
+        LLMOS_OMNIPARSER_CAPTION_MODEL Caption model: "florence2" or "blip2"
+                                       (default: florence2)
+        LLMOS_OMNIPARSER_USE_PADDLEOCR Use PaddleOCR instead of EasyOCR
+                                       (default: true)
+        LLMOS_OMNIPARSER_AUTO_DOWNLOAD Auto-download weights from HuggingFace
+                                       (default: true)
     """
 
     MODULE_ID = "vision"
-    VERSION = "1.0.0"
+    VERSION = "2.0.0"
     SUPPORTED_PLATFORMS = [Platform.LINUX, Platform.WINDOWS, Platform.MACOS]
 
     def __init__(self) -> None:
-        self._model_dir = _DEFAULT_MODEL_DIR
+        self._omniparser_path = os.environ.get(
+            "LLMOS_OMNIPARSER_PATH",
+            os.path.expanduser("~/.llmos/omniparser"),
+        )
+        self._model_dir = os.path.expanduser(
+            os.environ.get("LLMOS_OMNIPARSER_MODEL_DIR", "~/.llmos/models/omniparser")
+        )
         self._device = os.environ.get("LLMOS_OMNIPARSER_DEVICE", "auto")
         self._box_thresh = float(os.environ.get("LLMOS_OMNIPARSER_BOX_THRESH", "0.05"))
         self._iou_thresh = float(os.environ.get("LLMOS_OMNIPARSER_IOU_THRESH", "0.1"))
-        self._api: Any | None = None  # lazy-loaded _OmniParserAPI
+        self._caption_model = os.environ.get("LLMOS_OMNIPARSER_CAPTION_MODEL", "florence2")
+        self._use_paddleocr = (
+            os.environ.get("LLMOS_OMNIPARSER_USE_PADDLEOCR", "true").lower() == "true"
+        )
+        self._auto_download = (
+            os.environ.get("LLMOS_OMNIPARSER_AUTO_DOWNLOAD", "true").lower() == "true"
+        )
+        self._api: Any | None = None  # Lazy-loaded Omniparser instance
         super().__init__()
 
     # ------------------------------------------------------------------
@@ -141,7 +163,8 @@ class OmniParserModule(BaseVisionModule):
             version=self.VERSION,
             description=(
                 "Visual perception module powered by Microsoft OmniParser v2. "
-                "Parses GUI screenshots into structured lists of interactable "
+                "Combines YOLO v8 detection, Florence-2 captioning, and OCR to "
+                "parse GUI screenshots into structured lists of interactable "
                 "elements (icons, buttons, text fields) with bounding boxes and labels. "
                 "Replace with any BaseVisionModule subclass for custom vision backends."
             ),
@@ -153,20 +176,11 @@ class OmniParserModule(BaseVisionModule):
                         "Parse a screenshot and return a structured list of UI elements "
                         "with labels, bounding boxes and confidence scores."
                     ),
-                    params_schema={
-                        "type": "object",
-                        "properties": {
-                            "screenshot_path": {
-                                "type": "string",
-                                "description": "Absolute path to a PNG/JPEG screenshot file.",
-                            },
-                            "box_threshold": {
-                                "type": "number",
-                                "description": "Override detection confidence threshold.",
-                            },
-                        },
-                    },
-                    returns="VisionParseResult dict with elements[], width, height, raw_ocr",
+                    params=[
+                        ParamSpec("screenshot_path", "string", "Absolute path to a PNG/JPEG screenshot file.", required=False),
+                        ParamSpec("box_threshold", "number", "Override detection confidence threshold.", required=False),
+                    ],
+                    returns_description="VisionParseResult dict with elements[], width, height, raw_ocr",
                     permission_required="screen_capture",
                     platforms=[p.value for p in self.SUPPORTED_PLATFORMS],
                 ),
@@ -175,24 +189,12 @@ class OmniParserModule(BaseVisionModule):
                     description=(
                         "Capture the current screen and immediately parse it into UI elements."
                     ),
-                    params_schema={
-                        "type": "object",
-                        "properties": {
-                            "monitor": {
-                                "type": "integer",
-                                "description": "Monitor index (0=primary). Default: 0.",
-                            },
-                            "region": {
-                                "type": "object",
-                                "description": "Optional crop region: {left, top, width, height}.",
-                            },
-                            "box_threshold": {
-                                "type": "number",
-                                "description": "Override detection confidence threshold.",
-                            },
-                        },
-                    },
-                    returns="VisionParseResult dict with elements[], width, height, raw_ocr",
+                    params=[
+                        ParamSpec("monitor", "integer", "Monitor index (0=primary). Default: 0.", required=False, default=0),
+                        ParamSpec("region", "object", "Optional crop region: {left, top, width, height}.", required=False),
+                        ParamSpec("box_threshold", "number", "Override detection confidence threshold.", required=False),
+                    ],
+                    returns_description="VisionParseResult dict with elements[], width, height, raw_ocr",
                     permission_required="screen_capture",
                     platforms=[p.value for p in self.SUPPORTED_PLATFORMS],
                 ),
@@ -202,25 +204,12 @@ class OmniParserModule(BaseVisionModule):
                         "Parse the screen and find a specific UI element by label or type. "
                         "Returns the first matching element and its pixel coordinates."
                     ),
-                    params_schema={
-                        "type": "object",
-                        "required": ["query"],
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Label substring or description to search for.",
-                            },
-                            "element_type": {
-                                "type": "string",
-                                "description": "Filter by type: icon, button, text, input, link.",
-                            },
-                            "screenshot_path": {
-                                "type": "string",
-                                "description": "Optional path to an existing screenshot.",
-                            },
-                        },
-                    },
-                    returns=(
+                    params=[
+                        ParamSpec("query", "string", "Label substring or description to search for.", required=True),
+                        ParamSpec("element_type", "string", "Filter by type: icon, button, text, input, link.", required=False),
+                        ParamSpec("screenshot_path", "string", "Optional path to an existing screenshot.", required=False),
+                    ],
+                    returns_description=(
                         "{'found': bool, 'element': VisionElement | null, "
                         "'pixel_x': int, 'pixel_y': int}"
                     ),
@@ -230,19 +219,13 @@ class OmniParserModule(BaseVisionModule):
                 ActionSpec(
                     name="get_screen_text",
                     description=(
-                        "Extract all visible text from the current screen using fast OCR. "
+                        "Extract all visible text from the current screen using OCR. "
                         "Returns concatenated text without element bounding boxes."
                     ),
-                    params_schema={
-                        "type": "object",
-                        "properties": {
-                            "screenshot_path": {
-                                "type": "string",
-                                "description": "Optional path to an existing screenshot.",
-                            },
-                        },
-                    },
-                    returns="{'text': str, 'line_count': int}",
+                    params=[
+                        ParamSpec("screenshot_path", "string", "Optional path to an existing screenshot.", required=False),
+                    ],
+                    returns_description="{'text': str, 'line_count': int}",
                     permission_required="screen_capture",
                     platforms=[p.value for p in self.SUPPORTED_PLATFORMS],
                 ),
@@ -261,7 +244,6 @@ class OmniParserModule(BaseVisionModule):
         box_threshold: float | None = params.get("box_threshold")
 
         if screenshot_path is None:
-            # Capture the screen on the fly.
             screenshot_bytes = await self._capture_screen(monitor=0)
         else:
             with open(screenshot_path, "rb") as f:
@@ -346,36 +328,33 @@ class OmniParserModule(BaseVisionModule):
         height: int | None = None,
         box_threshold: float | None = None,
     ) -> VisionParseResult:
-        """Parse a screenshot using OmniParser v2.
+        """Parse a screenshot using the real OmniParser v2 pipeline.
+
+        Pipeline: YOLO detection → OCR → overlap removal → Florence-2 captioning.
 
         Falls back to a lightweight PIL/OCR-only result when OmniParser
-        model weights or dependencies are not available.
+        code or dependencies are not available.
         """
         self._assert_pil_available()
 
         t0 = time.perf_counter()
 
-        # Load image.
+        # Load image as PIL.
         image = self._load_image(screenshot_path=screenshot_path, screenshot_bytes=screenshot_bytes)
         img_width, img_height = image.size
 
-        if not _OMNIPARSER_AVAILABLE or not _TORCH_AVAILABLE:
-            # Graceful degradation: PIL-only path (no bounding boxes).
+        if not self._is_omniparser_available():
+            # Graceful degradation: OCR-only path (no bounding boxes).
             return self._parse_pil_only(image, img_width, img_height, t0)
 
         # Full OmniParser path.
         api = self._get_api()
-        threshold = box_threshold if box_threshold is not None else self._box_thresh
+
+        # OmniParser.parse() expects a base64-encoded image string.
+        image_b64 = self._pil_to_base64(image)
 
         try:
-            parse_result = api.process(
-                image=image,
-                box_threshold=threshold,
-                iou_threshold=self._iou_thresh,
-            )
-            elements = self._convert_elements(parse_result, img_width, img_height)
-            raw_ocr = self._extract_raw_ocr(elements)
-            labeled_b64 = self._encode_labeled_image(parse_result)
+            som_image_b64, parsed_content_list = api.parse(image_b64)
         except Exception as exc:
             raise ActionExecutionError(
                 module_id=self.MODULE_ID,
@@ -383,15 +362,18 @@ class OmniParserModule(BaseVisionModule):
                 cause=exc,
             ) from exc
 
+        elements = self._convert_omniparser_output(parsed_content_list)
+        raw_ocr = self._extract_raw_ocr(elements)
         elapsed_ms = (time.perf_counter() - t0) * 1000
+
         return VisionParseResult(
             elements=elements,
             width=img_width,
             height=img_height,
             raw_ocr=raw_ocr,
-            labeled_image_b64=labeled_b64,
+            labeled_image_b64=som_image_b64,  # Already base64 from OmniParser
             parse_time_ms=elapsed_ms,
-            model_id=f"omniparser-v2/{self.VERSION}",
+            model_id="omniparser-v2",
         )
 
     # ------------------------------------------------------------------
@@ -408,37 +390,115 @@ class OmniParserModule(BaseVisionModule):
                 ),
             )
 
+    def _is_omniparser_available(self) -> bool:
+        """Check if the OmniParser clone is present on disk."""
+        expanded = os.path.expanduser(self._omniparser_path)
+        return os.path.isdir(expanded) and os.path.exists(
+            os.path.join(expanded, "util", "omniparser.py")
+        )
+
+    def _ensure_weights(self) -> None:
+        """Download model weights from HuggingFace if not already present.
+
+        Downloads from ``microsoft/OmniParser-v2.0``:
+          - ``icon_detect/model.pt``     — YOLO v8 (UI element detection)
+          - ``icon_caption_florence/``    — Florence-2 (icon captioning)
+        """
+        som_model = os.path.join(self._model_dir, "icon_detect", "model.pt")
+        caption_safetensors = os.path.join(
+            self._model_dir, "icon_caption_florence", "model.safetensors"
+        )
+
+        if os.path.exists(som_model) and os.path.exists(caption_safetensors):
+            return  # Weights already present.
+
+        try:
+            from huggingface_hub import snapshot_download  # noqa: PLC0415
+        except ImportError as exc:
+            raise ModuleLoadError(
+                module_id=self.MODULE_ID,
+                reason=(
+                    "huggingface_hub is required for automatic weight download. "
+                    "Install with: pip install huggingface-hub  "
+                    "Or download weights manually from: "
+                    "https://huggingface.co/microsoft/OmniParser-v2.0"
+                ),
+            ) from exc
+
+        from llmos_bridge.logging import get_logger  # noqa: PLC0415
+
+        log = get_logger(__name__)
+        log.info("omniparser_downloading_weights", model_dir=self._model_dir)
+
+        os.makedirs(self._model_dir, exist_ok=True)
+        snapshot_download(
+            "microsoft/OmniParser-v2.0",
+            allow_patterns=["icon_detect/*", "icon_caption/*"],
+            local_dir=self._model_dir,
+        )
+
+        # OmniParser expects 'icon_caption_florence' but HuggingFace downloads as 'icon_caption'.
+        src = os.path.join(self._model_dir, "icon_caption")
+        dst = os.path.join(self._model_dir, "icon_caption_florence")
+        if os.path.isdir(src) and not os.path.isdir(dst):
+            os.rename(src, dst)
+
+        log.info("omniparser_weights_ready", model_dir=self._model_dir)
+
     def _get_api(self) -> Any:
-        """Lazy-load the OmniParser API and model weights."""
+        """Lazy-load the real OmniParser API with pre-trained model weights."""
         if self._api is not None:
             return self._api
 
-        if not _OMNIPARSER_AVAILABLE:
+        # Auto-download weights from HuggingFace if enabled.
+        if self._auto_download:
+            self._ensure_weights()
+
+        # Verify the OmniParser clone exists.
+        expanded = os.path.expanduser(self._omniparser_path)
+        omni_py = os.path.join(expanded, "util", "omniparser.py")
+        if not os.path.exists(omni_py):
             raise ModuleLoadError(
                 module_id=self.MODULE_ID,
                 reason=(
-                    f"OmniParser is not installed ({_OMNIPARSER_IMPORT_ERROR}). "
-                    "Install with: pip install llmos-bridge[vision] "
-                    "or: pip install omniparser  (requires model weights at "
-                    f"{self._model_dir})"
+                    f"OmniParser repository not found at '{self._omniparser_path}'. "
+                    "Clone it with:\n"
+                    f"  git clone https://github.com/microsoft/OmniParser.git {self._omniparser_path}\n"
+                    f"  cd {self._omniparser_path} && pip install -r requirements.txt"
                 ),
             )
 
-        device = self._resolve_device()
-        try:
-            self._api = _OmniParserAPI(
-                model_dir=self._model_dir,
-                device=device,
-            )
-        except Exception as exc:
+        # Verify model weights exist.
+        som_model_path = os.path.join(self._model_dir, "icon_detect", "model.pt")
+        caption_model_path = os.path.join(self._model_dir, "icon_caption_florence")
+        if not os.path.exists(som_model_path):
             raise ModuleLoadError(
                 module_id=self.MODULE_ID,
                 reason=(
-                    f"Failed to load OmniParser weights from '{self._model_dir}': {exc}. "
-                    "Download weights from: "
-                    "https://huggingface.co/microsoft/OmniParser-v2.0 "
-                    f"and place them in: {self._model_dir}"
+                    f"YOLO model weights not found at '{som_model_path}'. "
+                    "Download from: https://huggingface.co/microsoft/OmniParser-v2.0 "
+                    f"or enable auto_download_weights in config."
                 ),
+            )
+
+        # Import and instantiate the real OmniParser.
+        OmniparserClass = _import_omniparser(self._omniparser_path)
+
+        # Build config dict matching the real OmniParser constructor signature.
+        # Note: 'BOX_TRESHOLD' is the original typo in OmniParser's code.
+        config = {
+            "som_model_path": som_model_path,
+            "caption_model_name": self._caption_model,
+            "caption_model_path": caption_model_path,
+            "BOX_TRESHOLD": self._box_thresh,
+        }
+
+        try:
+            self._api = OmniparserClass(config)
+        except Exception as exc:
+            raise ModuleLoadError(
+                module_id=self.MODULE_ID,
+                reason=f"Failed to initialize OmniParser: {exc}",
             ) from exc
 
         return self._api
@@ -447,7 +507,7 @@ class OmniParserModule(BaseVisionModule):
         if self._device != "auto":
             return self._device
         if _TORCH_AVAILABLE:
-            import torch  # noqa: PLC0415 (local import intentional)
+            import torch  # noqa: PLC0415
 
             if torch.cuda.is_available():
                 return "cuda"
@@ -472,10 +532,23 @@ class OmniParserModule(BaseVisionModule):
             cause=ValueError("Either screenshot_path or screenshot_bytes must be provided."),
         )
 
+    @staticmethod
+    def _pil_to_base64(image: Any) -> str:
+        """Convert a PIL Image to a base64-encoded PNG string.
+
+        This is the format expected by ``Omniparser.parse()``.
+        """
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+
     def _parse_pil_only(
         self, image: Any, width: int, height: int, t0: float
     ) -> VisionParseResult:
-        """Return an empty-elements result with a best-effort OCR extraction."""
+        """Return an empty-elements result with a best-effort OCR extraction.
+
+        Used when OmniParser is not available (code not cloned or deps missing).
+        """
         raw_text: str | None = None
         error: str | None = None
         try:
@@ -494,55 +567,53 @@ class OmniParserModule(BaseVisionModule):
             labeled_image_b64=None,
             parse_time_ms=elapsed_ms,
             model_id="omniparser-v2/pil-fallback",
-            error=error or "OmniParser not available — elements list is empty.",
+            error=error or (
+                "OmniParser not available — clone the repo with: "
+                f"git clone https://github.com/microsoft/OmniParser.git {self._omniparser_path}"
+            ),
         )
 
     @staticmethod
-    def _convert_elements(
-        parse_result: Any, img_width: int, img_height: int
+    def _convert_omniparser_output(
+        parsed_content_list: list[dict[str, Any]],
     ) -> list[VisionElement]:
-        """Convert OmniParser raw output to ``VisionElement`` objects."""
+        """Convert the real OmniParser v2 output to ``VisionElement`` objects.
+
+        OmniParser returns elements in this format::
+
+            {
+                'type': 'text' | 'icon',
+                'bbox': [x1, y1, x2, y2],       # normalised [0, 1]
+                'interactivity': True | False,
+                'content': 'Button label or caption',
+                'source': 'box_ocr_content_ocr' | 'box_yolo_content_yolo' | 'box_yolo_content_ocr'
+            }
+        """
         elements: list[VisionElement] = []
-
-        # OmniParser v2 returns a list of dicts with keys:
-        #   bbox (xyxy normalised), label, type, confidence, text (optional)
-        raw_items = getattr(parse_result, "elements", None) or []
-        for i, item in enumerate(raw_items):
-            if isinstance(item, dict):
-                bbox_raw = item.get("bbox", [0, 0, 0, 0])
-            else:
-                bbox_raw = getattr(item, "bbox", [0, 0, 0, 0])
-
-            # Normalise to [0, 1] if values are in pixel space.
-            x1, y1, x2, y2 = bbox_raw
-            if max(x1, y1, x2, y2) > 1.0:
-                x1 /= img_width
-                x2 /= img_width
-                y1 /= img_height
-                y2 /= img_height
-
-            label = (item.get("label") if isinstance(item, dict) else getattr(item, "label", ""))
-            element_type = (
-                item.get("type", "icon") if isinstance(item, dict)
-                else getattr(item, "type", "icon")
-            )
-            confidence = float(
-                item.get("confidence", 1.0) if isinstance(item, dict)
-                else getattr(item, "confidence", 1.0)
-            )
-            text = (item.get("text") if isinstance(item, dict) else getattr(item, "text", None))
+        for i, item in enumerate(parsed_content_list):
+            bbox_raw = item.get("bbox", [0, 0, 0, 0])
+            content = item.get("content", "")
+            elem_type = item.get("type", "icon")
+            interactable = item.get("interactivity", elem_type == "icon")
+            source = item.get("source", "")
 
             elements.append(
                 VisionElement(
                     element_id=f"e{i:04d}",
-                    label=str(label or ""),
-                    element_type=str(element_type or "icon"),
-                    bbox=(float(x1), float(y1), float(x2), float(y2)),
-                    confidence=min(max(confidence, 0.0), 1.0),
-                    text=str(text) if text else None,
+                    label=str(content),
+                    element_type=str(elem_type),
+                    bbox=(
+                        float(bbox_raw[0]),
+                        float(bbox_raw[1]),
+                        float(bbox_raw[2]),
+                        float(bbox_raw[3]),
+                    ),
+                    confidence=1.0,  # OmniParser v2 does not provide per-element scores
+                    text=str(content) if elem_type == "text" else None,
+                    interactable=bool(interactable),
+                    extra={"source": source},
                 )
             )
-
         return elements
 
     @staticmethod
@@ -550,25 +621,6 @@ class OmniParserModule(BaseVisionModule):
         """Concatenate all text fields from elements into a single string."""
         texts = [e.text for e in elements if e.text]
         return " ".join(texts) if texts else ""
-
-    @staticmethod
-    def _encode_labeled_image(parse_result: Any) -> str | None:
-        """Return base64-encoded labeled image from parse_result, or None."""
-        labeled = getattr(parse_result, "labeled_image", None)
-        if labeled is None:
-            return None
-        try:
-            if not _PIL_AVAILABLE:
-                return None
-            from PIL import Image  # noqa: PLC0415
-
-            if isinstance(labeled, Image.Image):
-                buf = io.BytesIO()
-                labeled.save(buf, format="PNG")
-                return base64.b64encode(buf.getvalue()).decode()
-        except Exception:
-            pass
-        return None
 
     @staticmethod
     async def _capture_screen(

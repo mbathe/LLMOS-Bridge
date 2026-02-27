@@ -1,6 +1,6 @@
 # LLMOS Bridge — Cahier des Charges Consolidé & Bilan
 
-## Derniere mise a jour : 2026-02-27 — Analyse Totale Pre-Sprint 2
+## Derniere mise a jour : 2026-02-27 — Post-Sprint 2 (Scanner Pipeline + Modules Phase 3)
 
 ---
 
@@ -23,9 +23,9 @@
 | # | Couche | Responsabilite | Statut |
 |---|--------|---------------|--------|
 | 1 | Protocol & Parsing | IML v2 parser, validator, models, template, repair, migration, schema | FAIT |
-| 2 | Security | Profils, PermissionGuard, AuditLogger, OutputSanitizer, sandbox | FAIT |
-| 3 | Orchestration | DAG, StateStore, PlanExecutor, RollbackEngine | FAIT |
-| 4 | Execution (Modules) | BaseModule, registry, manifest, 10 modules built-in | FAIT |
+| 2 | Security | Profils, PermissionGuard, AuditLogger, OutputSanitizer, sandbox, **Scanner Pipeline, IntentVerifier, 3 LLM Providers, SecurityManager** | FAIT |
+| 3 | Orchestration | DAG, StateStore, PlanExecutor, RollbackEngine, **rejection_details propagation** | FAIT |
+| 4 | Execution (Modules) | BaseModule, registry, manifest, **15 modules built-in (~227 actions)** | FAIT |
 | 5 | Perception Loop | Screen capture, OCR, diff, pipeline, VisionModule | FAIT |
 | 6 | Context Builder | Capability Manifest, KV Memory, Vector Search, System Prompt | FAIT |
 | 7 | Feedback & Memory | SQLite KV, ChromaDB vector, session-scoped, TTL | FAIT |
@@ -120,13 +120,23 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | OutputSanitizer (anti prompt injection) | FAIT | 8 patterns regex, truncation 50K, Unicode normalization |
 | Token auth Bearer | FAIT | `X-LLMOS-Token` middleware FastAPI |
 | AuditLogger immutable | FAIT | NDJSON via LogEventBus, chaine d'evenements |
+| **Scanner Pipeline (Layer 1-2)** | **FAIT** | `security/scanners/` — HeuristicScanner (<1ms), ScannerRegistry, SecurityPipeline orchestrator |
+| **Adaptateurs ML (Layer 2)** | **FAIT** | LLMGuardScanner, PromptGuardScanner (adapters pour modeles ML externes) |
+| **IntentVerifier LLM (Layer 3)** | **FAIT** | `security/intent_verifier.py` — analyse pre-execution LLM, 8 ThreatTypes, 4 verdicts |
+| **3 LLM Providers HTTP** | **FAIT** | `security/providers/` — AnthropicLLMClient, OpenAILLMClient, OllamaLLMClient |
+| **6 Decorateurs Securite** | **FAIT** | `security/decorators.py` — @requires_permission, @sensitive_action, @rate_limited, @audit_trail, @data_classification, @intent_verified |
+| **ActionRateLimiter** | **FAIT** | `security/rate_limiter.py` — sliding window par minute/heure, RateLimitExceededError |
+| **PermissionStore (SQLite async)** | **FAIT** | `security/permission_store.py` — grants SESSION/PERMANENT, expiration, revocation |
+| **SecurityManager (agregateur)** | **FAIT** | `security/manager.py` — PermissionManager + RateLimiter + Audit + IntentVerifier |
+| **Security Feedback Integration** | **FAIT** | rejection_details propage: ExecutionState → PlanStateStore → API → SDK → LLM |
+| **Module IML Security** | **FAIT** | `modules/security/` — 6 actions IML (list/check/request/revoke permissions, status, audit) |
 | Formal Verification (PathInvariant, NetworkInvariant...) | A FAIRE | Phase 5 |
 | Cryptographic Action Signing (SHA-256 + RSA-PSS) | A FAIRE | Phase 5 |
-| Behavioral Analysis (escalade, exfiltration) | A FAIRE | Phase 5 |
+| Behavioral Analysis (escalade, exfiltration) | PARTIEL | IntentVerifier detecte 8 types de menaces, analyse comportementale statique |
 | Real-Time Security Score | A FAIRE | Phase 5 |
 | Module Sandbox Isolation (syscall whitelist) | A FAIRE | Phase 5 |
 | Security Certification Levels (1-3, AI Act) | A FAIRE | Phase 6+ |
-| Rate limiting sur POST /plans | A FAIRE | Phase 3 |
+| Rate limiting sur POST /plans | PARTIEL | ActionRateLimiter existe, middleware FastAPI a brancher |
 
 ### 2.6 TriggerDaemon — Le systemd de LLMOS
 
@@ -164,28 +174,31 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 
 ### 2.8 Modules — L'Ecosysteme
 
-#### Modules implementes (10 modules, ~160 actions)
+#### Modules implementes (15 modules, ~227 actions)
 
-| # | Module | MODULE_ID | Actions | Actif par defaut |
-|---|--------|-----------|---------|-----------------|
-| 1 | FileSystem | `filesystem` | 14+ | Oui |
-| 2 | OS/Terminal | `os_exec` | 8+ | Oui |
-| 3 | Excel | `excel` | 41 | Oui |
-| 4 | Word | `word` | 30 | Oui |
-| 5 | PowerPoint | `powerpoint` | 25 | Oui |
-| 6 | API/HTTP | `api_http` | 17 | Oui |
-| 7 | IoT/GPIO | `iot` | 10 | Oui |
-| 8 | Vision | `vision` | 3 | Oui |
-| 9 | Triggers | `triggers` | 6 | Si triggers.enabled |
-| 10 | Recording | `recording` | 6 | Si recording.enabled |
+| # | Module | MODULE_ID | Actions | Actif par defaut | Sprint |
+|---|--------|-----------|---------|-----------------|--------|
+| 1 | FileSystem | `filesystem` | 14+ | Oui | Phase 1 |
+| 2 | OS/Terminal | `os_exec` | 8+ | Oui | Phase 1 |
+| 3 | Excel | `excel` | 41 | Oui | Sprint 1 |
+| 4 | Word | `word` | 30 | Oui | Sprint 1 |
+| 5 | PowerPoint | `powerpoint` | 25 | Oui | Sprint 1 |
+| 6 | API/HTTP | `api_http` | 17 | Oui | Sprint 1 |
+| 7 | IoT/GPIO | `iot` | 10 | Oui | Sprint 1.5 |
+| 8 | Vision | `vision` | 3 | Oui | Sprint 1.5 |
+| 9 | Triggers | `triggers` | 6 | Si triggers.enabled | Sprint 1.6 |
+| 10 | Recording | `recording` | 6 | Si recording.enabled | Sprint 1.8 |
+| **11** | **Browser** | **`browser`** | **13** | **Oui** | **Sprint 2** |
+| **12** | **GUI** | **`gui`** | **13** | **Oui** | **Sprint 2** |
+| **13** | **Database** | **`database`** | **13** | **Oui** | **Sprint 2** |
+| **14** | **Database Gateway** | **`database_gateway`** | **12** | **Oui** | **Sprint 2** |
+| **15** | **Security** | **`security`** | **6** | **Oui** | **Sprint 2** |
 
 #### Modules prevus (non demarres)
 
-| Module | Actions prevues | Dependance | Phase |
-|--------|----------------|------------|-------|
-| `browser` | navigate, click, fill, screenshot, wait, execute_script, cookies | playwright | Phase 3 |
-| `gui` | screenshot, click, type, key_press, find_element, wait_for_element | pyautogui + pillow | Phase 3 |
-| `database` | connect, query, insert, update, delete, transaction, list_tables | sqlite3/psycopg2/mysql | Phase 3 |
+Aucun module du CdC §15 ne reste a faire. Tous les modules prevus sont implementes.
+Les 3 modules initialement prevus pour Phase 3 (browser, gui, database) sont FAITS.
+Le module database_gateway et le module security sont des ajouts Sprint 2.
 
 #### Architecture Module
 
@@ -251,6 +264,8 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | Permission filtering (max_permission) | FAIT | toolkit.get_tools(max_permission="readonly") |
 | Module filtering | FAIT | toolkit.get_tools(modules=["filesystem"]) |
 | _extract_action_result() | FAIT | Extrait resultat action du plan response |
+| **_format_security_rejection()** | **FAIT** | Formate les rejection_details en reponse structuree pour le LLM |
+| **Plan-level rejection handling** | **FAIT** | Detection scanner/intent_verifier rejections avant traitement actions |
 | _json_schema_to_pydantic() | FAIT | JSONSchema → Pydantic model pour args |
 | Shared AsyncLLMOSClient pour tools | FAIT | toolkit._get_async_client() |
 | submit_plan_group() (sync + async) | FAIT | `client.py` — execution parallele N plans |
@@ -273,6 +288,9 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | Configurable (schemas, examples, max_actions) | FAIT | Query params sur GET /context |
 | to_dict() (JSON avec metadata) | FAIT | Pour API |
 | Format prompt (plain text) | FAIT | GET /context?format=prompt |
+| **Scanner Pipeline section** | **FAIT** | Section dynamique si scanner_pipeline_active=True |
+| **Intent Verifier section** | **FAIT** | Guidance pour le LLM sur les rejections securite |
+| **Context snippets dynamiques** | **FAIT** | Injection snippets temps reel des modules charges |
 
 ### 2.13 API REST & CLI
 
@@ -287,7 +305,8 @@ organisees par domaine. Chaque ligne indique le statut reel dans le code.
 | GET /modules | FAIT | Liste modules disponibles |
 | GET /modules/{id} | FAIT | Manifeste complet |
 | GET /modules/{id}/actions/{action}/schema | FAIT | JSONSchema params |
-| GET /context | FAIT | System prompt dynamique |
+| GET /context | FAIT | System prompt dynamique (scanner_pipeline_active, context_snippets) |
+| **rejection_details dans PlanResponse** | **FAIT** | Propagation structuree des rejections securite dans GET /plans/{id} et POST /plans |
 | POST /plan-groups | FAIT | Execution parallele N plans (fan-out/fan-in) |
 | WS /ws/stream | FAIT | Evenements temps reel |
 | WS /ws/plans/{id} | FAIT | Suivi plan specifique |
@@ -343,7 +362,61 @@ les autres sont assignees a des phases futures pour ne pas les oublier.
 | **Adaptive Context Window** | Hors scope | C'est le role du SDK LangChain et de l'agent, pas du daemon. Le Bridge fournit `max_actions_per_module` dans GET /context. | Gestion dynamique de la fenetre de contexte du LLM en fonction de la tache. |
 | **Multi-Modal Output** | Phase 6+ | Les modules communautaires (via le Plugin Registry) pourront definir des formats de sortie riches. | Sorties structurees multi-modales (texte, images, tableaux, graphiques) des actions. |
 
-### 2.15 Live Testing & Developpement
+### 2.15 Scanner Pipeline & Security Feedback (NOUVEAU Sprint 2)
+
+| Fonctionnalite | Statut | Details |
+|----------------|--------|---------|
+| HeuristicScanner (Layer 1) | FAIT | `security/scanners/heuristic.py` — 50+ PatternRules, detection <1ms |
+| ScannerRegistry | FAIT | `security/scanners/registry.py` — enregistrement dynamique de scanners |
+| SecurityPipeline (orchestrateur) | FAIT | `security/scanners/pipeline.py` — enchaine scanners, aggrege verdicts |
+| LLMGuardScanner (adapter ML) | FAIT | `security/scanners/adapters/llm_guard.py` |
+| PromptGuardScanner (adapter ML) | FAIT | `security/scanners/adapters/prompt_guard.py` |
+| IntentVerifier (Layer 3 — LLM) | FAIT | `security/intent_verifier.py` — analyse semantique pre-execution |
+| PromptComposer | FAIT | `security/prompt_composer.py` — construction du prompt d'analyse |
+| ThreatCategories | FAIT | `security/threat_categories.py` — 8 types de menaces |
+| rejection_details dans ExecutionState | FAIT | `orchestration/state.py` — persiste dans colonne `data` SQLite |
+| rejection_details dans PlanStateStore | FAIT | create/update_plan_status/get round-trip complet |
+| rejection_details dans API schemas | FAIT | `api/schemas.py` — PlanResponse + SubmitPlanResponse |
+| rejection_details dans routes plans | FAIT | `api/routes/plans.py` — sync + async paths |
+| _format_security_rejection() SDK | FAIT | `langchain_llmos/tools.py` — threat_summary lisible pour LLM |
+| Plan-level rejection dans SDK | FAIT | `_extract_action_result()` — detection avant traitement actions |
+| Scanner Pipeline section system prompt | FAIT | `api/prompt.py` — section dynamique si pipeline active |
+| Flux complet Scanner → LLM | FAIT | Plan rejete → rejection_details → API → SDK → LLM explique en langage naturel |
+
+#### Architecture securite en couches
+
+```
+Plan IML soumis
+    |
+    v
+[Layer 1] HeuristicScanner (<1ms)         — patterns regex, Unicode, encoding
+    |
+    v
+[Layer 2] ML Scanners (~100ms)            — LLMGuard, PromptGuard (optionnels)
+    |
+    v
+SecurityPipeline.scan() → PipelineResult (aggregate_verdict, risk_score, scanner_results[])
+    |
+    +-- Si REJECT → rejection_details{source:"scanner_pipeline"} → FAILED
+    +-- Si WARN → log + continue
+    +-- Si PASS → continue
+    |
+    v
+[Layer 3] IntentVerifier (~1-3s)          — LLM analyse semantique
+    |
+    +-- approve → continue execution
+    +-- reject  → rejection_details{source:"intent_verifier"} → FAILED
+    +-- warn    → log + continue
+    +-- clarify → rejection_details{clarification_needed} → FAILED (mode strict)
+    |
+    v
+Execution normale...
+    |
+    v
+[Layer 4] OutputSanitizer                 — post-execution, anti prompt-injection retour
+```
+
+### 2.16 Live Testing & Developpement
 
 | Fonctionnalite | Phase | Description |
 |----------------|-------|-------------|
@@ -377,14 +450,17 @@ les autres sont assignees a des phases futures pour ne pas les oublier.
 | 10 | Shadow Recorder | FAIT | Sprint 1.8 | 57 |
 | 11 | SDK LangChain + System Prompt + GET /context | FAIT | Level 1 | 77 |
 | 11b | Execution parallele (Cache Locks + ResourceManager + PlanGroup + SDK) | FAIT | Parallel | 64 |
-| 12 | Browser automation (Playwright) | A FAIRE | Phase 3 | — |
-| 13 | GUI control (PyAutoGUI/xdotool) | A FAIRE | Phase 3 | — |
-| 14 | Database module (SQLite, PostgreSQL, MySQL) | A FAIRE | Phase 3 | — |
-| 15 | Mode distribue complet | A FAIRE | Phase 4 | — |
-| 16 | Multi-Agent Coordination | A FAIRE | Phase 5 | — |
-| 17 | Self-Healing & Resilience | PARTIEL | Phase 5 | — |
-| 18 | Dashboard de Monitoring | A FAIRE | Phase 5 | — |
-| 19 | Distribution Open Source & Plugin Registry | A FAIRE | Phase 6 | — |
+| **12** | **Scanner Pipeline + Security Feedback** | **FAIT** | **Sprint 2** | **~150** |
+| **13** | **Module Browser (Playwright)** | **FAIT** | **Sprint 2** | inclus |
+| **14** | **Module GUI (PyAutoGUI)** | **FAIT** | **Sprint 2** | inclus |
+| **15** | **Module Database (SQLite/PostgreSQL/MySQL)** | **FAIT** | **Sprint 2** | inclus |
+| **16** | **Module Database Gateway** | **FAIT** | **Sprint 2** | inclus |
+| **17** | **Module Security (IML)** | **FAIT** | **Sprint 2** | inclus |
+| 18 | Mode distribue complet | A FAIRE | Phase 4 | — |
+| 19 | Multi-Agent Coordination | A FAIRE | Phase 5 | — |
+| 20 | Self-Healing & Resilience | PARTIEL | Phase 5 | — |
+| 21 | Dashboard de Monitoring | A FAIRE | Phase 5 | — |
+| 22 | Distribution Open Source & Plugin Registry | A FAIRE | Phase 6 | — |
 
 ### 3.2 Correspondance CdC PDF (28 sections) vs. Implementation
 
@@ -468,10 +544,11 @@ les autres sont assignees a des phases futures pour ne pas les oublier.
 | Excel | FAIT | 41 |
 | Word | FAIT | 30 |
 | PowerPoint | FAIT | 25 |
-| Browser (Playwright) | A FAIRE | — |
-| GUI (PyAutoGUI) | A FAIRE | — |
+| **Browser (Playwright)** | **FAIT** | **13** |
+| **GUI (PyAutoGUI)** | **FAIT** | **13** |
 | API/HTTP | FAIT | 17 |
-| Database | A FAIRE | — |
+| **Database (SQLite/PG/MySQL)** | **FAIT** | **13** |
+| **Database Gateway** | **FAIT** | **12** |
 
 #### Section 16 : Module IoT
 
@@ -510,9 +587,9 @@ les autres sont assignees a des phases futures pour ne pas les oublier.
 |-----------|--------|
 | Phase 1 — Foundation Core | FAIT 100% |
 | Phase 2 — Office Suite | FAIT 100% |
-| Phase 3 — Perception & Web | ~75% — Perception FAIT, API FAIT, Browser/GUI/DB A FAIRE |
-| Phase 4 — Memory & Reactivite | ~90% — Memory FAIT, Triggers FAIT, IoT FAIT, Database A FAIRE |
-| Phase 5 — Securite & Stabilite | ~30% — retry FAIT, reste A FAIRE |
+| Phase 3 — Perception & Web | **~95%** — Tous modules FAIT, Scanner Pipeline FAIT, reste robustesse (rate limit, purge, repair) |
+| Phase 4 — Memory & Reactivite | ~90% — Memory FAIT, Triggers FAIT, IoT FAIT |
+| Phase 5 — Securite & Stabilite | **~40%** — retry FAIT, Scanner FAIT, IntentVerifier FAIT, reste crypto/dashboard/multi-agent |
 | Phase 6 — Open Source Launch | 0% |
 | Phase 7 — Ecosystem Growth | 0% |
 
@@ -523,37 +600,45 @@ les autres sont assignees a des phases futures pour ne pas les oublier.
 ### 4.1 Etat des tests
 
 ```
-Total : 1133 tests, 0 echec (2026-02-27) — Coverage 80.29%
+Total : 2204 tests, 0 echec (2026-02-27)
 
-llmos-bridge (1092 tests) :
+llmos-bridge (2154 tests, 31 skipped) :
   unit/protocol/       ~120  — parser, validator, models, template, repair, compat, schema
-  unit/security/        ~60  — guard, profiles, sanitizer, audit
-  unit/orchestration/  ~143  — dag, executor, state, rollback, nodes, resource_manager (11), plan_group (10), fallback_chains (9), negotiation (12), intent_clarification (11)
-  unit/modules/         ~89  — registry, filesystem, os_exec, excel, word, pptx, http, iot, cache_locks (9)
+  unit/security/       ~250  — guard, profiles, sanitizer, audit, scanners (heuristic, pipeline, registry, adapters),
+                                decorators, rate_limiter, permission_store, intent_verifier, manager, threat_categories
+  unit/orchestration/  ~155  — dag, executor, state (rejection_details), rollback, nodes,
+                                resource_manager, plan_group, fallback_chains, negotiation, intent_clarification
+  unit/modules/        ~220  — registry, filesystem, os_exec, excel, word, pptx, http, iot,
+                                browser, gui, database, database_gateway, security, cache_locks
   unit/memory/          ~40  — kv store, vector, context builder
   unit/events/          ~52  — UniversalEvent, EventRouter, SessionPropagator
   unit/triggers/       ~127  — models, store, watchers, daemon, module
   unit/recording/       ~37  — models, store, replayer, recorder
-  unit/api/             ~62  — middleware, websocket, prompt generator
-  unit/cli/             ~60  — main, daemon, modules, plans, schema
+  unit/api/             ~70  — middleware, websocket, prompt generator (scanner pipeline section)
+  unit/cli/             ~60  — main, daemon, modules, plans, schema (exclus du run)
   unit/test_config.py   ~15  — Settings, NodeConfig, RecordingConfig, ResourceConfig
-  integration/         ~124  — Plans API, Recordings API, Context API, Plan Groups API (13)
-  e2e/                  ~43  — SDK Integration, SDK Approval, SDK Parallel (14)
+  integration/         ~160  — Plans API, Recordings API, Context API, Plan Groups API,
+                                Scanner Pipeline (rejection_details propagation)
+  e2e/                  ~90  — SDK Integration, SDK Approval, SDK Parallel, Browser E2E,
+                                Database E2E, Real LLM PostgreSQL
 
-langchain-llmos (41 tests) :
+langchain-llmos (50 tests) :
   test_client.py        ~13  — LLMOSClient sync + AsyncLLMOSClient
   test_toolkit.py       ~14  — LLMOSToolkit (tools, prompt, context, lifecycle)
-  test_tools.py         ~14  — LLMOSActionTool, _json_schema_to_pydantic, _extract_action_result
+  test_tools.py         ~23  — LLMOSActionTool, _json_schema_to_pydantic, _extract_action_result,
+                                _format_security_rejection, security rejection handling
 ```
 
 ### 4.2 Evolution des tests
 
 ```
-Sprint 1.6 : 794 tests   ← TriggerDaemon + EventBus
-Sprint 1.7 : 825 tests   ← Fondations distribuees + E2E fixes
-Sprint 1.8 : 919 tests   ← Shadow Recorder + integration tests
-Level 1    : 996 tests   ← SDK LangChain + System Prompt + Context API (+77)
+Sprint 1.6 :  794 tests  ← TriggerDaemon + EventBus
+Sprint 1.7 :  825 tests  ← Fondations distribuees + E2E fixes
+Sprint 1.8 :  919 tests  ← Shadow Recorder + integration tests
+Level 1    :  996 tests  ← SDK LangChain + System Prompt + Context API (+77)
 Parallel   : 1060 tests  ← Cache locks + ResourceManager + PlanGroup + SDK parallel (+64)
+Sprint 2a  : 1133 tests  ← Approval system + features IA (+73)
+Sprint 2b  : 2204 tests  ← Scanner Pipeline + 5 modules + Security Feedback (+1071)
 ```
 
 ---
@@ -593,8 +678,14 @@ IMLValidator.validate() — DAG cycles, templates, rollback chains
     v
 PlanExecutor.run(plan)
     |
+    +-- [Layer 1-2] SecurityPipeline.scan() → HeuristicScanner + ML scanners
+    |       +-- Si REJECT → rejection_details → FAILED (LLM recoit explication structuree)
+    |
     +-- ModuleVersionChecker
     +-- DAGScheduler → ExecutionWaves
+    |
+    +-- [Layer 3] IntentVerifier.verify_plan() (si configure)
+    |       +-- Si REJECT/CLARIFY → rejection_details → FAILED
     |
     +-- Pour chaque wave :
     |   +-- PermissionGuard.check_action()
@@ -615,6 +706,10 @@ PlanExecutor.run(plan)
     |
     v
 Response JSON → LLMOSClient → _extract_action_result() → LLM
+    |
+    +-- Si rejection_details present → _format_security_rejection()
+    |       → {"status":"security_rejected", "threat_summary":..., "recommendations":...}
+    |       → LLM explique en langage naturel a l'utilisateur
 
 --- Parallel Execution Path (nouveau) ---
 
@@ -662,6 +757,20 @@ PlanGroupResponse JSON → SDK → LLM
 
 Aucun bug E2E connu a ce jour.
 
+### 5.3 Vulnerabilites de securite identifiees (Audit Sprint 2)
+
+| Severite | Vulnerabilite | Fichier | Impact | Remediation |
+|----------|---------------|---------|--------|-------------|
+| **CRITIQUE** | Symlink bypass sandbox | `security/guard.py` | `os.path.abspath()` ne resout pas les symlinks → escape du sandbox. Un fichier symlink dans un dossier autorise peut pointer vers /etc/shadow | Remplacer `os.path.abspath()` par `os.path.realpath()` dans `PermissionGuard._is_path_allowed()` |
+| **HIGH** | SSRF dans api_http | `modules/api_http/module.py` | Pas de validation URL → requetes vers 127.0.0.1, 169.254.x.x, reseau interne | Ajouter validation URL (blocklist IP privees, resolution DNS pre-requete) |
+| **HIGH** | File write via symlinks | `modules/filesystem/module.py` | Ecriture dans fichiers arbitraires en creant un symlink vers une cible hors sandbox | Verifier `os.path.realpath()` avant toute operation d'ecriture |
+| **HIGH** | WebSocket sans auth | `api/routes/websocket.py` | WS /ws/stream et /ws/plans/{id} n'exigent pas de token Bearer | Ajouter verification X-LLMOS-Token sur connexion WS |
+| **MEDIUM** | TOCTOU race condition | `modules/filesystem/` | Check permission puis action → fenetre de race entre la verification et l'operation | Utiliser des locks ou operations atomiques |
+| **MEDIUM** | HeuristicScanner bypass | `security/scanners/heuristic.py` | Unicode homoglyphs, zero-width chars, encodages exotiques peuvent eviter les patterns | Normaliser systematiquement (NFKC + strip zero-width) avant scan |
+| **LOW** | Rate limit spoofing | `security/rate_limiter.py` | X-Forwarded-For manipulable par le client | Ignorer X-Forwarded-For ou valider via proxy trust |
+
+**Priorite remediation** : Les 4 vulnerabilites CRITIQUE/HIGH doivent etre corrigees avant toute mise en production.
+
 ---
 
 ## 6. Feuille de route — Prochaine phase
@@ -677,18 +786,24 @@ Aucun bug E2E connu a ce jour.
 - ~~Pas de resilience sur echec module~~ → FAIT (Graceful Degradation — fallback chains configurables)
 - ~~Erreurs opaques pour le LLM~~ → FAIT (Negotiation Protocol — alternatives concretes dans les messages d'erreur)
 - ~~Approbation binaire approve/reject~~ → FAIT (Intent Clarification — clarification_options structurees)
+- ~~Module Browser (Playwright)~~ → FAIT (13 actions, Sprint 2)
+- ~~Module GUI (PyAutoGUI)~~ → FAIT (13 actions, Sprint 2)
+- ~~Module Database (SQLite/PG/MySQL)~~ → FAIT (13 actions, Sprint 2)
+- ~~Rejections securite opaques pour le LLM~~ → FAIT (Security Feedback Integration — rejection_details bout en bout)
+- ~~Pas de detection prompt injection~~ → FAIT (Scanner Pipeline heuristique + adaptateurs ML)
+- ~~Pas d'analyse semantique pre-execution~~ → FAIT (IntentVerifier LLM, 3 providers)
 
 ### 6.2 Inventaire global du projet
 
 ```
-Fichiers Python :       172 (93 core + 4 SDK + 61 tests + 6 template + 5 scripts + 3 configs)
-Packages architecturaux: 18 (api, cli, protocol, orchestration, modules, perception, memory, security, events, triggers, recording...)
-Modules built-in :       10 (~160 actions IML)
+Fichiers Python :       ~230 (~140 core + 4 SDK + ~70 tests + 6 template + 5 scripts + 3 configs)
+Packages architecturaux: 22 (api, cli, protocol, orchestration, modules(x15), perception, memory,
+                              security, security/scanners, security/providers, events, triggers, recording)
+Modules built-in :       15 (~227 actions IML)
 Endpoints REST :         17+
 WebSocket routes :        2
-Tests :                1133 (0 echec)
-Coverage :            80.29%
-Params futurs :           3 fichiers deja crees (browser.py, gui.py, database.py)
+Tests :                2204 (0 echec, 31 skipped)
+Params types Pydantic:   15 fichiers (tous les modules couverts)
 ```
 
 ### 6.3 Fonctionnalites partiellement faites
@@ -704,14 +819,18 @@ Params futurs :           3 fichiers deja crees (browser.py, gui.py, database.py
 
 ### 6.4 TOUTES les fonctionnalites restantes — Tracking complet
 
-#### Phase 3 — Perception & Web (SPRINT 2 EN COURS)
+#### Phase 3 — Perception & Web (SPRINT 2 — QUASI COMPLET)
 
 | # | Feature | Effort | Params existants | Statut |
 |---|---------|--------|-----------------|--------|
-| 3.1 | Module Database (SQLite + PostgreSQL/MySQL optional) | 2-3j | `params/database.py` OUI | A FAIRE |
-| 3.2 | Module Browser (Playwright) | 3-4j | `params/browser.py` OUI | A FAIRE |
-| 3.3 | Module GUI (PyAutoGUI + Pillow) | 2-3j | `params/gui.py` OUI | A FAIRE |
-| 3.4 | Rate limiting sur POST /plans | 2h | — | A FAIRE |
+| 3.1 | Module Database (SQLite + PostgreSQL/MySQL optional) | 2-3j | `params/database.py` OUI | **FAIT** |
+| 3.2 | Module Browser (Playwright) | 3-4j | `params/browser.py` OUI | **FAIT** |
+| 3.3 | Module GUI (PyAutoGUI + Pillow) | 2-3j | `params/gui.py` OUI | **FAIT** |
+| 3.1b | Module Database Gateway (SQL-free semantic) | 2j | `params/database_gateway.py` | **FAIT** |
+| 3.1c | Module Security (IML permission management) | 1j | `params/security.py` | **FAIT** |
+| 3.1d | Scanner Pipeline (heuristic + ML adapters) | 3j | — | **FAIT** |
+| 3.1e | Security Feedback Integration (rejection_details E2E) | 1j | — | **FAIT** |
+| 3.4 | Rate limiting sur POST /plans | 2h | — | PARTIEL (ActionRateLimiter existe, middleware a brancher) |
 | 3.5 | Test boucle IMLRepair (repair → resubmit → success) | 3h | — | A FAIRE |
 | 3.6 | Health check enrichi (GET /health → etat modules) | 2h | — | A FAIRE |
 | 3.7 | Purge auto plans anciens | 1h | — | A FAIRE |
@@ -816,77 +935,51 @@ Params futurs :           3 fichiers deja crees (browser.py, gui.py, database.py
 |-------|-----------|-------------|
 | Phase 1 — Foundation Core | **100%** | Protocole, Securite, Orchestration, Modules de base |
 | Phase 2 — Office Suite | **100%** | Excel 41, Word 30, PPT 25, HTTP 17 |
-| Phase 3 — Perception & Web | **~75%** | Perception FAIT, API FAIT, Browser/GUI/DB manquants |
+| Phase 3 — Perception & Web | **~95%** | Browser/GUI/Database/DB Gateway/Security FAIT, Scanner FAIT, reste robustesse |
 | Phase 4 — Distribue | **~15%** | Fondations FAIT (BaseNode, config), RemoteNode absent |
-| Phase 5 — Securite avancee | **~20%** | Retry + IMLRepair + Approval existants |
+| Phase 5 — Securite avancee | **~40%** | Retry + IMLRepair + Approval + Scanner Pipeline + IntentVerifier + Security Feedback |
 | Phase 6 — Open Source | **~5%** | Module template existe, le reste a faire |
 | Phase 7+ — Ecosysteme | **0%** | Innovation future |
 
-**Fonctionnalites completes : ~75/120 soit ~63% du CdC total**
-**Fonctionnalites bloquant la production (Phase 3) : 8 items restants**
+**Fonctionnalites completes : ~90/120 soit ~75% du CdC total**
+**Fonctionnalites bloquant la production : 4 items robustesse (rate limit, purge, repair, health check)**
 
-### 6.6 Priorites Sprint 2 (Phase 3)
+### 6.6 Bilan Sprint 2 (Phase 3) — QUASI COMPLET
 
-**Objectif : completer les 3 modules manquants du CdC §15 + robustesse production.**
-**Estimation : 9-13 jours**
+**Objectif initial : completer les 3 modules manquants du CdC §15 + robustesse production.**
+**Resultat : 5 modules + Scanner Pipeline + Security Feedback implementes. Reste 4 items robustesse.**
 
-#### Priorite 1 — Module Database (2-3 jours)
+#### FAIT — Modules Sprint 2
 
-Pourquoi en premier :
-- Le plus simple des 3 modules manquants
-- Zero dependance externe pour SQLite (stdlib)
-- PostgreSQL/MySQL en optional extras
-- Patterns d'implementation identiques aux modules existants
-- Deverrouille les triggers DatabaseWatch (Phase 4)
+| Module | Actions | Statut |
+|--------|---------|--------|
+| Database (SQLite/PostgreSQL/MySQL) | 13 | **FAIT** — connect, disconnect, execute_query, fetch_results, CRUD, transactions |
+| Browser (Playwright) | 13 | **FAIT** — navigate, click, fill, screenshot, wait, execute_script, cookies |
+| GUI (PyAutoGUI) | 13 | **FAIT** — click, type, key_press, find_on_screen, screenshot, window management |
+| Database Gateway (semantic SQL-free) | 12 | **FAIT** — connect, introspect, find, search, CRUD, aggregate |
+| Security (IML permissions) | 6 | **FAIT** — list/check/request/revoke permissions, status, audit |
 
-Actions prevues (~13) :
-```
-connect, disconnect, execute_query, fetch_results,
-insert_record, update_record, delete_record,
-list_tables, get_table_schema, create_table,
-begin_transaction, commit_transaction, rollback_transaction
-```
+#### FAIT — Scanner Pipeline & Security Feedback
 
-#### Priorite 2 — Module Browser (3-4 jours)
+| Feature | Statut |
+|---------|--------|
+| HeuristicScanner (50+ patterns, <1ms) | **FAIT** |
+| ScannerRegistry + SecurityPipeline | **FAIT** |
+| LLMGuard + PromptGuard adapters | **FAIT** |
+| IntentVerifier LLM (3 providers) | **FAIT** |
+| rejection_details bout en bout | **FAIT** |
+| System prompt scanner section | **FAIT** |
+| SDK security rejection handling | **FAIT** |
 
-Pourquoi en deuxieme :
-- Playwright est mature et bien documente
-- Cas d'usage web scraping/automation tres demandes
-- La Perception Loop peut deja capturer les screenshots browser
-- Deverrouille les triggers BrowserEvent
-
-Actions prevues (~13) :
-```
-navigate, click, fill, screenshot, wait_for_selector,
-execute_script, get_page_content, get_cookies, set_cookies,
-download_file, close_page, new_page, evaluate_expression
-```
-
-#### Priorite 3 — Module GUI (2-3 jours)
-
-Pourquoi en troisieme :
-- Depend de PyAutoGUI + Pillow (optionnel)
-- Moins prioritaire que Browser (web > desktop automation)
-- Perception Loop deja prete pour les captures ecran
-- Tres lie a OmniParser (vision module existant)
-
-Actions prevues (~12) :
-```
-screenshot, click_position, click_image, type_text,
-key_press, key_combo, find_on_screen, wait_for_image,
-get_mouse_position, move_mouse, scroll, get_active_window
-```
-
-#### Priorite 4 — Robustesse production (2 jours)
+#### RESTE — Robustesse production (~1 jour)
 
 | Item | Effort |
 |------|--------|
-| Rate limiting sur POST /plans (SlowAPI ou middleware custom) | 2h |
+| Rate limiting middleware FastAPI (ActionRateLimiter existe) | 1h |
 | Taille max des resultats (truncation avant injection LLM) | 2h |
 | Test boucle IMLRepair (repair → resubmit → success) | 3h |
 | Health check enrichi (GET /health → etat chaque module) | 2h |
 | Purge automatique plans anciens | 1h |
-| Session recovery au redemarrage | 3h |
 
 ### 6.7 Vue globale — Phases restantes
 
@@ -894,9 +987,9 @@ get_mouse_position, move_mouse, scroll, get_active_window
 |-------|---------|--------|
 | Phase 1 — Foundation Core | Protocole, Securite, Orchestration, Modules de base | FAIT 100% |
 | Phase 2 — Office Suite + Rollback | Excel, Word, PowerPoint, Rollback | FAIT 100% |
-| Phase 3 — Perception & Web (**SPRINT 2 EN COURS**) | Browser, GUI, Database, Context Builder, Rate limiting | EN COURS ~75% |
+| Phase 3 — Perception & Web | Browser, GUI, Database, DB Gateway, Security, Scanner Pipeline, Security Feedback | **~95%** (reste robustesse) |
 | Phase 4 — Distribue + Reactivite avancee | RemoteNode, mDNS, Redis/Kafka EventBus, watchers IoT/App | A FAIRE |
-| Phase 5 — Securite avancee + UX | Multi-Agent, Self-Healing, Dashboard, Crypto signing | A FAIRE |
+| Phase 5 — Securite avancee + UX | Multi-Agent, Self-Healing, Dashboard, Crypto signing | PARTIEL (~40%) |
 | Phase 6 — Open Source Launch | PyPI, Plugin Registry, Marketplace, Documentation | A FAIRE |
 | Phase 7 — Ecosystem Growth | ROS, Voice, Cloud, Auto-Programming, Consensus | A FAIRE |
 
@@ -905,53 +998,67 @@ get_mouse_position, move_mouse, scroll, get_active_window
 ## 7. Resume executif
 
 ```
-LLMOS Bridge au 2026-02-27 — Analyse Totale Pre-Sprint 2
+LLMOS Bridge au 2026-02-27 — Post-Sprint 2
 ====================================================================
 
 INVENTAIRE :
-  172 fichiers Python, 18 packages architecturaux
-  1133 tests, 0 echec — Coverage 80.29%
-  12 composants implementes (1-10 + SDK LangChain + Execution Parallele)
-  10 modules built-in, ~160 actions IML
+  ~230 fichiers Python, 22 packages architecturaux
+  2204 tests, 0 echec (2154 daemon + 50 SDK)
+  17 composants implementes (1-11 + Sprint 2 modules + Scanner Pipeline + Security Feedback)
+  15 modules built-in, ~227 actions IML
   17+ endpoints REST, 2 WebSocket routes
-  Score d'avancement global : ~63% du CdC total (75/120 features)
+  Score d'avancement global : ~75% du CdC total (~90/120 features)
 
-FAIT :
+FAIT (Sprint 2 — nouveautes) :
+  Module Browser (13 actions, Playwright — web scraping/automation)
+  Module GUI (13 actions, PyAutoGUI — desktop automation)
+  Module Database (13 actions, SQLite/PostgreSQL/MySQL — transactions)
+  Module Database Gateway (12 actions — acces semantique SQL-free)
+  Module Security (6 actions IML — gestion permissions runtime)
+  Scanner Pipeline heuristique (50+ patterns, <1ms, Layer 1-2)
+  Adaptateurs ML (LLMGuard, PromptGuard — Layer 2)
+  IntentVerifier LLM (3 providers Anthropic/OpenAI/Ollama — Layer 3)
+  Security Feedback Integration (rejection_details bout en bout)
+  6 decorateurs securite (@requires_permission, @sensitive_action, @rate_limited, etc.)
+  ActionRateLimiter, PermissionStore, SecurityManager
+  System Prompt scanner section dynamique
+
+FAIT (precedemment) :
   Protocole IML v2 complet (parser + validator + repair + migration + compiler mode)
   Securite (4 profils, approval 5 decisions, sandbox, audit, anti-injection)
   Orchestration DAG (parallel, sequential, reactive, rollback, cascade failure)
+  10 modules Phase 1-1.8 (filesystem, os_exec, excel, word, pptx, http, iot, vision, triggers, recording)
   Execution parallele multi-plans (PlanGroup, ResourceManager, Cache Locks)
-  Graceful Degradation (fallback chains par module)
-  Negotiation Protocol (alternatives structurees sur echec)
-  Intent Clarification (options structurees dans approval)
-  TriggerDaemon (7 types watchers, scheduler, persistence, chainage)
-  Universal EventBus (causalite, session, 8 topics, 3 backends)
-  Shadow Recorder (enregistrement, replay, auto-tagging, API REST)
-  Fondations distribuees (BaseNode, NodeConfig, target_node)
+  TriggerDaemon + Universal EventBus + Shadow Recorder
   SDK LangChain complet (sync + async, tools, system prompt, parallel)
-  Chaine complete LLM → SDK → API → Executor → Module → Resultat : OPERATIONNELLE
+  Chaine complete LLM → SDK → API → Scanner → Executor → Module → Resultat : OPERATIONNELLE
+
+VULNERABILITES SECURITE IDENTIFIEES :
+  [CRITIQUE] Symlink bypass dans security/guard.py (os.path.abspath ne resout pas symlinks)
+  [HIGH]     SSRF dans api_http (pas de validation URL interne)
+  [HIGH]     File write via symlinks (filesystem module)
+  [HIGH]     WebSocket endpoints sans authentification
+  [MEDIUM]   TOCTOU race conditions (filesystem)
+  [MEDIUM]   HeuristicScanner bypass (Unicode homoglyphs)
+  [LOW]      Rate limit spoofing via X-Forwarded-For
 
 PARTIELLEMENT FAIT (6 items) :
   Perception Applicative (Canal 2), Universal Data Pipeline,
   Niveaux de perception, Shadow Recorder Guided, Module Loader, Self-Healing
 
-SPRINT 2 EN COURS (Phase 3 — 8 items) :
-  3 modules : Database, Browser, GUI
-  5 robustesse : rate limiting, truncation, IMLRepair, health check, purge
+RESTE SPRINT 2 (4 items robustesse) :
+  Rate limiting middleware, truncation resultats, IMLRepair boucle, health check enrichi
 
 PHASES FUTURES :
   Phase 4 (11 items) : Distribue, Triggers avances, Redis/Kafka
   Phase 5 (16 items) : Multi-Agent, Self-Healing, Dashboard, Crypto, Debug tools
   Phase 6  (8 items) : Plugin Registry, Decorateurs, Marketplace, PyPI
   Phase 7+ (12 items) : Cross-Session, Consensus, Predictive, Mirror Mode...
-  Shadow Recorder B-D (6 items) : Semantic, Patterns, Export, Marketplace
-
-FEATURES IA EVALUEES (10) :
-  3 implementees, 3 hors scope, 4 reportees (Phase 5/6/7+)
 
 KPIs CdC §26 :
-  Modules built-in : 10 (cible Phase 1 = 2)   → DEPASSE x5
-  Coverage tests : 80.29% (cible 70%)          → DEPASSE
+  Modules built-in : 15 (cible Phase 1 = 2)    → DEPASSE x7.5
+  Tests :          2204 (0 echec)               → ROBUSTE
   Latence action simple : ~100ms (cible <300ms) → RESPECTE
-  Actions IML totales : ~160 (cible = "core")  → DEPASSE
+  Actions IML totales : ~227 (cible = "core")   → DEPASSE
+  Securite : 4 couches (heuristic + ML + LLM + output) → DEPASSE CdC
 ```

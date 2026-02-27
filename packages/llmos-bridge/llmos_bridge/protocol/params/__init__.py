@@ -11,6 +11,7 @@ The SchemaRegistry uses these maps to:
 
 from llmos_bridge.protocol.params.api_http import PARAMS_MAP as API_HTTP_PARAMS
 from llmos_bridge.protocol.params.browser import PARAMS_MAP as BROWSER_PARAMS
+from llmos_bridge.protocol.params.computer_control import PARAMS_MAP as COMPUTER_CONTROL_PARAMS
 from llmos_bridge.protocol.params.database import PARAMS_MAP as DATABASE_PARAMS
 from llmos_bridge.protocol.params.database_gateway import PARAMS_MAP as DB_GATEWAY_PARAMS
 from llmos_bridge.protocol.params.excel import PARAMS_MAP as EXCEL_PARAMS
@@ -39,6 +40,7 @@ ALL_PARAMS: dict[str, dict[str, type]] = {
     "vision": VISION_PARAMS,
     "recording": RECORDING_PARAMS,
     "security": SECURITY_PARAMS,
+    "computer_control": COMPUTER_CONTROL_PARAMS,
 }
 
 __all__ = [
@@ -57,4 +59,5 @@ __all__ = [
     "VISION_PARAMS",
     "RECORDING_PARAMS",
     "SECURITY_PARAMS",
+    "COMPUTER_CONTROL_PARAMS",
 ]

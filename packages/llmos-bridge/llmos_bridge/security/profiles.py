@@ -136,6 +136,8 @@ _POWER_USER_ALLOWED: frozenset[str] = _LOCAL_WORKER_ALLOWED | frozenset(
         "db_gateway.*",
         "api_http.send_email",
         "iot.*",
+        "vision.*",
+        "computer_control.*",
     ]
 )
 

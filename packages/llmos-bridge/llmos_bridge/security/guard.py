@@ -161,11 +161,16 @@ class PermissionGuard:
             self._validate_sandbox_path(path, action.module, action.action)
 
     def _validate_sandbox_path(self, path: str, module: str, action: str) -> None:
-        """Raise PermissionDeniedError if *path* is outside all sandbox dirs."""
-        abs_path = os.path.abspath(path)
+        """Raise PermissionDeniedError if *path* is outside all sandbox dirs.
+
+        Uses ``os.path.realpath`` to resolve symlinks — this prevents an
+        attacker from creating ``/sandbox/link → /etc`` and bypassing the
+        sandbox check.
+        """
+        real_path = os.path.realpath(path)
         for sandbox in self._sandbox_paths:
-            abs_sandbox = os.path.abspath(sandbox)
-            if abs_path.startswith(abs_sandbox + os.sep) or abs_path == abs_sandbox:
+            real_sandbox = os.path.realpath(sandbox)
+            if real_path.startswith(real_sandbox + os.sep) or real_path == real_sandbox:
                 return
 
         raise PermissionDeniedError(

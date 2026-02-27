@@ -80,6 +80,7 @@ class ExecutionState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     actions: dict[str, ActionState] = field(default_factory=dict)
+    rejection_details: dict[str, Any] | None = None
 
     @classmethod
     def from_plan(cls, plan: IMLPlan) -> "ExecutionState":
@@ -105,7 +106,7 @@ class ExecutionState:
         return any(a.status == ActionStatus.FAILED for a in self.actions.values())
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "plan_id": self.plan_id,
             "plan_status": self.plan_status.value,
             "created_at": self.created_at,
@@ -123,6 +124,9 @@ class ExecutionState:
                 for aid, a in self.actions.items()
             },
         }
+        if self.rejection_details:
+            d["rejection_details"] = self.rejection_details
+        return d
 
 
 class PlanStateStore:
@@ -163,11 +167,12 @@ class PlanStateStore:
     async def create(self, state: ExecutionState) -> None:
         """Persist a new ExecutionState (plan + all actions)."""
         now = time.time()
+        data = {"rejection_details": state.rejection_details} if state.rejection_details else {}
         async with self._lock:
             assert self._conn is not None
             await self._conn.execute(
                 "INSERT INTO plans (plan_id, status, created_at, updated_at, data) VALUES (?,?,?,?,?)",
-                (state.plan_id, state.plan_status.value, now, now, json.dumps({})),
+                (state.plan_id, state.plan_status.value, now, now, json.dumps(data)),
             )
             for action_id, action_state in state.actions.items():
                 await self._conn.execute(
@@ -177,13 +182,26 @@ class PlanStateStore:
                 )
             await self._conn.commit()
 
-    async def update_plan_status(self, plan_id: str, status: PlanStatus) -> None:
+    async def update_plan_status(
+        self,
+        plan_id: str,
+        status: PlanStatus,
+        rejection_details: dict[str, Any] | None = None,
+    ) -> None:
         async with self._lock:
             assert self._conn is not None
-            await self._conn.execute(
-                "UPDATE plans SET status=?, updated_at=? WHERE plan_id=?",
-                (status.value, time.time(), plan_id),
-            )
+            now = time.time()
+            if rejection_details is not None:
+                data = json.dumps({"rejection_details": rejection_details})
+                await self._conn.execute(
+                    "UPDATE plans SET status=?, updated_at=?, data=? WHERE plan_id=?",
+                    (status.value, now, data, plan_id),
+                )
+            else:
+                await self._conn.execute(
+                    "UPDATE plans SET status=?, updated_at=? WHERE plan_id=?",
+                    (status.value, now, plan_id),
+                )
             await self._conn.commit()
 
     async def update_action(
@@ -231,18 +249,21 @@ class PlanStateStore:
     async def get(self, plan_id: str) -> ExecutionState | None:
         assert self._conn is not None
         async with self._conn.execute(
-            "SELECT plan_id, status, created_at, updated_at FROM plans WHERE plan_id=?",
+            "SELECT plan_id, status, created_at, updated_at, data FROM plans WHERE plan_id=?",
             (plan_id,),
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
 
+        # Extract rejection_details from the data column.
+        data = json.loads(row[4]) if row[4] else {}
         state = ExecutionState(
             plan_id=row[0],
             plan_status=PlanStatus(row[1]),
             created_at=row[2],
             updated_at=row[3],
+            rejection_details=data.get("rejection_details"),
         )
         async with self._conn.execute(
             "SELECT action_id, status, started_at, finished_at, result, error, attempt, module, action "

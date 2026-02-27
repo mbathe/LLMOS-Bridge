@@ -67,10 +67,14 @@ class ActionPerceptionResult:
     validation_passed: bool | None = None
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Vision module fields (populated when vision_module is available).
+    vision_elements: list[dict[str, Any]] | None = None
+    vision_element_count: int | None = None
+    vision_interactable_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable dict for embedding in execution_results."""
-        return {
+        d: dict[str, Any] = {
             "action_id": self.action_id,
             "captured": self.captured,
             "before_text": self.before_text,
@@ -80,6 +84,11 @@ class ActionPerceptionResult:
             "validation_passed": self.validation_passed,
             "error": self.error,
         }
+        if self.vision_elements is not None:
+            d["vision_elements"] = self.vision_elements
+            d["vision_element_count"] = self.vision_element_count
+            d["vision_interactable_count"] = self.vision_interactable_count
+        return d
 
 
 class PerceptionPipeline:
@@ -110,11 +119,13 @@ class PerceptionPipeline:
         self,
         capture: ScreenCapture | None = None,
         ocr: OCREngine | None = None,
+        vision_module: Any | None = None,
         save_screenshots: bool = False,
         save_dir: str | None = None,
     ) -> None:
         self._capture = capture or ScreenCapture()
         self._ocr = ocr or OCREngine()
+        self._vision = vision_module
         self._save_screenshots = save_screenshots
         self._save_dir = save_dir
 
@@ -174,6 +185,30 @@ class PerceptionPipeline:
         result.before_text = before_ocr_text
         result.after_text = after_ocr_text
         result.ocr_confidence = ocr_confidence
+
+        # 2.5. Vision parse (if vision module available and after screenshot exists).
+        if self._vision is not None and after_screenshot is not None:
+            try:
+                vision_result = await asyncio.wait_for(
+                    self._vision.parse_screen(screenshot_bytes=after_screenshot.data),
+                    timeout=15.0,
+                )
+                result.vision_elements = [
+                    e.model_dump() for e in vision_result.elements[:50]
+                ]
+                result.vision_element_count = len(vision_result.elements)
+                result.vision_interactable_count = sum(
+                    1 for e in vision_result.elements if e.interactable
+                )
+                # Enrich OCR text if vision gives better text.
+                if not result.after_text and vision_result.raw_ocr:
+                    result.after_text = vision_result.raw_ocr
+            except Exception as exc:
+                log.warning(
+                    "perception_vision_failed",
+                    action_id=action_id,
+                    error=str(exc),
+                )
 
         # 3. Diff detection: compare raw pixel data if both screenshots exist.
         if before is not None and after_screenshot is not None:

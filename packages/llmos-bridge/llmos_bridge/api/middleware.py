@@ -79,9 +79,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._hits: dict[str, collections.deque] = {}
 
     def _client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        # Use the direct peer address only — X-Forwarded-For is trivially
+        # spoofable and must NOT be trusted for rate-limiting decisions.
+        # If the daemon runs behind a reverse proxy, the proxy should set
+        # request.client to the real client IP via PROXY protocol.
         return request.client.host if request.client else "unknown"
 
     def _is_rate_limited(self, client_ip: str) -> bool:

@@ -309,3 +309,66 @@ class TestPermissionDisplayInActions:
                 break
             elif in_write_section and "Permission: `local_worker`" in line:
                 pytest.fail("Default permission local_worker should not be displayed for write_file")
+
+
+@pytest.mark.unit
+class TestScannerPipelineSection:
+    def test_scanner_section_absent_by_default(self) -> None:
+        gen = SystemPromptGenerator(manifests=[])
+        prompt = gen.generate()
+        assert "Input Scanner Pipeline" not in prompt
+
+    def test_scanner_section_present_when_active(self) -> None:
+        gen = SystemPromptGenerator(manifests=[], scanner_pipeline_active=True)
+        prompt = gen.generate()
+        assert "Input Scanner Pipeline" in prompt
+        assert "security_rejected" in prompt
+        assert "threat_summary" in prompt
+        assert "recommendations" in prompt
+
+    def test_scanner_section_mentions_clarification(self) -> None:
+        gen = SystemPromptGenerator(manifests=[], scanner_pipeline_active=True)
+        prompt = gen.generate()
+        assert "clarif" in prompt.lower()
+
+    def test_scanner_section_absent_when_inactive(self) -> None:
+        gen = SystemPromptGenerator(manifests=[], scanner_pipeline_active=False)
+        prompt = gen.generate()
+        assert "Input Scanner Pipeline" not in prompt
+
+
+@pytest.mark.unit
+class TestComputerUseProtocol:
+    """Tests for the Computer Use Protocol section in the system prompt."""
+
+    @staticmethod
+    def _cc_manifest() -> ModuleManifest:
+        return ModuleManifest(
+            module_id="computer_control",
+            version="1.0.0",
+            description="Semantic GUI automation.",
+            actions=[ActionSpec(name="read_screen", description="Read screen.")],
+        )
+
+    def test_computer_control_section_included(self) -> None:
+        gen = SystemPromptGenerator(manifests=[self._cc_manifest()])
+        prompt = gen.generate()
+        assert "Computer Control" in prompt
+
+    def test_computer_use_protocol_present(self) -> None:
+        gen = SystemPromptGenerator(manifests=[self._cc_manifest()])
+        prompt = gen.generate()
+        assert "Computer Use Protocol" in prompt
+        assert "OBSERVE" in prompt
+        assert "VERIFY" in prompt
+        assert "read_screen" in prompt
+
+    def test_one_action_guidance(self) -> None:
+        gen = SystemPromptGenerator(manifests=[self._cc_manifest()])
+        prompt = gen.generate()
+        assert "one action" in prompt.lower() or "One action" in prompt
+
+    def test_computer_control_absent_without_module(self) -> None:
+        gen = SystemPromptGenerator(manifests=[])
+        prompt = gen.generate()
+        assert "Computer Use Protocol" not in prompt

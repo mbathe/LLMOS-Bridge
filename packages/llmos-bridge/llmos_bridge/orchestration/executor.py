@@ -243,8 +243,39 @@ class PlanExecutor:
                     risk_score=pipeline_result.max_risk_score,
                     short_circuited=pipeline_result.short_circuited,
                 )
+                # Capture structured rejection details for SDK/LLM feedback.
+                all_threats: list[str] = []
+                all_patterns: list[str] = []
+                scanner_details: list[dict[str, Any]] = []
+                for sr in pipeline_result.scanner_results:
+                    all_threats.extend(sr.threat_types)
+                    all_patterns.extend(sr.matched_patterns)
+                    if sr.threat_types or sr.matched_patterns:
+                        scanner_details.append({
+                            "scanner_id": sr.scanner_id,
+                            "verdict": sr.verdict.value,
+                            "risk_score": sr.risk_score,
+                            "threat_types": sr.threat_types,
+                            "matched_patterns": sr.matched_patterns,
+                            "details": sr.details,
+                        })
+                state.rejection_details = {
+                    "source": "scanner_pipeline",
+                    "verdict": pipeline_result.aggregate_verdict.value,
+                    "risk_score": pipeline_result.max_risk_score,
+                    "threat_types": sorted(set(all_threats)),
+                    "matched_patterns": sorted(set(all_patterns)),
+                    "scanner_details": scanner_details,
+                    "recommendations": [
+                        "Review the plan description and action parameters for suspicious content.",
+                        "Remove or rephrase flagged elements.",
+                    ],
+                }
                 state.plan_status = PlanStatus.FAILED
-                await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                await self._store.update_plan_status(
+                    plan.plan_id, PlanStatus.FAILED,
+                    rejection_details=state.rejection_details,
+                )
                 await self._audit.log(
                     AuditEvent.PLAN_FAILED, plan_id=plan.plan_id, error=error_msg
                 )
@@ -292,8 +323,27 @@ class PlanExecutor:
                         risk_level=verification.risk_level,
                         threats=[t.threat_type.value for t in verification.threats],
                     )
+                    state.rejection_details = {
+                        "source": "intent_verifier",
+                        "verdict": verification.verdict.value,
+                        "risk_level": verification.risk_level,
+                        "reasoning": verification.reasoning,
+                        "threats": [
+                            {
+                                "type": t.threat_type.value,
+                                "severity": t.severity,
+                                "description": t.description,
+                                "affected_actions": t.affected_action_ids,
+                            }
+                            for t in verification.threats
+                        ],
+                        "recommendations": verification.recommendations,
+                    }
                     state.plan_status = PlanStatus.FAILED
-                    await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                    await self._store.update_plan_status(
+                        plan.plan_id, PlanStatus.FAILED,
+                        rejection_details=state.rejection_details,
+                    )
                     await self._audit.log(
                         AuditEvent.INTENT_REJECTED,
                         plan_id=plan.plan_id,
@@ -308,8 +358,17 @@ class PlanExecutor:
                         clarification=verification.clarification_needed,
                     )
                     if self._intent_verifier._strict:
+                        state.rejection_details = {
+                            "source": "intent_verifier",
+                            "verdict": "clarify",
+                            "clarification_needed": verification.clarification_needed,
+                            "recommendations": verification.recommendations,
+                        }
                         state.plan_status = PlanStatus.FAILED
-                        await self._store.update_plan_status(plan.plan_id, PlanStatus.FAILED)
+                        await self._store.update_plan_status(
+                            plan.plan_id, PlanStatus.FAILED,
+                            rejection_details=state.rejection_details,
+                        )
                         return state
                 elif verification.verdict == VerificationVerdict.WARN:
                     log.warning(

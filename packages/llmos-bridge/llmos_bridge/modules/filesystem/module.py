@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import shutil
 import stat
 import time
@@ -46,6 +47,16 @@ class FilesystemModule(BaseModule):
     VERSION = "1.0.0"
     SUPPORTED_PLATFORMS = [Platform.ALL]
 
+    @staticmethod
+    def _resolve_path(path: Path) -> Path:
+        """Resolve symlinks to prevent write-through-symlink attacks.
+
+        Returns the fully resolved (real) path.  This ensures that even
+        if the PermissionGuard validated the unresolved path, the actual
+        I/O target is known.
+        """
+        return path.resolve(strict=False)
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -81,23 +92,33 @@ class FilesystemModule(BaseModule):
     @audit_trail("standard")
     async def _action_write_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteFileParams.model_validate(params)
-        path = Path(p.path)
+        path = self._resolve_path(Path(p.path))
 
-        if path.exists() and not p.overwrite:
-            raise FileExistsError(f"File already exists and overwrite=False: {path}")
         if p.create_dirs:
             path.parent.mkdir(parents=True, exist_ok=True)
 
-        await asyncio.to_thread(
-            path.write_text, p.content, encoding=p.encoding
-        )
-        return {"path": str(path), "bytes_written": len(p.content.encode(p.encoding))}
+        def _write() -> int:
+            data = p.content.encode(p.encoding)
+            if not p.overwrite:
+                # Atomic exclusive create — avoids TOCTOU race between
+                # exists() check and open().
+                fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                try:
+                    os.write(fd, data)
+                finally:
+                    os.close(fd)
+            else:
+                path.write_text(p.content, encoding=p.encoding)
+            return len(data)
+
+        bytes_written = await asyncio.to_thread(_write)
+        return {"path": str(path), "bytes_written": bytes_written}
 
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Append to file")
     @rate_limited(calls_per_minute=60)
     async def _action_append_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AppendFileParams.model_validate(params)
-        path = Path(p.path)
+        path = self._resolve_path(Path(p.path))
         text = ("\n" + p.content) if p.newline and path.exists() else p.content
 
         def _append() -> None:
@@ -111,7 +132,7 @@ class FilesystemModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     async def _action_copy_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopyFileParams.model_validate(params)
-        src, dst = Path(p.source), Path(p.destination)
+        src, dst = self._resolve_path(Path(p.source)), self._resolve_path(Path(p.destination))
 
         if dst.exists() and not p.overwrite:
             raise FileExistsError(f"Destination exists and overwrite=False: {dst}")
@@ -123,7 +144,7 @@ class FilesystemModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     async def _action_move_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = MoveFileParams.model_validate(params)
-        src, dst = Path(p.source), Path(p.destination)
+        src, dst = self._resolve_path(Path(p.source)), self._resolve_path(Path(p.destination))
 
         if dst.exists() and not p.overwrite:
             raise FileExistsError(f"Destination exists and overwrite=False: {dst}")
@@ -137,7 +158,7 @@ class FilesystemModule(BaseModule):
     @audit_trail("detailed")
     async def _action_delete_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteFileParams.model_validate(params)
-        path = Path(p.path)
+        path = self._resolve_path(Path(p.path))
 
         if not path.exists():
             raise FileNotFoundError(f"Path not found: {path}")
@@ -156,7 +177,7 @@ class FilesystemModule(BaseModule):
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Create directory")
     async def _action_create_directory(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateDirectoryParams.model_validate(params)
-        path = Path(p.path)
+        path = self._resolve_path(Path(p.path))
         await asyncio.to_thread(path.mkdir, parents=p.parents, exist_ok=p.exist_ok)
         return {"path": str(path), "created": True}
 
@@ -255,7 +276,7 @@ class FilesystemModule(BaseModule):
     @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Create archive")
     async def _action_create_archive(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateArchiveParams.model_validate(params)
-        src = Path(p.source)
+        src = self._resolve_path(Path(p.source))
 
         format_map = {
             "zip": "zip",
@@ -274,7 +295,7 @@ class FilesystemModule(BaseModule):
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Extract archive to disk")
     async def _action_extract_archive(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExtractArchiveParams.model_validate(params)
-        src, dst = Path(p.source), Path(p.destination)
+        src, dst = self._resolve_path(Path(p.source)), self._resolve_path(Path(p.destination))
         dst.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(shutil.unpack_archive, src, dst)
         return {"source": str(src), "destination": str(dst)}

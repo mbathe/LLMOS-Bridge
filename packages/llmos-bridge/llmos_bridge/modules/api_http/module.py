@@ -33,6 +33,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
+from llmos_bridge.modules.api_http._ssrf import SSRFError, validate_url
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.security.decorators import (
@@ -129,6 +130,24 @@ class ApiHttpModule(BaseModule):
             return _httpx.BasicAuth(auth[0], auth[1])
         return None
 
+    @staticmethod
+    def _check_ssrf(url: str) -> str:
+        """Validate *url* against SSRF blocklist.
+
+        Raises ``PermissionDeniedError`` if the URL targets a private,
+        loopback, link-local, or cloud-metadata address.
+        """
+        try:
+            return validate_url(url)
+        except SSRFError as exc:
+            from llmos_bridge.exceptions import PermissionDeniedError  # noqa: PLC0415
+
+            raise PermissionDeniedError(
+                action="http_request",
+                module="api_http",
+                profile="(ssrf_guard)",
+            ) from exc
+
     # ------------------------------------------------------------------
     # HTTP Methods
     # ------------------------------------------------------------------
@@ -136,6 +155,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_READ, reason="HTTP GET request")
     async def _action_http_get(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpGetParams.model_validate(params)
+        self._check_ssrf(p.url)
         async with _httpx.AsyncClient(
             verify=p.verify_ssl,
             follow_redirects=p.follow_redirects,
@@ -149,6 +169,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_READ, reason="HTTP HEAD request")
     async def _action_http_head(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpHeadParams.model_validate(params)
+        self._check_ssrf(p.url)
         async with _httpx.AsyncClient(
             verify=p.verify_ssl,
             follow_redirects=p.follow_redirects,
@@ -172,6 +193,7 @@ class ApiHttpModule(BaseModule):
     @rate_limited(calls_per_minute=30)
     async def _action_http_post(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPostParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         # Resolve body: precedence — json > data > form > raw_body
         kwargs: dict[str, Any] = {}
@@ -198,6 +220,7 @@ class ApiHttpModule(BaseModule):
     @rate_limited(calls_per_minute=30)
     async def _action_http_put(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPutParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         kwargs: dict[str, Any] = {}
         if p.body_json is not None:
@@ -218,6 +241,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_SEND, reason="HTTP PATCH request")
     async def _action_http_patch(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpPatchParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         kwargs: dict[str, Any] = {}
         if p.body_json is not None:
@@ -237,6 +261,7 @@ class ApiHttpModule(BaseModule):
     @rate_limited(calls_per_minute=30)
     async def _action_http_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpDeleteParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         kwargs: dict[str, Any] = {}
         if p.body_json is not None:
@@ -256,6 +281,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_READ, reason="Download file")
     async def _action_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DownloadFileParams.model_validate(params)
+        self._check_ssrf(p.url)
         destination = Path(p.destination)
 
         if destination.exists() and not p.overwrite:
@@ -290,6 +316,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_SEND, reason="Upload file")
     async def _action_upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UploadFileParams.model_validate(params)
+        self._check_ssrf(p.url)
         file_path = Path(p.file_path)
 
         if not file_path.exists():
@@ -321,6 +348,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_SEND, reason="GraphQL query/mutation")
     async def _action_graphql_query(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GraphqlQueryParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         payload: dict[str, Any] = {"query": p.query, "variables": p.variables}
         if p.operation_name:
@@ -356,6 +384,7 @@ class ApiHttpModule(BaseModule):
     @data_classification(DataClassification.CONFIDENTIAL)
     async def _action_oauth2_get_token(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OAuth2GetTokenParams.model_validate(params)
+        self._check_ssrf(p.token_url)
 
         form_data: dict[str, str] = {
             "grant_type": p.grant_type,
@@ -424,6 +453,7 @@ class ApiHttpModule(BaseModule):
         if html_content is None:
             if p.url is None:
                 raise ValueError("Either 'html' or 'url' must be provided for parse_html.")
+            self._check_ssrf(p.url)
             async with _httpx.AsyncClient(timeout=p.timeout) as client:
                 response = await client.get(p.url)
                 response.raise_for_status()
@@ -553,6 +583,7 @@ class ApiHttpModule(BaseModule):
     @requires_permission(Permission.NETWORK_READ, reason="Check URL availability")
     async def _action_check_url_availability(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CheckUrlAvailabilityParams.model_validate(params)
+        self._check_ssrf(p.url)
         start = time.monotonic()
         error: str | None = None
         status_code: int | None = None
@@ -779,6 +810,7 @@ class ApiHttpModule(BaseModule):
     @audit_trail("standard")
     async def _action_webhook_trigger(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WebhookTriggerParams.model_validate(params)
+        self._check_ssrf(p.url)
 
         headers = dict(p.headers)
         body_bytes = json.dumps(p.payload, ensure_ascii=False).encode("utf-8")
@@ -856,6 +888,8 @@ class ApiHttpModule(BaseModule):
 
     async def _action_set_session(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSessionParams.model_validate(params)
+        if p.base_url:
+            self._check_ssrf(p.base_url)
 
         async with self._session_lock:
             # Close existing session with same ID if present

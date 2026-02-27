@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from llmos_bridge.api.schemas import WSMessage
 from llmos_bridge.events.bus import EventBus
@@ -25,6 +26,29 @@ from llmos_bridge.logging import get_logger
 
 log = get_logger(__name__)
 router = APIRouter(tags=["websocket"])
+
+
+async def _verify_ws_token(websocket: WebSocket) -> bool:
+    """Check the API token for WebSocket connections.
+
+    The token is read from the ``token`` query parameter
+    (e.g. ``/ws/stream?token=<secret>``).
+
+    Returns ``True`` if auth passes or is disabled.  On failure, the
+    connection is closed with code 4401 and ``False`` is returned.
+    """
+    settings = websocket.app.state.settings
+    expected = settings.security.api_token
+    if expected is None:
+        return True  # No auth configured — local-only mode.
+
+    token: str | None = websocket.query_params.get("token")
+    if token == expected:
+        return True
+
+    await websocket.accept()
+    await websocket.close(code=4401, reason="Invalid or missing API token")
+    return False
 
 
 class ConnectionManager:
@@ -105,6 +129,8 @@ class WebSocketEventBus(EventBus):
 @router.websocket("/ws/stream")
 async def stream_all(websocket: WebSocket) -> None:
     """Subscribe to events for all plans."""
+    if not await _verify_ws_token(websocket):
+        return
     await manager.connect(websocket)
     try:
         while True:
@@ -119,6 +145,8 @@ async def stream_all(websocket: WebSocket) -> None:
 @router.websocket("/ws/plans/{plan_id}")
 async def stream_plan(websocket: WebSocket, plan_id: str) -> None:
     """Subscribe to events for a specific plan."""
+    if not await _verify_ws_token(websocket):
+        return
     await manager.connect(websocket, plan_id=plan_id)
     try:
         while True:

@@ -89,6 +89,14 @@ class PlanResponse(BaseModel):
     created_at: float
     updated_at: float
     actions: list[ActionResponse] = Field(default_factory=list)
+    rejection_details: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured details when a plan was rejected by the security scanner "
+            "pipeline or intent verifier. Includes threat types, risk scores, "
+            "and recommendations."
+        ),
+    )
 
 
 class SubmitPlanResponse(BaseModel):
@@ -100,6 +108,14 @@ class SubmitPlanResponse(BaseModel):
         description=(
             "Action results — populated when async_execution=false and the "
             "plan completes. Empty for async submissions."
+        ),
+    )
+    rejection_details: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured details when a plan was rejected by the security scanner "
+            "pipeline or intent verifier. Includes threat types, risk scores, "
+            "and recommendations."
         ),
     )
 
@@ -141,6 +157,10 @@ class HealthResponse(BaseModel):
         description="Per-module status breakdown (available, failed, excluded).",
     )
     active_plans: int = Field(default=0, description="Number of plans currently running.")
+    scanner_pipeline: dict[str, str] | None = Field(
+        default=None,
+        description="Per-scanner status (scanner_id -> enabled/disabled).",
+    )
     timestamp: float = Field(default_factory=time.time)
 
 

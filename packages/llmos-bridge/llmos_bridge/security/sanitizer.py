@@ -99,8 +99,9 @@ class OutputSanitizer:
         return value
 
     def _clean_string(self, value: str, module: str, action: str) -> str:
-        # 1. Normalise Unicode (NFC) to prevent homoglyph tricks.
-        value = unicodedata.normalize("NFC", value)
+        # 1. Normalise Unicode (NFKC) to collapse compatibility characters
+        # and prevent homoglyph tricks.
+        value = unicodedata.normalize("NFKC", value)
 
         # 2. Scan for injection patterns and neutralise.
         if self._injection_scan:
