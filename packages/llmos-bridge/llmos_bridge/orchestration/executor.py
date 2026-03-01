@@ -83,31 +83,60 @@ _PERCEPTION_KEY = "_perception"
 _DEFAULT_MAX_RESULT_SIZE = 524_288
 
 
+_BINARY_RESULT_KEYS = frozenset({
+    "screenshot_b64", "labeled_image_b64", "image_b64",
+    "annotated_image_b64", "image_base64", "data_b64",
+})
+
+
 def _truncate_result(result: Any, max_bytes: int = _DEFAULT_MAX_RESULT_SIZE) -> Any:
     """Truncate oversized action results to prevent LLM context overflow.
 
     Serialises to JSON to measure size. If oversized, the result is replaced
     with a summary dict containing the truncated JSON and a warning.
+
+    Binary keys (e.g. ``screenshot_b64``) are excluded from the size check
+    and preserved intact — they are passed directly to the LLM as images
+    and should not be truncated (which would corrupt the encoding).
     """
     import json as _json
 
+    # Separate binary fields from the rest so they don't inflate the size.
+    binary_fields: dict[str, str] = {}
+    if isinstance(result, dict):
+        for key in _BINARY_RESULT_KEYS:
+            if key in result and isinstance(result[key], str):
+                binary_fields[key] = result[key]
+
+    # Measure size WITHOUT binary fields.
+    if binary_fields:
+        result_without_binary = {
+            k: v for k, v in result.items() if k not in binary_fields
+        }
+    else:
+        result_without_binary = result
+
     try:
-        serialised = _json.dumps(result, default=str)
+        serialised = _json.dumps(result_without_binary, default=str)
     except (TypeError, ValueError):
-        serialised = str(result)
+        serialised = str(result_without_binary)
 
     if len(serialised.encode("utf-8", errors="replace")) <= max_bytes:
+        # Under limit — return original (with binary fields intact).
         return result
 
     # Truncate to max_bytes and wrap in a summary.
     truncated = serialised[:max_bytes]
-    return {
+    truncated_result = {
         "_truncated": True,
         "_original_size": len(serialised),
         "_max_size": max_bytes,
         "data": truncated,
         "warning": f"Result truncated from {len(serialised)} to {max_bytes} bytes.",
     }
+    # Re-attach binary fields so the LLM still gets the image.
+    truncated_result.update(binary_fields)
+    return truncated_result
 
 
 class PlanExecutor:

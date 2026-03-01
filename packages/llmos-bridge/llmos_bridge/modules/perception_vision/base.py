@@ -84,6 +84,14 @@ class VisionParseResult(BaseModel):
     )
     parse_time_ms: float = Field(description="Wall-clock time for the parse call, in ms.")
     model_id: str = Field(description="Identifier of the model that produced this result.")
+    scene_graph_text: str | None = Field(
+        default=None,
+        description=(
+            "Compact hierarchical text representation of the screen layout. "
+            "Shows which elements belong to which regions (toolbar, sidebar, "
+            "content area, form, etc.)."
+        ),
+    )
     error: str | None = Field(
         default=None,
         description="Non-fatal error message if parsing partially failed.",

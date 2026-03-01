@@ -21,9 +21,25 @@ _mock_pyautogui.position.return_value = (100, 200)
 
 @pytest.fixture(autouse=True)
 def _patch_pyautogui():
-    """Patch pyautogui so GUIModule can be loaded without a real display."""
+    """Patch pyautogui so GUIModule can be loaded without a real display.
+
+    Also resets the TextInputEngine singleton so each test starts fresh,
+    and patches text_input environment detection to use pyautogui fallback.
+    """
     with patch.dict("sys.modules", {"pyautogui": _mock_pyautogui}):
-        yield
+        with patch("llmos_bridge.modules.gui.module.shutil") as mock_shutil:
+            mock_shutil.which.return_value = None
+            import llmos_bridge.modules.gui.module as gui_mod
+            gui_mod._pyautogui = _mock_pyautogui
+            gui_mod._text_input_engine = None  # Reset singleton
+            # Patch text_input env detection so TextInputEngine sees no tools.
+            with patch("llmos_bridge.modules.gui.text_input.shutil") as ti_shutil, \
+                 patch("llmos_bridge.modules.gui.text_input.platform") as ti_platform, \
+                 patch("llmos_bridge.modules.gui.text_input.os") as ti_os:
+                ti_shutil.which = lambda cmd: None
+                ti_platform.system.return_value = "Linux"
+                ti_os.environ.get = lambda k, d="": d
+                yield
     _mock_pyautogui.reset_mock()
 
 
@@ -234,9 +250,11 @@ class TestTypeText:
         m = _make_module()
         result = await m._action_type_text({"text": "Hello World"})
 
+        # TextInputEngine uses pyautogui.typewrite as last resort (no xdotool in tests).
         _mock_pyautogui.typewrite.assert_called_once_with("Hello World", interval=0.05)
         assert result["typed"] is True
         assert result["length"] == 11
+        assert "method" in result
 
     @pytest.mark.asyncio
     async def test_type_with_clear(self) -> None:
@@ -249,6 +267,58 @@ class TestTypeText:
         _mock_pyautogui.hotkey.assert_called_once_with("ctrl", "a")
         _mock_pyautogui.press.assert_called_once_with("delete")
         _mock_pyautogui.typewrite.assert_called_once_with("replacement", interval=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Tests — _type_text_native (keyboard layout fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTextInputEngineIntegration:
+    """Tests for TextInputEngine integration in GUIModule."""
+
+    def test_uses_xdotool_on_linux(self) -> None:
+        """When xdotool is available on Linux, TextInputEngine uses it."""
+        from llmos_bridge.modules.gui.text_input import TextInputEngine, InputMethod
+
+        with patch("llmos_bridge.modules.gui.text_input.platform") as mock_platform, \
+             patch("llmos_bridge.modules.gui.text_input.shutil") as mock_shutil, \
+             patch("llmos_bridge.modules.gui.text_input.subprocess") as mock_subprocess, \
+             patch("llmos_bridge.modules.gui.text_input.os") as mock_os:
+            mock_platform.system.return_value = "Linux"
+            mock_os.environ.get = lambda k, d="": {"DISPLAY": ":0"}.get(k, d)
+            mock_shutil.which = lambda cmd: f"/usr/bin/{cmd}" if cmd == "xdotool" else None
+            mock_subprocess.run.return_value = MagicMock(returncode=0)
+
+            engine = TextInputEngine()
+            method = engine.type_text("bonjour", interval=0.05)
+
+            assert method == InputMethod.XDOTOOL
+            mock_subprocess.run.assert_called_once()
+            args = mock_subprocess.run.call_args[0][0]
+            assert args[0] == "xdotool"
+            assert "bonjour" in args
+
+    def test_falls_back_to_pyautogui_no_xdotool(self) -> None:
+        """When no native tools available, TextInputEngine uses pyautogui."""
+        from llmos_bridge.modules.gui.text_input import TextInputEngine, InputMethod
+
+        mock_pag = MagicMock()
+        engine = TextInputEngine(pyautogui_module=mock_pag)
+        method = engine.type_text("hello", method=InputMethod.PYAUTOGUI)
+
+        assert method == InputMethod.PYAUTOGUI
+        mock_pag.typewrite.assert_called_once_with("hello", interval=0.05)
+
+    def test_engine_method_returned_in_result(self) -> None:
+        """type_text result includes the method used."""
+        from llmos_bridge.modules.gui.text_input import TextInputEngine, InputMethod
+
+        mock_pag = MagicMock()
+        engine = TextInputEngine(pyautogui_module=mock_pag)
+        method = engine.type_text("test", method=InputMethod.PYAUTOGUI)
+        assert method == InputMethod.PYAUTOGUI
 
 
 # ---------------------------------------------------------------------------

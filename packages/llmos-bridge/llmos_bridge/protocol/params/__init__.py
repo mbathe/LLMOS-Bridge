@@ -23,6 +23,7 @@ from llmos_bridge.protocol.params.perception_vision import PARAMS_MAP as VISION_
 from llmos_bridge.protocol.params.powerpoint import PARAMS_MAP as POWERPOINT_PARAMS
 from llmos_bridge.protocol.params.recording import PARAMS_MAP as RECORDING_PARAMS
 from llmos_bridge.protocol.params.security import PARAMS_MAP as SECURITY_PARAMS
+from llmos_bridge.protocol.params.window_tracker import PARAMS_MAP as WINDOW_TRACKER_PARAMS
 from llmos_bridge.protocol.params.word import PARAMS_MAP as WORD_PARAMS
 
 ALL_PARAMS: dict[str, dict[str, type]] = {
@@ -41,6 +42,7 @@ ALL_PARAMS: dict[str, dict[str, type]] = {
     "recording": RECORDING_PARAMS,
     "security": SECURITY_PARAMS,
     "computer_control": COMPUTER_CONTROL_PARAMS,
+    "window_tracker": WINDOW_TRACKER_PARAMS,
 }
 
 __all__ = [
@@ -60,4 +62,5 @@ __all__ = [
     "RECORDING_PARAMS",
     "SECURITY_PARAMS",
     "COMPUTER_CONTROL_PARAMS",
+    "WINDOW_TRACKER_PARAMS",
 ]

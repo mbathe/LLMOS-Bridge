@@ -94,7 +94,8 @@
       "Bash(python -m pytest packages/llmos-bridge/tests/ --ignore=packages/llmos-bridge/tests/unit/cli/ -q --no-cov --tb=short)",
       "Bash(xargs cat)",
       "Bash(python -m pytest packages/langchain-llmos/tests/ -v --no-cov --tb=short)",
-      "Bash(python -c \"import openai; print\\(''openai installed:'', openai.__version__\\)\")"
+      "Bash(python -c \"import openai; print\\(''openai installed:'', openai.__version__\\)\")",
+      "Read(//tmp/**)"
     ]
   }
 }

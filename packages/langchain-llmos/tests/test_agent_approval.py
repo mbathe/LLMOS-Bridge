@@ -110,7 +110,7 @@ class TestApprovalAutoMode:
             LLMTurn(text="Done", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        result = await agent.run("test")
+        result = await agent.run("test", use_reactive_loop=False)
         assert result.success is True
 
         # Verify approve_action was called.
@@ -133,7 +133,7 @@ class TestApprovalAutoMode:
             LLMTurn(text="Done", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        await agent.run("test")
+        await agent.run("test", use_reactive_loop=False)
         mock_daemon.approve_action.assert_not_called()
 
 
@@ -157,7 +157,7 @@ class TestApprovalRejectMode:
             LLMTurn(text="Failed", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        await agent.run("test")
+        await agent.run("test", use_reactive_loop=False)
 
         mock_daemon.approve_action.assert_called_once()
         # Check decision is reject.
@@ -190,7 +190,7 @@ class TestApprovalCallbackMode:
             LLMTurn(text="Done", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        await agent.run("test")
+        await agent.run("test", use_reactive_loop=False)
 
         callback.assert_called_once()
         mock_daemon.approve_action.assert_called_once()
@@ -218,7 +218,7 @@ class TestApprovalCallbackMode:
             LLMTurn(text="Rejected", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        await agent.run("test")
+        await agent.run("test", use_reactive_loop=False)
 
         _, kwargs = mock_daemon.approve_action.call_args
         assert kwargs["decision"] == "reject"
@@ -246,7 +246,7 @@ class TestApprovalErrorHandling:
             LLMTurn(text="Error", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        result = await agent.run("test")
+        result = await agent.run("test", use_reactive_loop=False)
         # Should still succeed (agent loop continues with error result)
         assert result.success is True
         assert result.steps[0].tool_output["error"]
@@ -264,7 +264,7 @@ class TestApprovalErrorHandling:
             LLMTurn(text="Done", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        result = await agent.run("test")
+        result = await agent.run("test", use_reactive_loop=False)
         assert result.steps[0].tool_output["error"]
 
     @pytest.mark.asyncio
@@ -290,7 +290,7 @@ class TestApprovalErrorHandling:
             LLMTurn(text="Failed", tool_calls=[], is_done=True, raw_response=None),
         ])
 
-        result = await agent.run("test")
+        result = await agent.run("test", use_reactive_loop=False)
         assert "error" in result.steps[0].tool_output
 
 

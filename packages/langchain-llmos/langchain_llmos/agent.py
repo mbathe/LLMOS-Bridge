@@ -1,5 +1,8 @@
 """Computer Use Agent — autonomous GUI control via any LLM provider.
 
+Uses the **Reactive Plan Loop** (Plan → Execute → Observe → Re-plan) for
+efficient multi-step task execution with error recovery and safeguards.
+
 Supports Anthropic Claude, OpenAI GPT-4o, Ollama (local), Mistral,
 and any OpenAI-compatible API.  The provider abstraction handles
 tool schemas, message formats, and multimodal encoding automatically.
@@ -78,14 +81,139 @@ class AgentResult:
 # ---------------------------------------------------------------------------
 
 # Modules that the Computer Use Agent should expose by default.
-_DEFAULT_MODULES = ["computer_control", "gui", "os_exec", "filesystem"]
+_DEFAULT_MODULES = ["computer_control", "gui", "os_exec", "filesystem", "window_tracker"]
 
 # Maximum characters for a tool result text block sent to the LLM.
-_MAX_TOOL_RESULT_CHARS = 30_000
+_MAX_TOOL_RESULT_CHARS = 12_000
+
+# Maximum number of screenshots to keep in message history.
+# Older screenshots are stripped to avoid token explosion.
+_MAX_SCREENSHOTS_IN_HISTORY = 2
+
+# Maximum screenshot dimension (longest side) before resize.
+_MAX_SCREENSHOT_DIM = 1024
+
+# Maximum number of UI elements to include in tool results.
+_MAX_ELEMENTS_IN_RESULT = 50
 
 
 # Approval callback type: (plan_id, action_data) → decision dict.
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def _resize_screenshot_b64(b64: str, max_dim: int = _MAX_SCREENSHOT_DIM) -> str:
+    """Resize a base64 PNG screenshot so longest side ≤ *max_dim*.
+
+    Returns a JPEG base64 string (much smaller than PNG for photos).
+    """
+    import base64 as b64mod
+    import io
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return b64  # Can't resize without Pillow.
+
+    raw = b64mod.b64decode(b64)
+    img = Image.open(io.BytesIO(raw))
+    w, h = img.size
+
+    if max(w, h) <= max_dim:
+        # Already small — still convert to JPEG for size savings.
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=70)
+        return b64mod.b64encode(buf.getvalue()).decode("ascii")
+
+    ratio = max_dim / max(w, h)
+    new_w, new_h = int(w * ratio), int(h * ratio)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=70)
+    return b64mod.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _strip_old_screenshots(
+    messages: list[dict[str, Any]],
+    keep_last: int = _MAX_SCREENSHOTS_IN_HISTORY,
+) -> list[dict[str, Any]]:
+    """Remove image blocks from older messages, keeping only the last *keep_last*.
+
+    This prevents token explosion from accumulating full screenshots
+    in every subsequent API call.
+    """
+    # Collect indices of messages that contain image blocks.
+    img_msg_indices: list[tuple[int, int]] = []  # (msg_idx, content_block_idx)
+    for i, msg in enumerate(messages):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for j, block in enumerate(content):
+                if isinstance(block, dict):
+                    # Anthropic tool_result with image content
+                    inner = block.get("content")
+                    if isinstance(inner, list):
+                        for k, inner_block in enumerate(inner):
+                            if isinstance(inner_block, dict) and inner_block.get("type") == "image":
+                                img_msg_indices.append((i, j, k))
+                    elif block.get("type") == "image":
+                        img_msg_indices.append((i, j, -1))
+
+    if len(img_msg_indices) <= keep_last:
+        return messages  # Nothing to strip.
+
+    # Strip all but the last `keep_last` images.
+    to_strip = img_msg_indices[:-keep_last]
+    for entry in to_strip:
+        if len(entry) == 3:
+            msg_idx, block_idx, inner_idx = entry
+            content = messages[msg_idx]["content"]
+            if inner_idx >= 0 and isinstance(content[block_idx].get("content"), list):
+                # Replace image block with a text placeholder inside tool_result.
+                content[block_idx]["content"][inner_idx] = {
+                    "type": "text",
+                    "text": "[Previous screenshot removed to save tokens]",
+                }
+            elif content[block_idx].get("type") == "image":
+                content[block_idx] = {
+                    "type": "text",
+                    "text": "[Previous screenshot removed to save tokens]",
+                }
+
+    return messages
+
+
+def _compact_elements(result: dict[str, Any], max_elems: int = _MAX_ELEMENTS_IN_RESULT) -> dict[str, Any]:
+    """Reduce the elements list to the most useful entries for the LLM.
+
+    Keeps text elements and interactable icons, drops low-value entries.
+    """
+    elements = result.get("elements")
+    if not elements or not isinstance(elements, list):
+        return result
+
+    total = len(elements)
+    if total <= max_elems:
+        return result
+
+    result = dict(result)
+
+    # Prioritize: interactable elements first, then text elements.
+    interactable = [e for e in elements if e.get("interactable")]
+    text_only = [e for e in elements if not e.get("interactable") and e.get("text")]
+    others = [e for e in elements if e not in interactable and e not in text_only]
+
+    # Take interactable first, then text, then others — up to max_elems.
+    kept = interactable[:max_elems]
+    remaining = max_elems - len(kept)
+    if remaining > 0:
+        kept.extend(text_only[:remaining])
+        remaining = max_elems - len(kept)
+    if remaining > 0:
+        kept.extend(others[:remaining])
+
+    result["elements"] = kept
+    result["_elements_truncated"] = total - len(kept)
+    result["_elements_total"] = total
+    return result
 
 
 class ComputerUseAgent:
@@ -212,19 +340,25 @@ class ComputerUseAgent:
         self,
         task: str,
         max_steps: int | None = None,
+        *,
+        use_reactive_loop: bool = True,
     ) -> AgentResult:
         """Run an autonomous task.
+
+        Uses the **Reactive Plan Loop** by default: the LLM generates
+        multi-step plans, which are executed as batches via the daemon's
+        DAG scheduler.  On failure the LLM re-plans with error context.
 
         Args:
             task:      Natural language task description.
             max_steps: Override the default max_steps for this run.
+            use_reactive_loop:  Use the Plan→Execute→Observe→Re-plan
+                        loop (default True).  Set to False for the legacy
+                        1-action-at-a-time behavior.
 
         Returns:
             AgentResult with success status, output text, and step log.
         """
-        steps_limit = max_steps or self._max_steps
-        t0 = time.monotonic()
-
         # 1. Fetch system prompt if not provided.
         system = self._system_prompt
         if system is None:
@@ -233,7 +367,38 @@ class ComputerUseAgent:
         # 2. Build provider-agnostic tool definitions.
         tool_defs = await self._build_tool_definitions()
 
-        # 3. Agent loop (messages in provider-native format).
+        # 3. Run the agent loop.
+        if use_reactive_loop:
+            from langchain_llmos.loop import ReactivePlanLoop
+            from langchain_llmos.safeguards import SafeguardConfig
+
+            loop = ReactivePlanLoop(
+                provider=self._provider,
+                daemon=self._daemon,
+                max_replans=8,
+                max_steps_per_plan=8,
+                max_total_actions=max_steps or self._max_steps,
+                max_tokens=self._max_tokens,
+                verbose=self._verbose,
+                safeguards=SafeguardConfig(),
+                approval_mode=self._approval_mode,
+            )
+            return await loop.run(task, system, tool_defs)
+
+        # Legacy fallback: 1-action-at-a-time loop.
+        return await self._run_legacy_loop(
+            task, system, tool_defs, max_steps or self._max_steps
+        )
+
+    async def _run_legacy_loop(
+        self,
+        task: str,
+        system: str,
+        tool_defs: list[ToolDefinition],
+        steps_limit: int,
+    ) -> AgentResult:
+        """Legacy agent loop: 1 action per LLM turn."""
+        t0 = time.monotonic()
         messages: list[dict[str, Any]] = self._provider.build_user_message(task)
         steps: list[StepRecord] = []
 
@@ -241,14 +406,26 @@ class ComputerUseAgent:
             if self._verbose:
                 print(f"\n--- Step {step_idx + 1}/{steps_limit} ---")
 
-            turn = await self._provider.create_message(
-                system=system,
-                messages=messages,
-                tools=tool_defs,
-                max_tokens=self._max_tokens,
-            )
+            _strip_old_screenshots(messages, keep_last=_MAX_SCREENSHOTS_IN_HISTORY)
 
-            # Check if LLM is done (no more tool calls).
+            for attempt in range(4):
+                try:
+                    turn = await self._provider.create_message(
+                        system=system,
+                        messages=messages,
+                        tools=tool_defs,
+                        max_tokens=self._max_tokens,
+                    )
+                    break
+                except Exception as exc:
+                    if "rate_limit" in str(exc).lower() or "429" in str(exc):
+                        wait = 15 * (attempt + 1)
+                        if self._verbose:
+                            print(f"  Rate limited, waiting {wait}s...")
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+
             if turn.is_done:
                 output = turn.text or ""
                 if self._verbose:
@@ -261,7 +438,6 @@ class ComputerUseAgent:
                 )
 
             if not turn.tool_calls:
-                # No tool calls and not done — extract whatever text.
                 return AgentResult(
                     success=True,
                     output=turn.text or "",
@@ -269,10 +445,8 @@ class ComputerUseAgent:
                     total_duration_ms=(time.monotonic() - t0) * 1000,
                 )
 
-            # Append assistant message (provider-native format).
             messages.append(self._provider.build_assistant_message(turn))
 
-            # Execute each tool call.
             tool_results: list[ToolResult] = []
             for tc in turn.tool_calls:
                 if self._verbose:
@@ -295,10 +469,8 @@ class ComputerUseAgent:
 
                 tool_results.append(self._make_tool_result(tc.id, result))
 
-            # Append tool results (provider-native format).
             messages.extend(self._provider.build_tool_results_message(tool_results))
 
-        # Exhausted max_steps.
         return AgentResult(
             success=False,
             output=f"Task not completed within {steps_limit} steps.",
@@ -475,6 +647,13 @@ class ComputerUseAgent:
         if not self._provider.supports_vision:
             screenshot_b64 = None
 
+        # Resize screenshot to save tokens (1920x1080 → 1024px max).
+        if screenshot_b64:
+            screenshot_b64 = _resize_screenshot_b64(screenshot_b64)
+
+        # Compact element list to avoid sending 280+ elements as JSON.
+        result = _compact_elements(result)
+
         text = json.dumps(result, default=str)
         if len(text) > _MAX_TOOL_RESULT_CHARS:
             text = text[:_MAX_TOOL_RESULT_CHARS] + "\n... [TRUNCATED]"
@@ -483,6 +662,7 @@ class ComputerUseAgent:
             tool_call_id=tool_call_id,
             text=text,
             image_b64=screenshot_b64,
+            image_media_type="image/jpeg" if screenshot_b64 else "image/png",
         )
 
     # ------------------------------------------------------------------

@@ -22,7 +22,6 @@ from llmos_bridge.modules.perception_vision.omniparser.module import OmniParserM
 @pytest.fixture
 def module() -> OmniParserModule:
     with patch.dict(os.environ, {
-        "LLMOS_OMNIPARSER_PATH": "/fake/omniparser",
         "LLMOS_OMNIPARSER_MODEL_DIR": "/fake/models",
         "LLMOS_OMNIPARSER_AUTO_DOWNLOAD": "false",
     }):
@@ -285,16 +284,28 @@ class TestPilToBase64:
 
 @pytest.mark.unit
 class TestIsOmniparserAvailable:
-    def test_returns_false_when_path_missing(self, module: OmniParserModule) -> None:
-        module._omniparser_path = "/nonexistent/path"
-        assert module._is_omniparser_available() is False
+    def test_returns_false_when_torch_missing(self, module: OmniParserModule) -> None:
+        with patch("llmos_bridge.modules.perception_vision.omniparser.module._TORCH_AVAILABLE", False):
+            assert module._is_omniparser_available() is False
 
-    def test_returns_true_when_path_exists(self, module: OmniParserModule, tmp_path) -> None:
-        omni_dir = tmp_path / "omniparser" / "util"
-        omni_dir.mkdir(parents=True)
-        (omni_dir / "omniparser.py").touch()
-        module._omniparser_path = str(tmp_path / "omniparser")
-        assert module._is_omniparser_available() is True
+    def test_returns_true_when_deps_available(self, module: OmniParserModule) -> None:
+        with patch("llmos_bridge.modules.perception_vision.omniparser.module._TORCH_AVAILABLE", True):
+            with patch.dict("sys.modules", {"ultralytics": MagicMock(), "easyocr": MagicMock()}):
+                assert module._is_omniparser_available() is True
+
+    def test_returns_false_when_ultralytics_missing(self, module: OmniParserModule) -> None:
+        import builtins
+
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "ultralytics":
+                raise ImportError("No module named 'ultralytics'")
+            return original_import(name, *args, **kwargs)
+
+        with patch("llmos_bridge.modules.perception_vision.omniparser.module._TORCH_AVAILABLE", True):
+            with patch("builtins.__import__", side_effect=mock_import):
+                assert module._is_omniparser_available() is False
 
 
 @pytest.mark.unit

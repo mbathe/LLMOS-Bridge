@@ -401,9 +401,9 @@ class TestAgentLoop:
 
     @pytest.mark.asyncio
     async def test_verbose_mode(self, agent: Any, mock_anthropic: AsyncMock, capsys: Any) -> None:
-        """Verbose mode prints progress."""
+        """Verbose mode prints progress (legacy loop)."""
         agent._verbose = True
-        await agent.run("Test task")
+        await agent.run("Test task", use_reactive_loop=False)
         captured = capsys.readouterr()
         assert "Step 1" in captured.out
 

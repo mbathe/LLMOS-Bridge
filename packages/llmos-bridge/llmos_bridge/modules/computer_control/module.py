@@ -20,6 +20,7 @@ entire stack pluggable.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from typing import Any
 
@@ -66,6 +67,8 @@ class ComputerControlModule(BaseModule):
     def __init__(self) -> None:
         self._registry: ModuleRegistry | None = None
         self._resolver = ElementResolver()
+        self._prefetcher: Any | None = None  # Lazy SpeculativePrefetcher
+        self._prefetcher_initialized = False
         super().__init__()
 
     def set_registry(self, registry: ModuleRegistry) -> None:
@@ -114,11 +117,68 @@ class ComputerControlModule(BaseModule):
             )
         return self._registry.get("gui")
 
+    def _get_prefetcher(self) -> Any:
+        """Lazy-init SpeculativePrefetcher from config."""
+        if self._prefetcher_initialized:
+            return self._prefetcher
+        self._prefetcher_initialized = True
+        try:
+            from llmos_bridge.config import get_settings
+            from llmos_bridge.modules.perception_vision.cache import (
+                PerceptionCache,
+                SpeculativePrefetcher,
+            )
+
+            cfg = get_settings().vision
+            if cfg.speculative_prefetch and cfg.cache_max_entries > 0:
+                cache = PerceptionCache(
+                    max_entries=cfg.cache_max_entries,
+                    ttl_seconds=cfg.cache_ttl_seconds,
+                )
+                self._prefetcher = SpeculativePrefetcher(
+                    cache=cache,
+                    capture_and_parse_fn=self._raw_capture_and_parse,
+                )
+        except Exception:
+            pass  # Config not available — no prefetch.
+        return self._prefetcher
+
+    async def _raw_capture_and_parse(self) -> tuple[bytes, VisionParseResult]:
+        """Capture screen, parse, and return both raw bytes and result.
+
+        Used by SpeculativePrefetcher as its parse function.
+        Returns a content-derived fingerprint as the cache key since we
+        don't have access to raw screenshot bytes through the module API.
+        """
+        vision = self._get_vision_module()
+        raw = await vision.execute("capture_and_parse", {})
+        result = VisionParseResult.model_validate(raw)
+        # Content fingerprint: same screen → same elements → same hash.
+        content = str([(e.element_id, e.label, e.bbox) for e in result.elements])
+        fingerprint = hashlib.md5(content.encode()).digest()  # noqa: S324
+        return fingerprint, result
+
     async def _capture_and_parse(self) -> VisionParseResult:
-        """Capture screen and parse via vision module, returning typed result."""
+        """Capture screen and parse via vision module, returning typed result.
+
+        Uses SpeculativePrefetcher if available — result may already be
+        ready from a background parse triggered after the previous action.
+        """
+        prefetcher = self._get_prefetcher()
+        if prefetcher is not None:
+            try:
+                return await prefetcher.get_or_parse()
+            except Exception:
+                pass  # Fall through to direct parse.
         vision = self._get_vision_module()
         raw = await vision.execute("capture_and_parse", {})
         return VisionParseResult.model_validate(raw)
+
+    def _trigger_prefetch(self) -> None:
+        """Trigger a background screen parse for the next read_screen call."""
+        prefetcher = self._get_prefetcher()
+        if prefetcher is not None:
+            prefetcher.trigger()
 
     def _resolve_element(
         self,
@@ -184,6 +244,7 @@ class ComputerControlModule(BaseModule):
         action_name = click_map.get(p.click_type, "click_position")
         await gui.execute(action_name, {"x": resolved.pixel_x, "y": resolved.pixel_y})
 
+        self._trigger_prefetch()
         return {
             "clicked": True,
             **self._element_dict(resolved),
@@ -220,6 +281,7 @@ class ComputerControlModule(BaseModule):
         # Type the text.
         await gui.execute("type_text", {"text": p.text})
 
+        self._trigger_prefetch()
         return {
             "typed": True,
             **self._element_dict(resolved),
@@ -293,6 +355,10 @@ class ComputerControlModule(BaseModule):
         if p.include_screenshot and parse_result.labeled_image_b64:
             result["screenshot_b64"] = parse_result.labeled_image_b64
 
+        # Include hierarchical scene graph if available.
+        if parse_result.scene_graph_text:
+            result["scene_graph"] = parse_result.scene_graph_text
+
         return result
 
     @requires_permission(
@@ -332,6 +398,7 @@ class ComputerControlModule(BaseModule):
 
         await gui.execute(action_name, gui_params)
 
+        self._trigger_prefetch()
         return {
             "interacted": True,
             **self._element_dict(resolved),

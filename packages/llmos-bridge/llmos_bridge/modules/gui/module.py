@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import platform
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -48,6 +51,17 @@ from llmos_bridge.protocol.params.gui import (
 
 # Lazy imports — set by _check_dependencies
 _pyautogui: Any = None
+_text_input_engine: Any = None
+
+
+def _get_text_engine() -> Any:
+    """Get or create the TextInputEngine singleton."""
+    global _text_input_engine  # noqa: PLW0603
+    if _text_input_engine is None:
+        from llmos_bridge.modules.gui.text_input import TextInputEngine
+
+        _text_input_engine = TextInputEngine(pyautogui_module=_pyautogui)
+    return _text_input_engine
 
 
 class GUIModule(BaseModule):
@@ -226,11 +240,17 @@ class GUIModule(BaseModule):
                 _pyautogui.hotkey("ctrl", "a")
                 _pyautogui.press("delete")
 
-            _pyautogui.typewrite(p.text, interval=p.interval)
+            from llmos_bridge.modules.gui.text_input import InputMethod
+
+            engine = _get_text_engine()
+            method_used = engine.type_text(
+                p.text, interval=p.interval, method=InputMethod(p.method),
+            )
             return {
                 "text": p.text,
                 "length": len(p.text),
                 "typed": True,
+                "method": method_used.value,
             }
 
         return await asyncio.to_thread(_inner)

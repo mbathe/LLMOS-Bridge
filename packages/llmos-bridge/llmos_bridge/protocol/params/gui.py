@@ -45,6 +45,15 @@ class TypeTextParams(BaseModel):
     clear_first: bool = Field(
         default=False, description="Send Ctrl+A then Delete before typing."
     )
+    method: Literal[
+        "auto", "clipboard", "xdotool", "wtype", "ydotool", "pyautogui"
+    ] = Field(
+        default="auto",
+        description=(
+            "Input method. 'auto' selects the best available for the current "
+            "environment. 'clipboard' is most reliable for non-US layouts."
+        ),
+    )
 
 
 class KeyPressParams(BaseModel):

@@ -1,0 +1,190 @@
+# Built-in LLM provider specifications for LLMOS Bridge.
+#
+# To add a custom provider, create a YAML file in the same format and
+# load it with ``ProviderRegistry.load_yaml(path)``.
+#
+# To override a built-in, register a spec with the same provider_id
+# after calling ``load_builtins()``.
+
+providers:
+
+  # ── Anthropic ─────────────────────────────────────────────────────────
+  anthropic:
+    display_name: "Anthropic Claude"
+    api_style: anthropic
+    env_key: ANTHROPIC_API_KEY
+    sdk_package: anthropic
+    default_model: claude-sonnet-4-20250514
+    models:
+      claude-sonnet-4-20250514:
+        display_name: "Claude Sonnet 4"
+        max_input_tokens: 200000
+        max_output_tokens: 8192
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+        supported_media_types:
+          - image/png
+          - image/jpeg
+          - image/gif
+          - image/webp
+          - application/pdf
+      claude-opus-4-20250514:
+        display_name: "Claude Opus 4"
+        max_input_tokens: 200000
+        max_output_tokens: 32768
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+        supported_media_types:
+          - image/png
+          - image/jpeg
+          - image/gif
+          - image/webp
+          - application/pdf
+      claude-haiku-4-5-20251001:
+        display_name: "Claude Haiku 4.5"
+        max_input_tokens: 200000
+        max_output_tokens: 8192
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+
+  # ── OpenAI ────────────────────────────────────────────────────────────
+  openai:
+    display_name: "OpenAI"
+    api_style: openai_compat
+    base_url: "https://api.openai.com/v1"
+    env_key: OPENAI_API_KEY
+    sdk_package: openai
+    default_model: gpt-4o
+    models:
+      gpt-4o:
+        display_name: "GPT-4o"
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+        supported_media_types:
+          - image/png
+          - image/jpeg
+          - image/gif
+          - image/webp
+      gpt-4o-mini:
+        display_name: "GPT-4o mini"
+        max_input_tokens: 128000
+        max_output_tokens: 16384
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+      o3-mini:
+        display_name: "o3-mini"
+        max_input_tokens: 200000
+        max_output_tokens: 100000
+        capabilities:
+          vision: false
+          tool_use: true
+          streaming: true
+
+  # ── Ollama (local) ────────────────────────────────────────────────────
+  ollama:
+    display_name: "Ollama (local)"
+    api_style: openai_compat
+    base_url: "http://localhost:11434/v1"
+    default_model: llama3.2
+    models:
+      llama3.2:
+        display_name: "Llama 3.2"
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+        capabilities:
+          vision: false
+          tool_use: true
+      llama3.2-vision:
+        display_name: "Llama 3.2 Vision"
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+        capabilities:
+          vision: true
+          tool_use: true
+      qwen2.5-coder:
+        display_name: "Qwen 2.5 Coder"
+        max_input_tokens: 32768
+        max_output_tokens: 8192
+        capabilities:
+          vision: false
+          tool_use: true
+
+  # ── Mistral AI ────────────────────────────────────────────────────────
+  mistral:
+    display_name: "Mistral AI"
+    api_style: openai_compat
+    base_url: "https://api.mistral.ai/v1"
+    env_key: MISTRAL_API_KEY
+    sdk_package: openai
+    default_model: mistral-large-latest
+    models:
+      mistral-large-latest:
+        display_name: "Mistral Large"
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+        capabilities:
+          vision: false
+          tool_use: true
+          streaming: true
+      pixtral-large-latest:
+        display_name: "Pixtral Large"
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+        capabilities:
+          vision: true
+          tool_use: true
+
+  # ── Google Gemini ─────────────────────────────────────────────────────
+  gemini:
+    display_name: "Google Gemini"
+    api_style: google_genai
+    provider_class: langchain_llmos.providers.gemini_provider.GeminiProvider
+    env_key: GOOGLE_API_KEY
+    sdk_package: google-generativeai
+    default_model: gemini-2.5-flash
+    models:
+      gemini-2.5-flash:
+        display_name: "Gemini 2.5 Flash"
+        max_input_tokens: 1048576
+        max_output_tokens: 65536
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+          audio_input: true
+        supported_media_types:
+          - image/png
+          - image/jpeg
+          - image/webp
+          - application/pdf
+          - audio/mp3
+          - audio/wav
+      gemini-2.5-pro:
+        display_name: "Gemini 2.5 Pro"
+        max_input_tokens: 1048576
+        max_output_tokens: 65536
+        capabilities:
+          vision: true
+          tool_use: true
+          streaming: true
+          audio_input: true
+          video_input: true
+        supported_media_types:
+          - image/png
+          - image/jpeg
+          - image/webp
+          - application/pdf
+          - audio/mp3
+          - video/mp4

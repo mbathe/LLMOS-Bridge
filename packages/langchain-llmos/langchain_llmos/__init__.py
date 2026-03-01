@@ -42,22 +42,42 @@ __all__ = [
 
 # ComputerUseAgent and provider types (require optional SDK packages).
 from langchain_llmos.agent import AgentResult, ComputerUseAgent, StepRecord
+from langchain_llmos.loop import ReactivePlanLoop
+from langchain_llmos.safeguards import SafeguardConfig
 
-__all__ += ["ComputerUseAgent", "AgentResult", "StepRecord"]
+__all__ += [
+    "ComputerUseAgent",
+    "AgentResult",
+    "StepRecord",
+    "ReactivePlanLoop",
+    "SafeguardConfig",
+]
 
 try:
     from langchain_llmos.providers import (
         AgentLLMProvider,
         AnthropicProvider,
+        GeminiProvider,
+        ModelCapabilities,
+        ModelSpec,
         OpenAICompatibleProvider,
+        ProviderRegistry,
+        ProviderSpec,
         build_agent_provider,
+        get_registry,
     )
 
     __all__ += [
         "AgentLLMProvider",
         "AnthropicProvider",
+        "GeminiProvider",
         "OpenAICompatibleProvider",
+        "ProviderRegistry",
+        "ProviderSpec",
+        "ModelSpec",
+        "ModelCapabilities",
         "build_agent_provider",
+        "get_registry",
     ]
 except ImportError:
     pass

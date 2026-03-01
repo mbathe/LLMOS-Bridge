@@ -71,6 +71,13 @@ class OutputSanitizer:
     # Private
     # ------------------------------------------------------------------
 
+    # Keys whose values are binary/base64 data and should not be sanitised
+    # (truncation would corrupt the encoding).
+    _BINARY_KEYS = frozenset({
+        "screenshot_b64", "labeled_image_b64", "image_b64",
+        "annotated_image_b64", "image_base64", "data_b64",
+    })
+
     def _clean(self, value: Any, depth: int, module: str, action: str) -> Any:
         if depth > self._max_depth:
             log.warning(
@@ -85,7 +92,9 @@ class OutputSanitizer:
             return self._clean_string(value, module=module, action=action)
         if isinstance(value, dict):
             return {
-                k: self._clean(v, depth + 1, module, action) for k, v in value.items()
+                k: (v if k in self._BINARY_KEYS and isinstance(v, str)
+                    else self._clean(v, depth + 1, module, action))
+                for k, v in value.items()
             }
         if isinstance(value, list):
             if len(value) > self._max_list_items:

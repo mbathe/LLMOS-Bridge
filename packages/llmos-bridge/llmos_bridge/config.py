@@ -94,7 +94,7 @@ class SecurityConfig(BaseModel):
 
 class ModuleConfig(BaseModel):
     enabled: list[str] = Field(
-        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers", "vision"],
+        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers", "vision", "gui", "computer_control", "window_tracker"],
         description="List of module IDs to load at startup.",
     )
     disabled: list[str] = Field(
@@ -432,8 +432,8 @@ class VisionConfig(BaseModel):
     omniparser_path: str = Field(
         default="~/.llmos/omniparser",
         description=(
-            "Path to the cloned OmniParser repository. "
-            "Clone with: git clone https://github.com/microsoft/OmniParser.git ~/.llmos/omniparser"
+            "Deprecated — OmniParser is now bundled with LLMOS Bridge. "
+            "This field is kept for backward compatibility but is no longer used."
         ),
     )
     model_dir: str = Field(
@@ -457,6 +457,18 @@ class VisionConfig(BaseModel):
     auto_download_weights: bool = Field(
         default=True,
         description="Auto-download model weights from HuggingFace on first use.",
+    )
+    cache_max_entries: Annotated[int, Field(ge=0, le=50)] = Field(
+        default=5,
+        description="Max cached parse results (LRU eviction). 0 = no caching.",
+    )
+    cache_ttl_seconds: Annotated[float, Field(ge=0.0, le=60.0)] = Field(
+        default=2.0,
+        description="Time-to-live for cached parse results in seconds. 0 = no TTL.",
+    )
+    speculative_prefetch: bool = Field(
+        default=True,
+        description="Start background screen parse after each action to reduce latency.",
     )
 
 

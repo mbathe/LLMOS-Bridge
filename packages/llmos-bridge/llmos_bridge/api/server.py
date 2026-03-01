@@ -42,6 +42,7 @@ from llmos_bridge.modules.security import SecurityModule
 from llmos_bridge.modules.triggers import TriggerModule
 from llmos_bridge.modules.computer_control import ComputerControlModule
 from llmos_bridge.modules.perception_vision import OmniParserModule
+from llmos_bridge.modules.window_tracker import WindowTrackerModule
 from llmos_bridge.modules.word import WordModule
 from llmos_bridge.orchestration.executor import PlanExecutor
 from llmos_bridge.orchestration.resource_manager import ResourceManager
@@ -494,6 +495,7 @@ def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> N
         "browser": BrowserModule,
         "gui": GUIModule,
         "computer_control": ComputerControlModule,
+        "window_tracker": WindowTrackerModule,
         "triggers": TriggerModule,
         "recording": RecordingModule,
     }
@@ -523,10 +525,7 @@ def _apply_vision_config(settings: Settings) -> None:
     """Set environment variables from VisionConfig for OmniParser."""
     import os as _os
 
-    _os.environ.setdefault(
-        "LLMOS_OMNIPARSER_PATH",
-        _os.path.expanduser(settings.vision.omniparser_path),
-    )
+    # Note: LLMOS_OMNIPARSER_PATH no longer used (OmniParser is bundled).
     _os.environ.setdefault(
         "LLMOS_OMNIPARSER_MODEL_DIR",
         _os.path.expanduser(settings.vision.model_dir),

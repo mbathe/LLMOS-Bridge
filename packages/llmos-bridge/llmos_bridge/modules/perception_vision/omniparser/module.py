@@ -8,16 +8,12 @@ and bounding boxes.  It combines three pre-trained components:
   2. **Florence-2** — fine-tuned icon captioning (describes what each icon is)
   3. **PaddleOCR / EasyOCR** — text extraction from the screen
 
-Integration approach:
-    The user clones the OmniParser repo locally and our module imports it
-    via ``sys.path``.  Model weights are auto-downloaded from HuggingFace
-    ``microsoft/OmniParser-v2.0`` on first use.
+OmniParser core code is bundled with LLMOS Bridge.  Model weights are
+auto-downloaded from HuggingFace ``microsoft/OmniParser-v2.0`` on first use.
 
 Setup::
 
-    git clone https://github.com/microsoft/OmniParser.git ~/.llmos/omniparser
-    cd ~/.llmos/omniparser && pip install -r requirements.txt
-    pip install llmos-bridge[vision]
+    pip install llmos-bridge[vision]   # installs torch, ultralytics, easyocr, etc.
 
 The module wraps OmniParser behind the ``BaseVisionModule`` contract so
 users can swap it for any alternative (e.g. GPT-4V, Gemini, a custom model)
@@ -35,7 +31,6 @@ from __future__ import annotations
 import base64
 import io
 import os
-import sys
 import time
 from typing import Any
 
@@ -66,29 +61,13 @@ except ImportError:
     _TORCH_AVAILABLE = False
 
 
-# ── lazy OmniParser import ───────────────────────────────────────────────────
-
-def _import_omniparser(omniparser_path: str) -> type:
-    """Import the real ``Omniparser`` class from a local clone of the
-    Microsoft OmniParser repository via sys.path injection.
-
-    The clone is expected at *omniparser_path* (e.g. ``~/.llmos/omniparser``).
-    """
-    expanded = os.path.expanduser(omniparser_path)
-    if expanded not in sys.path:
-        sys.path.insert(0, expanded)
-    # Real import from util/omniparser.py in the cloned repo.
-    from util.omniparser import Omniparser  # type: ignore[import-untyped]
-
-    return Omniparser
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class OmniParserModule(BaseVisionModule):
     """Default visual perception module — wraps Microsoft OmniParser v2.
 
+    OmniParser core code is bundled with LLMOS Bridge (no external clone needed).
     The module loads model weights lazily on first action call.
     All heavy dependencies (torch, transformers, ultralytics, PIL) are
     optional — the module registers and reports its manifest without them,
@@ -99,8 +78,6 @@ class OmniParserModule(BaseVisionModule):
         and it will take precedence.
 
     Configuration (env vars):
-        LLMOS_OMNIPARSER_PATH          Path to the cloned OmniParser repo
-                                       (default: ~/.llmos/omniparser)
         LLMOS_OMNIPARSER_MODEL_DIR     Path to model weights directory
                                        (default: ~/.llmos/models/omniparser)
         LLMOS_OMNIPARSER_DEVICE        torch device, e.g. "cpu", "cuda", "mps"
@@ -122,10 +99,6 @@ class OmniParserModule(BaseVisionModule):
     SUPPORTED_PLATFORMS = [Platform.LINUX, Platform.WINDOWS, Platform.MACOS]
 
     def __init__(self) -> None:
-        self._omniparser_path = os.environ.get(
-            "LLMOS_OMNIPARSER_PATH",
-            os.path.expanduser("~/.llmos/omniparser"),
-        )
         self._model_dir = os.path.expanduser(
             os.environ.get("LLMOS_OMNIPARSER_MODEL_DIR", "~/.llmos/models/omniparser")
         )
@@ -140,7 +113,26 @@ class OmniParserModule(BaseVisionModule):
             os.environ.get("LLMOS_OMNIPARSER_AUTO_DOWNLOAD", "true").lower() == "true"
         )
         self._api: Any | None = None  # Lazy-loaded Omniparser instance
+        self._cache: Any | None = None  # Lazy PerceptionCache
         super().__init__()
+
+    def _get_cache(self) -> Any:
+        """Lazy-init PerceptionCache from config."""
+        if self._cache is not None:
+            return self._cache
+        try:
+            from llmos_bridge.config import get_settings
+            from llmos_bridge.modules.perception_vision.cache import PerceptionCache
+
+            cfg = get_settings().vision
+            if cfg.cache_max_entries > 0:
+                self._cache = PerceptionCache(
+                    max_entries=cfg.cache_max_entries,
+                    ttl_seconds=cfg.cache_ttl_seconds,
+                )
+        except Exception:
+            pass  # Config not available — no caching.
+        return self._cache
 
     # ------------------------------------------------------------------
     # BaseModule contract
@@ -339,6 +331,13 @@ class OmniParserModule(BaseVisionModule):
 
         t0 = time.perf_counter()
 
+        # Check cache first — ~2ms vs ~4s GPU parse.
+        cache = self._get_cache()
+        if cache is not None and screenshot_bytes is not None:
+            cached = cache.get(screenshot_bytes)
+            if cached is not None:
+                return cached
+
         # Load image as PIL.
         image = self._load_image(screenshot_path=screenshot_path, screenshot_bytes=screenshot_bytes)
         img_width, img_height = image.size
@@ -366,7 +365,7 @@ class OmniParserModule(BaseVisionModule):
         raw_ocr = self._extract_raw_ocr(elements)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        return VisionParseResult(
+        result = VisionParseResult(
             elements=elements,
             width=img_width,
             height=img_height,
@@ -375,6 +374,21 @@ class OmniParserModule(BaseVisionModule):
             parse_time_ms=elapsed_ms,
             model_id="omniparser-v2",
         )
+
+        # Build scene graph — pure CPU geometry, ~5-15ms.
+        try:
+            from llmos_bridge.modules.perception_vision.scene_graph import SceneGraphBuilder
+
+            graph = SceneGraphBuilder().build(result)
+            result.scene_graph_text = graph.to_compact_text()
+        except Exception:
+            pass  # Non-critical — don't fail on scene graph build.
+
+        # Store in cache for subsequent identical screenshots.
+        if cache is not None and screenshot_bytes is not None:
+            cache.put(screenshot_bytes, result)
+
+        return result
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -391,11 +405,15 @@ class OmniParserModule(BaseVisionModule):
             )
 
     def _is_omniparser_available(self) -> bool:
-        """Check if the OmniParser clone is present on disk."""
-        expanded = os.path.expanduser(self._omniparser_path)
-        return os.path.isdir(expanded) and os.path.exists(
-            os.path.join(expanded, "util", "omniparser.py")
-        )
+        """Check if OmniParser dependencies (torch, ultralytics, easyocr) are available."""
+        if not _TORCH_AVAILABLE:
+            return False
+        try:
+            import ultralytics  # noqa: F401, PLC0415
+            import easyocr  # noqa: F401, PLC0415
+            return True
+        except ImportError:
+            return False
 
     def _ensure_weights(self) -> None:
         """Download model weights from HuggingFace if not already present.
@@ -454,20 +472,6 @@ class OmniParserModule(BaseVisionModule):
         if self._auto_download:
             self._ensure_weights()
 
-        # Verify the OmniParser clone exists.
-        expanded = os.path.expanduser(self._omniparser_path)
-        omni_py = os.path.join(expanded, "util", "omniparser.py")
-        if not os.path.exists(omni_py):
-            raise ModuleLoadError(
-                module_id=self.MODULE_ID,
-                reason=(
-                    f"OmniParser repository not found at '{self._omniparser_path}'. "
-                    "Clone it with:\n"
-                    f"  git clone https://github.com/microsoft/OmniParser.git {self._omniparser_path}\n"
-                    f"  cd {self._omniparser_path} && pip install -r requirements.txt"
-                ),
-            )
-
         # Verify model weights exist.
         som_model_path = os.path.join(self._model_dir, "icon_detect", "model.pt")
         caption_model_path = os.path.join(self._model_dir, "icon_caption_florence")
@@ -481,10 +485,10 @@ class OmniParserModule(BaseVisionModule):
                 ),
             )
 
-        # Import and instantiate the real OmniParser.
-        OmniparserClass = _import_omniparser(self._omniparser_path)
+        # Import the bundled Omniparser class.
+        from llmos_bridge.modules.perception_vision.omniparser.core import Omniparser  # noqa: PLC0415
 
-        # Build config dict matching the real OmniParser constructor signature.
+        # Build config dict matching the Omniparser constructor signature.
         # Note: 'BOX_TRESHOLD' is the original typo in OmniParser's code.
         config = {
             "som_model_path": som_model_path,
@@ -494,7 +498,7 @@ class OmniParserModule(BaseVisionModule):
         }
 
         try:
-            self._api = OmniparserClass(config)
+            self._api = Omniparser(config)
         except Exception as exc:
             raise ModuleLoadError(
                 module_id=self.MODULE_ID,
@@ -568,8 +572,8 @@ class OmniParserModule(BaseVisionModule):
             parse_time_ms=elapsed_ms,
             model_id="omniparser-v2/pil-fallback",
             error=error or (
-                "OmniParser not available — clone the repo with: "
-                f"git clone https://github.com/microsoft/OmniParser.git {self._omniparser_path}"
+                "OmniParser dependencies not available. "
+                "Install with: pip install torch ultralytics transformers easyocr"
             ),
         )
 

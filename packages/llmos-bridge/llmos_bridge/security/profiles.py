@@ -138,6 +138,7 @@ _POWER_USER_ALLOWED: frozenset[str] = _LOCAL_WORKER_ALLOWED | frozenset(
         "iot.*",
         "vision.*",
         "computer_control.*",
+        "window_tracker.*",
     ]
 )
 
