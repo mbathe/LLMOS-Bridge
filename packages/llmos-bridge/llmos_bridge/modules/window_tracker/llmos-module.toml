@@ -1,0 +1,80 @@
+[module]
+module_id = "window_tracker"
+version = "1.0.0"
+description = "Window focus monitoring and context recovery. Tracks target windows, detects context switches, and auto-recovers focus when the user opens another window."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.window_tracker.module:WindowTrackerModule"
+platforms = ["linux"]
+requirements = ["xdotool", "wmctrl"]
+tags = ["window", "focus", "tracking", "context", "x11", "gui"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "get_active_window"
+description = "Get information about the currently focused window."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "list_windows"
+description = "List all visible windows with their geometry and focus state."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "start_tracking"
+description = "Begin tracking a target window by title pattern or ID."
+risk_level = "low"
+permission = ""
+
+[[module.actions]]
+name = "stop_tracking"
+description = "Stop tracking the target window."
+risk_level = "low"
+permission = ""
+
+[[module.actions]]
+name = "get_tracking_status"
+description = "Check if the tracked window is still focused."
+risk_level = "low"
+permission = ""
+
+[[module.actions]]
+name = "recover_focus"
+description = "Re-focus the tracked target window."
+risk_level = "medium"
+permission = "keyboard"
+
+[[module.actions]]
+name = "focus_window"
+description = "Focus a specific window by ID or title."
+risk_level = "medium"
+permission = "keyboard"
+
+[[module.actions]]
+name = "detect_context_switch"
+description = "Check if the context (focused window) has changed since last check."
+risk_level = "low"
+permission = ""
+
+[module.capabilities]
+permissions = [
+    "screen_capture",
+    "keyboard",
+]
+side_effects = [
+    "Reads active window information via xdotool",
+    "Lists all visible windows via wmctrl",
+    "Changes window focus via wmctrl/xdotool (recover_focus, focus_window)",
+]
+events_emitted = []
+events_subscribed = []
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

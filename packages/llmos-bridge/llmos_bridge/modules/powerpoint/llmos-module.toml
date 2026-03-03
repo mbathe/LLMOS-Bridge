@@ -1,0 +1,197 @@
+[module]
+module_id = "powerpoint"
+version = "1.0.0"
+description = "Full-featured PowerPoint presentation automation using python-pptx."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.powerpoint.module:PowerPointModule"
+platforms = ["all"]
+requirements = ["python-pptx>=0.6"]
+tags = ["powerpoint", "pptx", "presentation", "slides", "office"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+# -- Presentation lifecycle ---------------------------------------------------
+
+[[module.actions]]
+name = "create_presentation"
+description = "Create a new blank PowerPoint presentation."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "open_presentation"
+description = "Open and cache an existing .pptx file."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "save_presentation"
+description = "Save the presentation to disk."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "get_presentation_info"
+description = "Return metadata about a presentation."
+risk_level = "low"
+permission = "filesystem_read"
+
+# -- Slide management ---------------------------------------------------------
+
+[[module.actions]]
+name = "add_slide"
+description = "Add a new slide to the presentation."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_slide"
+description = "Delete a slide from the presentation."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "duplicate_slide"
+description = "Duplicate a slide and insert the copy at a specified position."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "reorder_slide"
+description = "Move a slide from one position to another."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "list_slides"
+description = "List all slides with title, shape count, and notes preview."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "read_slide"
+description = "Read all content from a slide."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "set_slide_layout"
+description = "Change the layout of a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Text content -------------------------------------------------------------
+
+[[module.actions]]
+name = "set_slide_title"
+description = "Set the title placeholder text of a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_text_box"
+description = "Add a text box to a slide with full formatting options."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_slide_notes"
+description = "Set or append speaker notes to a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Shapes -------------------------------------------------------------------
+
+[[module.actions]]
+name = "add_shape"
+description = "Add an auto shape to a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "format_shape"
+description = "Modify fill, border, rotation, and shadow of an existing shape."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_image"
+description = "Insert an image onto a slide."
+risk_level = "medium"
+permission = "filesystem_read, filesystem_write"
+
+# -- Charts -------------------------------------------------------------------
+
+[[module.actions]]
+name = "add_chart"
+description = "Add a chart to a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Tables -------------------------------------------------------------------
+
+[[module.actions]]
+name = "add_table"
+description = "Add a table to a slide."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "format_table_cell"
+description = "Format a specific cell in a table shape."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Background & theme -------------------------------------------------------
+
+[[module.actions]]
+name = "set_slide_background"
+description = "Set the background of one or all slides (solid color, image, or gradient)."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "apply_theme"
+description = "Copy and apply the theme from another .pptx file."
+risk_level = "medium"
+permission = "filesystem_read, filesystem_write"
+
+[[module.actions]]
+name = "add_transition"
+description = "Add a slide transition animation."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Export -------------------------------------------------------------------
+
+[[module.actions]]
+name = "export_to_pdf"
+description = "Export the presentation to a PDF file using LibreOffice."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "export_slide_as_image"
+description = "Export a single slide as a PNG image using LibreOffice."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[module.capabilities]
+permissions = [
+    "filesystem_read",
+    "filesystem_write",
+]
+side_effects = [
+    "Creates, modifies, and saves PowerPoint presentation files on disk",
+    "Reads slide content, shapes, and presentation metadata",
+    "Exports presentations to PDF and PNG formats via LibreOffice",
+    "Copies theme data from source presentations",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

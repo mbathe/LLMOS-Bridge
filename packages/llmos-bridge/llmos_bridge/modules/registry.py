@@ -20,7 +20,9 @@ Platform guard integration:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Type
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Type
 
 from llmos_bridge.exceptions import ModuleLoadError, ModuleNotFoundError
 from llmos_bridge.logging import get_logger
@@ -55,6 +57,16 @@ class ModuleRegistry:
         # Modules excluded because the current platform is not supported.
         self._platform_excluded: dict[str, str] = {}
         self._guard = platform_guard
+        self._lifecycle: Any | None = None  # ModuleLifecycleManager
+
+    def set_lifecycle_manager(self, manager: Any) -> None:
+        """Attach a ModuleLifecycleManager to this registry."""
+        self._lifecycle = manager
+
+    @property
+    def lifecycle(self) -> Any | None:
+        """Return the attached ModuleLifecycleManager, or None."""
+        return self._lifecycle
 
     def register(self, module_class: Type["BaseModule"]) -> None:
         """Register a module class.  Instantiation is deferred until first use.
@@ -116,8 +128,8 @@ class ModuleRegistry:
             instance = module_class()
             log.info("module_loaded", module_id=module_id, version=module_class.VERSION)
             return instance
-        except Exception as exc:
-            reason = str(exc)
+        except BaseException as exc:
+            reason = str(exc) if str(exc) else type(exc).__name__
             self._failed[module_id] = reason
             log.error("module_load_failed", module_id=module_id, reason=reason)
             raise ModuleLoadError(module_id=module_id, reason=reason) from exc
@@ -134,6 +146,58 @@ class ModuleRegistry:
         self._classes[module_id] = type(instance)
         self._instances[module_id] = instance
         log.debug("module_instance_registered", module_id=module_id, version=instance.VERSION)
+
+    def register_isolated(
+        self,
+        module_id: str,
+        module_class_path: str,
+        venv_manager: "Any",
+        requirements: "list[str] | None" = None,
+        env_vars: "dict[str, str] | None" = None,
+        source_path: "Path | None" = None,
+        timeout: float = 30.0,
+        max_restarts: int = 3,
+    ) -> None:
+        """Register a module that runs in an isolated subprocess.
+
+        Creates an :class:`IsolatedModuleProxy` and registers it as a
+        pre-constructed instance.  The proxy handles lazy venv creation
+        and subprocess management transparently.
+
+        Args:
+            source_path: Root directory of the module source code.  When set,
+                the parent directory is prepended to PYTHONPATH so the worker
+                subprocess can import the module without it being pip-installed.
+                Use for local installs and development workflows.
+        """
+        from llmos_bridge.isolation.proxy import IsolatedModuleProxy
+
+        # Build the effective env_vars, injecting PYTHONPATH for local installs.
+        merged_env: dict[str, str] = dict(env_vars or {})
+        if source_path is not None:
+            source_str = str(source_path)
+            existing = merged_env.get("PYTHONPATH", "")
+            merged_env["PYTHONPATH"] = (
+                f"{source_str}{os.pathsep}{existing}" if existing else source_str
+            )
+
+        proxy = IsolatedModuleProxy(
+            module_id=module_id,
+            module_class_path=module_class_path,
+            venv_manager=venv_manager,
+            requirements=requirements,
+            env_vars=merged_env if merged_env else None,
+            timeout=timeout,
+            max_restarts=max_restarts,
+            source_path=source_path,
+        )
+        self.register_instance(proxy)
+        log.info(
+            "module_registered_isolated",
+            module_id=module_id,
+            class_path=module_class_path,
+            source_path=str(source_path) if source_path else None,
+        )
 
     def is_available(self, module_id: str) -> bool:
         """Return True if the module is registered and can be instantiated."""

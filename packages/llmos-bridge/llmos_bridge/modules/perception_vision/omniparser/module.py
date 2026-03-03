@@ -42,6 +42,7 @@ from llmos_bridge.modules.perception_vision.base import (
     VisionElement,
     VisionParseResult,
 )
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import requires_permission
 from llmos_bridge.security.models import Permission
 
@@ -115,6 +116,13 @@ class OmniParserModule(BaseVisionModule):
         self._api: Any | None = None  # Lazy-loaded Omniparser instance
         self._cache: Any | None = None  # Lazy PerceptionCache
         super().__init__()
+
+    async def on_stop(self) -> None:
+        """Release model resources and clear cache on module shutdown."""
+        self._api = None
+        if self._cache is not None:
+            self._cache.clear()
+            self._cache = None
 
     def _get_cache(self) -> Any:
         """Lazy-init PerceptionCache from config."""
@@ -230,48 +238,70 @@ class OmniParserModule(BaseVisionModule):
     # Actions
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Parses screen content")
     async def _action_parse_screen(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         screenshot_path: str | None = params.get("screenshot_path")
         box_threshold: float | None = params.get("box_threshold")
 
+        if stream:
+            await stream.emit_status("loading_screenshot")
         if screenshot_path is None:
             screenshot_bytes = await self._capture_screen(monitor=0)
         else:
             with open(screenshot_path, "rb") as f:
                 screenshot_bytes = f.read()
 
+        if stream:
+            await stream.emit_status("parsing_vision_pipeline")
         result = await self.parse_screen(
             screenshot_bytes=screenshot_bytes,
             box_threshold=box_threshold,
         )
+        if stream:
+            await stream.emit_progress(100, f"{len(result.elements)} elements detected")
         return result.to_dict()
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Captures and parses screen")
     async def _action_capture_and_parse(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         monitor: int = params.get("monitor", 0)
         region: dict[str, int] | None = params.get("region")
         box_threshold: float | None = params.get("box_threshold")
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         screenshot_bytes = await self._capture_screen(monitor=monitor, region=region)
+        if stream:
+            await stream.emit_status("parsing_vision_pipeline")
         result = await self.parse_screen(
             screenshot_bytes=screenshot_bytes,
             box_threshold=box_threshold,
         )
+        if stream:
+            await stream.emit_progress(100, f"{len(result.elements)} elements detected")
         return result.to_dict()
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Finds element on screen")
     async def _action_find_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         query: str = params["query"]
         element_type: str | None = params.get("element_type")
         screenshot_path: str | None = params.get("screenshot_path")
 
+        if stream:
+            await stream.emit_status("loading_screenshot")
         if screenshot_path:
             with open(screenshot_path, "rb") as f:
                 screenshot_bytes = f.read()
         else:
             screenshot_bytes = await self._capture_screen(monitor=0)
 
+        if stream:
+            await stream.emit_status("parsing_vision_pipeline")
         result = await self.parse_screen(screenshot_bytes=screenshot_bytes)
 
         candidates = result.find_by_label(query)
@@ -290,16 +320,22 @@ class OmniParserModule(BaseVisionModule):
             "pixel_y": py,
         }
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Extracts text from screen")
     async def _action_get_screen_text(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         screenshot_path: str | None = params.get("screenshot_path")
 
+        if stream:
+            await stream.emit_status("loading_screenshot")
         if screenshot_path:
             with open(screenshot_path, "rb") as f:
                 screenshot_bytes = f.read()
         else:
             screenshot_bytes = await self._capture_screen(monitor=0)
 
+        if stream:
+            await stream.emit_status("extracting_text")
         result = await self.parse_screen(screenshot_bytes=screenshot_bytes)
         text = result.raw_ocr or " ".join(
             e.text for e in result.elements if e.text

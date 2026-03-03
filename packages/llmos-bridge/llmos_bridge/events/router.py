@@ -126,6 +126,7 @@ class EventRouter(EventBus):
             fallback: Receives events that match no registered route.
                       Typically ``NullEventBus()`` or ``LogEventBus(path)``.
         """
+        super().__init__()
         # List of (pattern, handler) pairs — checked in registration order
         self._routes: list[tuple[str, EventHandler]] = []
         self._fallback = fallback

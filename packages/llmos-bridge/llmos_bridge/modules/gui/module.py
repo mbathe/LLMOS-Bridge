@@ -278,6 +278,7 @@ class GUIModule(BaseModule):
     # Actions — Screen / Vision
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Searches for element on screen")
     async def _action_find_on_screen(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FindOnScreenParams.model_validate(params)
 
@@ -319,6 +320,7 @@ class GUIModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Reads text from screen via OCR")
     async def _action_get_screen_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetScreenTextParams.model_validate(params)
 
@@ -374,6 +376,7 @@ class GUIModule(BaseModule):
     # Actions — Window management
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Reads window properties")
     async def _action_get_window_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetWindowInfoParams.model_validate(params)
 
@@ -417,6 +420,7 @@ class GUIModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Brings window to foreground")
     async def _action_focus_window(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FocusWindowParams.model_validate(params)
 

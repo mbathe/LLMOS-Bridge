@@ -1,0 +1,72 @@
+[module]
+module_id = "security"
+version = "1.0.0"
+description = "Query and manage OS-level permissions. Check which permissions are granted, request new ones, or revoke existing grants."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.security.module:SecurityModule"
+platforms = ["all"]
+requirements = []
+tags = ["security", "permissions", "audit"]
+sandbox_level = "strict"
+module_type = "system"
+
+[[module.actions]]
+name = "list_permissions"
+description = "List all currently granted OS-level permissions."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "check_permission"
+description = "Check if a specific OS-level permission is granted for a module."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "request_permission"
+description = "Request an OS-level permission for a module. LOW-risk permissions are auto-granted. MEDIUM/HIGH/CRITICAL permissions require explicit approval."
+risk_level = "medium"
+permission = "local_worker"
+
+[[module.actions]]
+name = "revoke_permission"
+description = "Revoke a previously granted OS-level permission."
+risk_level = "high"
+permission = "power_user"
+
+[[module.actions]]
+name = "get_security_status"
+description = "Get a security overview: total grants, grouped by module and risk level."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "list_audit_events"
+description = "List recent security audit events (Phase 3: full query support)."
+risk_level = "low"
+permission = "readonly"
+
+[module.capabilities]
+permissions = [
+    "security.read",
+    "security.grant",
+    "security.revoke",
+]
+side_effects = [
+    "Grants new OS-level permissions to modules",
+    "Revokes existing permission grants",
+    "Emits audit trail events for permission changes",
+]
+events_emitted = [
+    "llmos.security.permission_granted",
+    "llmos.security.permission_revoked",
+    "llmos.security.permission_checked",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

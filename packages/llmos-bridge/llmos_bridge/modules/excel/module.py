@@ -225,6 +225,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_create)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Opens Excel workbook from disk")
     async def _action_open_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OpenWorkbookParams.model_validate(params)
 
@@ -246,6 +247,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_load)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Closes Excel workbook")
     async def _action_close_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CloseWorkbookParams.model_validate(params)
 
@@ -275,6 +277,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_save)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads workbook metadata")
     async def _action_get_workbook_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetWorkbookInfoParams.model_validate(params)
 
@@ -300,6 +303,7 @@ class ExcelModule(BaseModule):
     # Sheet management
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Lists workbook sheets")
     async def _action_list_sheets(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListSheetsParams.model_validate(params)
 
@@ -353,6 +357,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_rename)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_copy_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopySheetParams.model_validate(params)
 
@@ -376,6 +381,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_copy)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads sheet metadata")
     async def _action_get_sheet_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetSheetInfoParams.model_validate(params)
 
@@ -403,6 +409,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_info)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_protect_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ProtectSheetParams.model_validate(params)
 
@@ -427,6 +434,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_protect)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_unprotect_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UnprotectSheetParams.model_validate(params)
 
@@ -443,6 +451,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_unprotect)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_page_setup(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetPageSetupParams.model_validate(params)
 
@@ -480,6 +489,7 @@ class ExcelModule(BaseModule):
     # Cell & range operations
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads cell value from workbook")
     async def _action_read_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadCellParams.model_validate(params)
 
@@ -518,6 +528,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads cell range from workbook")
     async def _action_read_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadRangeParams.model_validate(params)
 
@@ -596,6 +607,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_copy_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopyRangeParams.model_validate(params)
 
@@ -641,6 +653,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_copy)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_rows(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertRowsParams.model_validate(params)
 
@@ -654,6 +667,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_rows(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteRowsParams.model_validate(params)
 
@@ -667,6 +681,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_columns(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertColumnsParams.model_validate(params)
 
@@ -680,6 +695,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_columns(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteColumnsParams.model_validate(params)
 
@@ -796,6 +812,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_set_height)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_find_replace(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FindReplaceParams.model_validate(params)
 
@@ -836,6 +853,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_find_replace)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_remove_duplicates(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RemoveDuplicatesParams.model_validate(params)
 
@@ -897,6 +915,7 @@ class ExcelModule(BaseModule):
     # Formulas & logic
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_apply_formula(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyFormulaParams.model_validate(params)
 
@@ -912,6 +931,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_apply)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_named_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddNamedRangeParams.model_validate(params)
 
@@ -1317,6 +1337,7 @@ class ExcelModule(BaseModule):
     # Comments
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddCommentParams.model_validate(params)
 
@@ -1337,6 +1358,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_add_comment)
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteCommentParams.model_validate(params)
 
@@ -1356,6 +1378,7 @@ class ExcelModule(BaseModule):
     # Export
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Exports workbook sheet to CSV")
     async def _action_export_to_csv(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportToCsvParams.model_validate(params)
 
@@ -1387,6 +1410,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_export_csv)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Exports workbook to PDF")
     async def _action_export_to_pdf(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportToPdfParams.model_validate(params)
 

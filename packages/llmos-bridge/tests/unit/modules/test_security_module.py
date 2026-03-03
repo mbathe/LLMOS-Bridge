@@ -58,6 +58,17 @@ async def security_module(security_manager: SecurityManager) -> SecurityModule:
 
 
 @pytest_asyncio.fixture
+async def security_module_admin(
+    security_module: SecurityModule, security_manager: SecurityManager
+) -> SecurityModule:
+    """SecurityModule with ADMIN permission pre-granted for request/revoke tests."""
+    await security_manager.permission_manager.grant(
+        "os.admin", "security", PermissionScope.SESSION
+    )
+    return security_module
+
+
+@pytest_asyncio.fixture
 async def bare_module() -> SecurityModule:
     """SecurityModule without a SecurityManager (not configured)."""
     return SecurityModule()
@@ -207,17 +218,17 @@ class TestCheckPermission:
 @pytest.mark.unit
 class TestRequestPermission:
     async def test_default_scope_is_session(
-        self, security_module: SecurityModule
+        self, security_module_admin: SecurityModule
     ) -> None:
-        result = await security_module._action_request_permission(
+        result = await security_module_admin._action_request_permission(
             {"permission": "filesystem.read", "module_id": "filesystem"}
         )
         assert result["granted"] is True
         assert result["grant"]["scope"] == "session"
         assert result["grant"]["granted_by"] == "llm"
 
-    async def test_permanent_scope(self, security_module: SecurityModule) -> None:
-        result = await security_module._action_request_permission(
+    async def test_permanent_scope(self, security_module_admin: SecurityModule) -> None:
+        result = await security_module_admin._action_request_permission(
             {
                 "permission": "filesystem.write",
                 "module_id": "filesystem",
@@ -230,9 +241,9 @@ class TestRequestPermission:
         assert result["grant"]["reason"] == "Need write access for reports"
 
     async def test_session_scope_explicit(
-        self, security_module: SecurityModule
+        self, security_module_admin: SecurityModule
     ) -> None:
-        result = await security_module._action_request_permission(
+        result = await security_module_admin._action_request_permission(
             {
                 "permission": "network.read",
                 "module_id": "api_http",
@@ -246,13 +257,13 @@ class TestRequestPermission:
         assert result["grant"]["scope"] == "session"
 
     async def test_grant_then_check_confirms_granted(
-        self, security_module: SecurityModule
+        self, security_module_admin: SecurityModule
     ) -> None:
         """After requesting, check_permission should confirm the grant."""
-        await security_module._action_request_permission(
+        await security_module_admin._action_request_permission(
             {"permission": "filesystem.delete", "module_id": "filesystem"}
         )
-        result = await security_module._action_check_permission(
+        result = await security_module_admin._action_check_permission(
             {"permission": "filesystem.delete", "module_id": "filesystem"}
         )
         assert result["granted"] is True
@@ -268,13 +279,13 @@ class TestRequestPermission:
 class TestRevokePermission:
     async def test_revoke_existing_permission(
         self,
-        security_module: SecurityModule,
+        security_module_admin: SecurityModule,
         security_manager: SecurityManager,
     ) -> None:
         pm = security_manager.permission_manager
         await pm.grant("filesystem.read", "filesystem", PermissionScope.SESSION)
 
-        result = await security_module._action_revoke_permission(
+        result = await security_module_admin._action_revoke_permission(
             {"permission": "filesystem.read", "module_id": "filesystem"}
         )
         assert result["revoked"] is True
@@ -282,26 +293,26 @@ class TestRevokePermission:
         assert result["module_id"] == "filesystem"
 
     async def test_revoke_nonexistent_returns_false(
-        self, security_module: SecurityModule
+        self, security_module_admin: SecurityModule
     ) -> None:
-        result = await security_module._action_revoke_permission(
+        result = await security_module_admin._action_revoke_permission(
             {"permission": "filesystem.read", "module_id": "filesystem"}
         )
         assert result["revoked"] is False
 
     async def test_revoke_then_check_shows_not_granted(
         self,
-        security_module: SecurityModule,
+        security_module_admin: SecurityModule,
         security_manager: SecurityManager,
     ) -> None:
         """After revoking, check_permission should report not granted."""
         pm = security_manager.permission_manager
         await pm.grant("filesystem.write", "filesystem", PermissionScope.SESSION)
 
-        await security_module._action_revoke_permission(
+        await security_module_admin._action_revoke_permission(
             {"permission": "filesystem.write", "module_id": "filesystem"}
         )
-        result = await security_module._action_check_permission(
+        result = await security_module_admin._action_check_permission(
             {"permission": "filesystem.write", "module_id": "filesystem"}
         )
         assert result["granted"] is False

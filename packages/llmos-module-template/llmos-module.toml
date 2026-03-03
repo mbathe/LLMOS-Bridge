@@ -1,0 +1,83 @@
+# LLMOS Module Package Descriptor — Module Spec v3
+#
+# This file is the single source of truth for module identity, entry point,
+# Python dependencies, module-to-module dependencies, and platform support.
+# It is required for distributing modules via the LLMOS Module Hub.
+
+[module]
+module_id = "example"
+version = "0.1.0"
+description = "Example module: greets people and counts words. Use as a template."
+author = "Your Name <you@example.com>"
+license = "MIT"
+homepage = "https://github.com/you/llmos-module-example"
+module_class_path = "llmos_module_example.module:ExampleModule"
+
+# Platforms this module supports. Use "all" for cross-platform modules.
+platforms = ["all"]
+
+# Python package dependencies (pip install format).
+requirements = []
+
+# Tags for hub discovery.
+tags = ["example", "template", "demo"]
+
+# Sandbox level: "none" | "basic" | "strict" | "isolated"
+sandbox_level = "none"
+
+# Module type: "user" (community) | "daemon" (built-in) | "system" (core)
+module_type = "user"
+
+# Minimum LLMOS Bridge version required (PEP-440). Leave empty for any.
+min_bridge_version = ""
+
+# Icon for dashboard display (emoji or URL).
+icon = ""
+
+# ---------------------------------------------------------------------------
+# Action declarations — lightweight listing for hub/dashboard display.
+# Full action specs live in get_manifest() inside module.py.
+# ---------------------------------------------------------------------------
+
+[[module.actions]]
+name = "say_hello"
+description = "Generate a greeting for a person."
+risk_level = "low"
+permission = "readonly"
+category = "text"
+
+[[module.actions]]
+name = "count_words"
+description = "Count the number of words in a text string."
+risk_level = "low"
+permission = "readonly"
+category = "text"
+
+# ---------------------------------------------------------------------------
+# Capabilities — what this module can do and what it needs.
+# ---------------------------------------------------------------------------
+
+[module.capabilities]
+permissions = ["readonly"]
+side_effects = []
+events_emitted = []
+events_subscribed = []
+services_provided = []
+services_consumed = []
+
+# ---------------------------------------------------------------------------
+# Documentation file paths (relative to module root).
+# ---------------------------------------------------------------------------
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"
+
+# ---------------------------------------------------------------------------
+# Module-to-module dependencies (PEP-440 version specs).
+# Example: iot = ">=1.0.0"
+# ---------------------------------------------------------------------------
+
+[module.module_dependencies]

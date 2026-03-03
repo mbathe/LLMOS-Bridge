@@ -1,0 +1,104 @@
+[module]
+module_id = "db_gateway"
+version = "1.1.0"
+description = "Semantic database gateway — query databases using entity names and MongoDB-like filters instead of raw SQL. Extensible: supports any SQLAlchemy-compatible database, plus custom adapters for non-SQL backends."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.database_gateway.module:DatabaseGatewayModule"
+platforms = ["all"]
+requirements = ["sqlalchemy>=2.0"]
+tags = ["database", "gateway", "sql", "sqlite", "postgresql", "mysql", "orm"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "connect"
+description = "Open a database connection."
+risk_level = "medium"
+permission = "database.read"
+
+[[module.actions]]
+name = "disconnect"
+description = "Close a database connection."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "introspect"
+description = "Get full schema: tables, columns, types, foreign keys, indexes."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "find"
+description = "Find records matching a filter, with projection, ordering, and pagination."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "find_one"
+description = "Find a single record matching a filter."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "create"
+description = "Create a new record in an entity."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "create_many"
+description = "Create multiple records in a single batch."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "update"
+description = "Update records matching a filter."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "delete"
+description = "Delete records matching a filter. Requires confirm=true."
+risk_level = "high"
+permission = "database.delete"
+
+[[module.actions]]
+name = "count"
+description = "Count records matching a filter."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "aggregate"
+description = "Aggregate records with GROUP BY and aggregate functions (sum, avg, min, max, count)."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "search"
+description = "Full-text search across specified columns using LIKE/ILIKE."
+risk_level = "low"
+permission = "database.read"
+
+[module.capabilities]
+permissions = [
+    "database.read",
+    "database.write",
+    "database.delete",
+]
+side_effects = [
+    "Opens and closes database connections via SQLAlchemy connection pools",
+    "Reads, creates, updates, and deletes database records",
+    "Introspects database schemas (tables, columns, foreign keys, indexes)",
+    "Caches schema metadata for performance",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

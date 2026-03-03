@@ -107,3 +107,115 @@ def get_scanner_pipeline(request: Request) -> Any:
 
 
 ScannerPipelineDep = Annotated[Any, Depends(get_scanner_pipeline)]
+
+
+def get_lifecycle_manager(request: Request) -> Any:
+    """Return ModuleLifecycleManager if configured, else None."""
+    return getattr(request.app.state, "lifecycle_manager", None)
+
+LifecycleManagerDep = Annotated[Any, Depends(get_lifecycle_manager)]
+
+def get_service_bus(request: Request) -> Any:
+    """Return ServiceBus if configured, else None."""
+    return getattr(request.app.state, "service_bus", None)
+
+ServiceBusDep = Annotated[Any, Depends(get_service_bus)]
+
+def get_module_installer(request: Request) -> Any:
+    """Return ModuleInstaller if hub is enabled, else None."""
+    return getattr(request.app.state, "module_installer", None)
+
+ModuleInstallerDep = Annotated[Any, Depends(get_module_installer)]
+
+def get_hub_client(request: Request) -> Any:
+    """Return HubClient if hub is enabled, else None."""
+    return getattr(request.app.state, "hub_client", None)
+
+HubClientDep = Annotated[Any, Depends(get_hub_client)]
+
+
+def get_identity_store(request: Request) -> Any:
+    """Return IdentityStore if identity system is enabled, else None."""
+    return getattr(request.app.state, "identity_store", None)
+
+IdentityStoreDep = Annotated[Any, Depends(get_identity_store)]
+
+
+def get_identity_resolver(request: Request) -> Any:
+    """Return IdentityResolver."""
+    return getattr(request.app.state, "identity_resolver", None)
+
+IdentityResolverDep = Annotated[Any, Depends(get_identity_resolver)]
+
+
+async def get_identity_context(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    x_llmos_app: Annotated[str | None, Header(alias="X-LLMOS-App")] = None,
+    x_llmos_agent: Annotated[str | None, Header(alias="X-LLMOS-Agent")] = None,
+    x_llmos_session: Annotated[str | None, Header(alias="X-LLMOS-Session")] = None,
+) -> Any:
+    """Resolve the current caller's identity from request headers.
+
+    Returns an IdentityContext.  When the identity system is disabled,
+    returns the default context (app_id="default", role=ADMIN).
+    """
+    resolver = getattr(request.app.state, "identity_resolver", None)
+    if resolver is None:
+        from llmos_bridge.identity.models import IdentityContext
+        return IdentityContext()
+    return await resolver.resolve(
+        authorization=authorization,
+        x_app=x_llmos_app,
+        x_agent=x_llmos_agent,
+        x_session=x_llmos_session,
+    )
+
+IdentityDep = Annotated[Any, Depends(get_identity_context)]
+
+
+def get_node_registry(request: Request) -> Any:
+    """Return NodeRegistry if available."""
+    return getattr(request.app.state, "node_registry", None)
+
+NodeRegistryDep = Annotated[Any, Depends(get_node_registry)]
+
+
+def get_discovery(request: Request) -> Any:
+    """Return NodeDiscoveryService if available (non-standalone mode)."""
+    return getattr(request.app.state, "discovery", None)
+
+DiscoveryDep = Annotated[Any, Depends(get_discovery)]
+
+
+def get_node_health_monitor(request: Request) -> Any:
+    """Return NodeHealthMonitor if available (non-standalone mode)."""
+    return getattr(request.app.state, "node_health_monitor", None)
+
+HealthMonitorDep = Annotated[Any, Depends(get_node_health_monitor)]
+
+
+def get_load_tracker(request: Request) -> Any:
+    """Return ActiveActionCounter if smart routing is active, else None."""
+    return getattr(request.app.state, "load_tracker", None)
+
+LoadTrackerDep = Annotated[Any, Depends(get_load_tracker)]
+
+
+def get_quarantine(request: Request) -> Any:
+    """Return NodeQuarantine if smart routing is active, else None."""
+    return getattr(request.app.state, "quarantine", None)
+
+QuarantineDep = Annotated[Any, Depends(get_quarantine)]
+
+
+def get_authorization_guard(request: Request) -> Any:
+    """Return AuthorizationGuard if configured, else a disabled stub."""
+    guard = getattr(request.app.state, "authorization_guard", None)
+    if guard is not None:
+        return guard
+    # Return a disabled guard so routes always get a non-None object.
+    from llmos_bridge.identity.authorization import AuthorizationGuard
+    return AuthorizationGuard(store=None, enabled=False)
+
+AuthorizationGuardDep = Annotated[Any, Depends(get_authorization_guard)]

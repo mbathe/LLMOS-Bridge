@@ -85,7 +85,7 @@ class CreateTableParams(BaseModel):
 
 class ListTablesParams(BaseModel):
     connection_id: str = "default"
-    schema: str | None = None
+    schema_name: str | None = None  # renamed from 'schema' — shadows BaseModel.schema in Pydantic v2
 
 
 class GetTableSchemaParams(BaseModel):

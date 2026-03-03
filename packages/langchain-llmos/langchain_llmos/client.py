@@ -225,6 +225,15 @@ class AsyncLLMOSClient:
             modules = await client.list_modules()
             result = await client.submit_plan(plan, async_execution=False)
             prompt = await client.get_system_prompt()
+
+    Session support::
+
+        async with AsyncLLMOSClient(app_id="myapp") as client:
+            session = await client.create_session(expires_in_seconds=3600)
+            client.session_id = session["session_id"]
+            # All plan submissions now include X-LLMOS-Session header.
+            result = await client.submit_plan(plan)
+            await client.delete_session(client.session_id)
     """
 
     def __init__(
@@ -232,16 +241,28 @@ class AsyncLLMOSClient:
         base_url: str = "http://127.0.0.1:40000",
         api_token: str | None = None,
         timeout: float = 30.0,
+        *,
+        app_id: str = "default",
+        session_id: str | None = None,
     ) -> None:
         headers: dict[str, str] = {}
         if api_token:
             headers["X-LLMOS-Token"] = api_token
 
+        self._base_url = base_url
+        self._app_id = app_id
+        self.session_id: str | None = session_id
         self._http = httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
             timeout=timeout,
         )
+
+    def _session_headers(self) -> dict[str, str]:
+        """Return ``X-LLMOS-Session`` header when a session is active."""
+        if self.session_id:
+            return {"X-LLMOS-Session": self.session_id}
+        return {}
 
     async def health(self) -> dict[str, Any]:
         resp = await self._http.get("/health")
@@ -264,6 +285,7 @@ class AsyncLLMOSClient:
         resp = await self._http.post(
             "/plans",
             json={"plan": plan, "async_execution": async_execution},
+            headers=self._session_headers(),
             timeout=300.0 if not async_execution else 30.0,
         )
         resp.raise_for_status()
@@ -391,6 +413,86 @@ class AsyncLLMOSClient:
         resp = await self._http.delete(f"/intent-verifier/categories/{category_id}")
         resp.raise_for_status()
         return resp.json()  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Session management
+    # ------------------------------------------------------------------
+
+    async def create_session(
+        self,
+        app_id: str | None = None,
+        *,
+        agent_id: str | None = None,
+        expires_in_seconds: float | None = None,
+        idle_timeout_seconds: int | None = None,
+        allowed_modules: list[str] | None = None,
+        permission_grants: list[str] | None = None,
+        permission_denials: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new session for an application.
+
+        Args:
+            app_id: Target application ID. Defaults to ``self._app_id``.
+            agent_id: Optional agent the session is bound to.
+            expires_in_seconds: Absolute TTL in seconds from now.
+            idle_timeout_seconds: Idle TTL — reset to 0 on each plan submission.
+            allowed_modules: Restrict this session to a subset of the app's modules.
+            permission_grants: Temporary OS permission grants for this session.
+            permission_denials: OS permissions to deny for this session.
+
+        Returns:
+            ``SessionResponse`` dict with ``session_id`` and all fields.
+        """
+        target = app_id or self._app_id
+        body: dict[str, Any] = {}
+        if agent_id is not None:
+            body["agent_id"] = agent_id
+        if expires_in_seconds is not None:
+            body["expires_in_seconds"] = expires_in_seconds
+        if idle_timeout_seconds is not None:
+            body["idle_timeout_seconds"] = idle_timeout_seconds
+        if allowed_modules is not None:
+            body["allowed_modules"] = allowed_modules
+        if permission_grants is not None:
+            body["permission_grants"] = permission_grants
+        if permission_denials is not None:
+            body["permission_denials"] = permission_denials
+        resp = await self._http.post(f"/applications/{target}/sessions", json=body)
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def get_session(
+        self,
+        session_id: str,
+        app_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch session details.
+
+        Args:
+            session_id: The session to retrieve.
+            app_id: Application that owns the session. Defaults to ``self._app_id``.
+        """
+        target = app_id or self._app_id
+        resp = await self._http.get(f"/applications/{target}/sessions/{session_id}")
+        resp.raise_for_status()
+        return resp.json()  # type: ignore[no-any-return]
+
+    async def delete_session(
+        self,
+        session_id: str,
+        app_id: str | None = None,
+    ) -> None:
+        """Delete (revoke) a session immediately.
+
+        Args:
+            session_id: The session to delete.
+            app_id: Application that owns the session. Defaults to ``self._app_id``.
+        """
+        target = app_id or self._app_id
+        resp = await self._http.delete(
+            f"/applications/{target}/sessions/{session_id}"
+        )
+        resp.raise_for_status()
 
     async def close(self) -> None:
         await self._http.aclose()

@@ -12,6 +12,7 @@ from llmos_bridge.api.dependencies import (
     AuthDep,
     ConfigDep,
     ExecutorDep,
+    IdentityDep,
     RecorderDep,
     StateStoreDep,
 )
@@ -70,6 +71,7 @@ async def submit_plan(
     store: StateStoreDep,
     config: ConfigDep,
     recorder: RecorderDep,
+    identity: IdentityDep,
 ) -> SubmitPlanResponse:
     try:
         plan = _parser.parse(body.plan)
@@ -87,7 +89,7 @@ async def submit_plan(
 
     if body.async_execution:
         async def _run_async() -> None:
-            exec_state = await executor.run(plan)
+            exec_state = await executor.run(plan, identity=identity)
             if recorder is not None and active_recording_id:
                 await _record_plan(recorder, active_recording_id, body.plan, exec_state)
 
@@ -102,7 +104,7 @@ async def submit_plan(
     else:
         timeout = config.server.sync_plan_timeout
         try:
-            exec_state = await asyncio.wait_for(executor.run(plan), timeout=float(timeout))
+            exec_state = await asyncio.wait_for(executor.run(plan, identity=identity), timeout=float(timeout))
             if recorder is not None and active_recording_id:
                 await _record_plan(recorder, active_recording_id, body.plan, exec_state)
             # Build action responses for sync callers (SDK tools need results).

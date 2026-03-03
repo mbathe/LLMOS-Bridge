@@ -1,0 +1,139 @@
+[module]
+module_id = "api_http"
+version = "1.0.0"
+description = "HTTP requests, file transfer, email, GraphQL, OAuth2, and webhook automation."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.api_http.module:ApiHttpModule"
+platforms = ["all"]
+requirements = ["httpx>=0.27"]
+tags = ["http", "api", "rest", "email", "webhook", "network"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "http_get"
+description = "Perform an HTTP GET request."
+risk_level = "low"
+permission = "network.send"
+
+[[module.actions]]
+name = "http_head"
+description = "Perform an HTTP HEAD request — retrieve headers without body."
+risk_level = "low"
+permission = "network.send"
+
+[[module.actions]]
+name = "http_post"
+description = "Perform an HTTP POST request with optional JSON, form, or raw body."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "http_put"
+description = "Perform an HTTP PUT request."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "http_patch"
+description = "Perform an HTTP PATCH request."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "http_delete"
+description = "Perform an HTTP DELETE request."
+risk_level = "high"
+permission = "network.send"
+
+[[module.actions]]
+name = "download_file"
+description = "Stream-download a file from a URL to a local destination path."
+risk_level = "medium"
+permission = "network.send, filesystem.write"
+
+[[module.actions]]
+name = "upload_file"
+description = "Upload a local file to a URL as multipart form data."
+risk_level = "medium"
+permission = "network.send, filesystem.read"
+
+[[module.actions]]
+name = "graphql_query"
+description = "Execute a GraphQL query or mutation via HTTP POST."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "oauth2_get_token"
+description = "Obtain an OAuth2 access token from a token endpoint."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "parse_html"
+description = "Parse and extract content from HTML (inline or fetched from URL)."
+risk_level = "low"
+permission = "network.send"
+
+[[module.actions]]
+name = "check_url_availability"
+description = "Check whether a URL is reachable and return latency."
+risk_level = "low"
+permission = "network.send"
+
+[[module.actions]]
+name = "send_email"
+description = "Send an email via SMTP with optional attachments."
+risk_level = "high"
+permission = "email.send"
+
+[[module.actions]]
+name = "read_email"
+description = "Read emails from an IMAP mailbox."
+risk_level = "medium"
+permission = "email.read"
+
+[[module.actions]]
+name = "webhook_trigger"
+description = "Send a webhook request with optional HMAC signing and retry logic."
+risk_level = "medium"
+permission = "network.send"
+
+[[module.actions]]
+name = "set_session"
+description = "Create and cache a persistent httpx.AsyncClient session."
+risk_level = "low"
+permission = "network.send"
+
+[[module.actions]]
+name = "close_session"
+description = "Close and remove a cached httpx session."
+risk_level = "low"
+permission = "network.send"
+
+[module.capabilities]
+permissions = [
+    "network.send",
+    "filesystem.read",
+    "filesystem.write",
+    "email.send",
+    "email.read",
+]
+side_effects = [
+    "Sends HTTP requests to external servers",
+    "Downloads files from remote URLs to local disk",
+    "Uploads local files to remote servers",
+    "Sends emails via SMTP",
+    "Reads emails via IMAP",
+    "Triggers webhooks with optional HMAC signing",
+    "Manages persistent HTTP client sessions",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

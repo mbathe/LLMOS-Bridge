@@ -27,7 +27,8 @@ from typing import Any
 
 from llmos_bridge.modules.base import ActionResult, BaseModule
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
-from llmos_bridge.security.decorators import audit_trail
+from llmos_bridge.security.decorators import audit_trail, data_classification, requires_permission, sensitive_action
+from llmos_bridge.security.models import DataClassification, Permission, RiskLevel
 
 
 class RecordingModule(BaseModule):
@@ -106,6 +107,7 @@ class RecordingModule(BaseModule):
     # Action implementations
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.SCREEN_CAPTURE, Permission.MICROPHONE, reason="Starts screen and audio recording")
     @audit_trail("standard")
     async def _action_start_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
@@ -116,6 +118,7 @@ class RecordingModule(BaseModule):
         )
         return recording.to_summary_dict()
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Stops active recording")
     @audit_trail("standard")
     async def _action_stop_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
@@ -128,6 +131,7 @@ class RecordingModule(BaseModule):
         d["message"] = "Recording stopped. Replay plan generated."
         return d
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Lists stored recordings")
     async def _action_list_recordings(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available")
@@ -140,6 +144,8 @@ class RecordingModule(BaseModule):
             "count": len(recordings),
         }
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads recording metadata")
+    @data_classification(DataClassification.INTERNAL)
     async def _action_get_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available")
@@ -151,6 +157,7 @@ class RecordingModule(BaseModule):
             )
         return recording.to_full_dict()
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads recording to generate replay")
     @audit_trail("detailed")
     async def _action_generate_replay_plan(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
@@ -164,6 +171,9 @@ class RecordingModule(BaseModule):
         plan = self._recorder._replayer.generate(recording)
         return {"recording_id": recording.recording_id, "replay_plan": plan}
 
+    @requires_permission(Permission.FILESYSTEM_DELETE, reason="Deletes stored recording")
+    @sensitive_action(RiskLevel.MEDIUM, irreversible=True)
+    @audit_trail("standard")
     async def _action_delete_recording(self, params: dict[str, Any]) -> Any:
         if self._recorder is None:
             return ActionResult(success=False, error="WorkflowRecorder not available")

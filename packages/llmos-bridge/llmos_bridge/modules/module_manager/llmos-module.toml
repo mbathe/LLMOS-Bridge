@@ -1,0 +1,192 @@
+[module]
+module_id = "module_manager"
+version = "2.0.0"
+description = "Central control plane for the module system. List, enable, disable, pause, resume, and introspect all registered modules and services."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.module_manager.module:ModuleManagerModule"
+platforms = ["all"]
+requirements = []
+tags = ["system", "management", "lifecycle"]
+sandbox_level = "strict"
+module_type = "system"
+
+# --- Module listing and inspection ---
+
+[[module.actions]]
+name = "list_modules"
+description = "List all registered modules with their state and type."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_module_info"
+description = "Get detailed information about a specific module."
+risk_level = "low"
+permission = "readonly"
+
+# --- Lifecycle management ---
+
+[[module.actions]]
+name = "enable_module"
+description = "Enable (start) a disabled module."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "disable_module"
+description = "Disable (stop) a module. System modules cannot be disabled."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "pause_module"
+description = "Temporarily suspend a module's actions."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "resume_module"
+description = "Resume a paused module."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "restart_module"
+description = "Restart a module (stop then start)."
+risk_level = "medium"
+permission = "power_user"
+
+# --- Action toggles ---
+
+[[module.actions]]
+name = "enable_action"
+description = "Re-enable a previously disabled action."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "disable_action"
+description = "Disable a specific action on a module."
+risk_level = "medium"
+permission = "power_user"
+
+# --- Introspection ---
+
+[[module.actions]]
+name = "get_module_health"
+description = "Run health_check() on a specific module."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_module_metrics"
+description = "Get operational metrics from a module."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_module_state"
+description = "Get a state snapshot from a module."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "list_services"
+description = "List all registered services on the ServiceBus."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_system_status"
+description = "Get overall system health summary."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "update_module_config"
+description = "Update a module's runtime configuration."
+risk_level = "medium"
+permission = "power_user"
+
+# --- v3 Hub / Package Manager ---
+
+[[module.actions]]
+name = "install_module"
+description = "Install a module from the hub or local path."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "uninstall_module"
+description = "Uninstall a community module."
+risk_level = "high"
+permission = "power_user"
+
+[[module.actions]]
+name = "upgrade_module"
+description = "Upgrade an installed module to a new version."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "search_hub"
+description = "Search the module hub for available modules."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "list_installed"
+description = "List all installed community modules."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "verify_module"
+description = "Verify an installed module's integrity (signature + hash)."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "describe_module"
+description = "Get dynamic self-description from a module."
+risk_level = "low"
+permission = "readonly"
+
+[module.capabilities]
+permissions = [
+    "module.list",
+    "module.enable",
+    "module.disable",
+    "module.pause",
+    "module.restart",
+    "module.configure",
+    "module.install",
+    "module.uninstall",
+    "module.upgrade",
+]
+side_effects = [
+    "Starts and stops module lifecycle processes",
+    "Enables and disables individual module actions",
+    "Installs, upgrades, and uninstalls community modules",
+    "Updates module runtime configuration",
+    "Performs network requests to the module hub",
+    "Writes to the filesystem during module installation",
+]
+events_emitted = [
+    "llmos.modules.enabled",
+    "llmos.modules.disabled",
+    "llmos.modules.paused",
+    "llmos.modules.resumed",
+    "llmos.modules.restarted",
+    "llmos.modules.installed",
+    "llmos.modules.uninstalled",
+    "llmos.modules.upgraded",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

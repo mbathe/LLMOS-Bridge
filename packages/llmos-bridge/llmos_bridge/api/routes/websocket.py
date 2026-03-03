@@ -111,6 +111,7 @@ class WebSocketEventBus(EventBus):
     """
 
     def __init__(self, connection_manager: ConnectionManager) -> None:
+        super().__init__()
         self._manager = connection_manager
 
     async def emit(self, topic: str, event: dict[str, Any]) -> None:

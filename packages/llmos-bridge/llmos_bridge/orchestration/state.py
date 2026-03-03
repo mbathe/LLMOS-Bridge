@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS plans (
     status      TEXT NOT NULL,
     created_at  REAL NOT NULL,
     updated_at  REAL NOT NULL,
-    data        TEXT NOT NULL
+    data        TEXT NOT NULL,
+    app_id      TEXT NOT NULL DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS actions (
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_actions_plan_id ON actions (plan_id);
+CREATE INDEX IF NOT EXISTS idx_plans_app_id ON plans (app_id);
 """
 
 
@@ -153,26 +155,54 @@ class PlanStateStore:
             self._conn = await aiosqlite.connect(str(self._db_path))
             await self._conn.execute("PRAGMA journal_mode=WAL")
             await self._conn.execute("PRAGMA foreign_keys=ON")
+
+            # Migrate existing databases before applying the full schema,
+            # because _SCHEMA_SQL references the app_id column in the index.
+            await self._migrate_app_id()
+
             await self._conn.executescript(_SCHEMA_SQL)
             await self._conn.commit()
             log.info("state_store_ready", db=str(self._db_path))
         except Exception as exc:
             raise StateStoreError(f"Failed to initialise state store: {exc}") from exc
 
+    async def _migrate_app_id(self) -> None:
+        """Add app_id column to plans table if it doesn't exist (v1 → v2 migration).
+
+        Only runs when the table already exists (legacy database).
+        On a fresh database, the full schema already includes app_id.
+        """
+        assert self._conn is not None
+        # Check if the plans table exists at all.
+        async with self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='plans'"
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                return  # Fresh database — schema will create with app_id.
+
+        async with self._conn.execute("PRAGMA table_info(plans)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if "app_id" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE plans ADD COLUMN app_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            await self._conn.commit()
+            log.info("state_store_migrated", added_column="app_id")
+
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
             self._conn = None
 
-    async def create(self, state: ExecutionState) -> None:
+    async def create(self, state: ExecutionState, app_id: str = "default") -> None:
         """Persist a new ExecutionState (plan + all actions)."""
         now = time.time()
         data = {"rejection_details": state.rejection_details} if state.rejection_details else {}
         async with self._lock:
             assert self._conn is not None
             await self._conn.execute(
-                "INSERT INTO plans (plan_id, status, created_at, updated_at, data) VALUES (?,?,?,?,?)",
-                (state.plan_id, state.plan_status.value, now, now, json.dumps(data)),
+                "INSERT INTO plans (plan_id, status, created_at, updated_at, data, app_id) VALUES (?,?,?,?,?,?)",
+                (state.plan_id, state.plan_status.value, now, now, json.dumps(data), app_id),
             )
             for action_id, action_state in state.actions.items():
                 await self._conn.execute(
@@ -285,19 +315,30 @@ class PlanStateStore:
         return state
 
     async def list_plans(
-        self, status: PlanStatus | None = None, limit: int = 100
+        self,
+        status: PlanStatus | None = None,
+        limit: int = 100,
+        app_id: str | None = None,
     ) -> list[dict[str, Any]]:
         assert self._conn is not None
+        conditions: list[str] = []
+        values: list[Any] = []
+
         if status:
-            query = "SELECT plan_id, status, created_at, updated_at FROM plans WHERE status=? ORDER BY created_at DESC LIMIT ?"
-            params: tuple[Any, ...] = (status.value, limit)
-        else:
-            query = "SELECT plan_id, status, created_at, updated_at FROM plans ORDER BY created_at DESC LIMIT ?"
-            params = (limit,)
-        async with self._conn.execute(query, params) as cursor:
+            conditions.append("status=?")
+            values.append(status.value)
+        if app_id:
+            conditions.append("app_id=?")
+            values.append(app_id)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT plan_id, status, created_at, updated_at, app_id FROM plans{where} ORDER BY created_at DESC LIMIT ?"
+        values.append(limit)
+
+        async with self._conn.execute(query, tuple(values)) as cursor:
             rows = await cursor.fetchall()
         return [
-            {"plan_id": r[0], "status": r[1], "created_at": r[2], "updated_at": r[3]}
+            {"plan_id": r[0], "status": r[1], "created_at": r[2], "updated_at": r[3], "app_id": r[4]}
             for r in rows
         ]
 

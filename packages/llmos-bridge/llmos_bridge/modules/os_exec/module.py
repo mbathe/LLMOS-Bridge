@@ -19,6 +19,7 @@ import psutil
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import (
     audit_trail,
     rate_limited,
@@ -42,6 +43,7 @@ from llmos_bridge.protocol.params.os_exec import (
 class OSExecModule(BaseModule):
     MODULE_ID = "os_exec"
     VERSION = "1.0.0"
+    MODULE_TYPE = "system"
     SUPPORTED_PLATFORMS = [Platform.ALL]
 
     def _check_dependencies(self) -> None:
@@ -52,16 +54,21 @@ class OSExecModule(BaseModule):
 
             raise ModuleLoadError("os_exec", "psutil is required: pip install psutil") from exc
 
+    @streams_progress
     @requires_permission(Permission.PROCESS_EXECUTE, reason="Execute system command")
     @sensitive_action(RiskLevel.MEDIUM)
     @rate_limited(calls_per_minute=30)
     @audit_trail("detailed")
     async def _action_run_command(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = RunCommandParams.model_validate(params)
 
         env = os.environ.copy()
         if p.env:
             env.update(p.env)
+
+        if stream:
+            await stream.emit_status("starting_process")
 
         proc = await asyncio.create_subprocess_exec(
             *p.command,
@@ -71,6 +78,9 @@ class OSExecModule(BaseModule):
             cwd=p.working_directory,
             env=env,
         )
+
+        if stream:
+            await stream.emit_status("running")
 
         try:
             stdin_bytes = p.stdin.encode() if p.stdin else None
@@ -84,6 +94,9 @@ class OSExecModule(BaseModule):
                 f"Command timed out after {p.timeout}s: {' '.join(p.command)}"
             )
 
+        if stream:
+            await stream.emit_progress(100, f"exit code {proc.returncode}")
+
         return {
             "command": p.command,
             "return_code": proc.returncode,
@@ -92,6 +105,7 @@ class OSExecModule(BaseModule):
             "success": proc.returncode == 0,
         }
 
+    @requires_permission(Permission.PROCESS_READ, reason="Lists running system processes")
     async def _action_list_processes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListProcessesParams.model_validate(params)
         processes = []
@@ -137,6 +151,7 @@ class OSExecModule(BaseModule):
         except psutil.AccessDenied:
             raise PermissionError(f"Access denied to PID {p.pid}")
 
+    @requires_permission(Permission.PROCESS_READ, reason="Reads process metadata")
     async def _action_get_process_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetProcessInfoParams.model_validate(params)
         try:
@@ -184,16 +199,19 @@ class OSExecModule(BaseModule):
                 continue
         return {"application": p.application_name, "closed_pids": closed}
 
+    @requires_permission(Permission.ENV_WRITE, reason="Modifies environment variable")
     async def _action_set_env_var(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetEnvVarParams.model_validate(params)
         os.environ[p.name] = p.value
         return {"name": p.name, "scope": p.scope}
 
+    @requires_permission(Permission.ENV_READ, reason="Reads environment variable")
     async def _action_get_env_var(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetEnvVarParams.model_validate(params)
         value = os.environ.get(p.name)
         return {"name": p.name, "value": value, "exists": value is not None}
 
+    @requires_permission(Permission.PROCESS_READ, reason="Reads system resource usage")
     async def _action_get_system_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetSystemInfoParams.model_validate(params)
         info: dict[str, Any] = {}
@@ -244,18 +262,94 @@ class OSExecModule(BaseModule):
                         "Returns stdout, stderr, and return code."
                     ),
                     params=[
-                        ParamSpec("command", "array", "Command as list: ['git', 'status']."),
+                        ParamSpec("command", "array", "Command and arguments as a list: ['git', 'status']."),
                         ParamSpec("working_directory", "string", "Working directory.", required=False),
+                        ParamSpec("env", "object", "Additional environment variables.", required=False),
                         ParamSpec("timeout", "integer", "Timeout in seconds.", required=False, default=30),
                         ParamSpec("capture_output", "boolean", "Capture stdout/stderr.", required=False, default=True),
+                        ParamSpec("stdin", "string", "Data to pipe to stdin.", required=False),
                     ],
+                    returns_description='{"command", "return_code", "stdout", "stderr", "success"}',
                     permission_required="local_worker",
                 ),
                 ActionSpec(
-                    name="get_system_info",
-                    description="Get CPU, memory, disk, network and OS information.",
+                    name="list_processes",
+                    description="List running processes with optional name filtering.",
                     params=[
-                        ParamSpec("include", "array", "Categories to include: cpu, memory, disk, os.", required=False),
+                        ParamSpec("name_filter", "string", "Filter processes whose name contains this string.", required=False),
+                        ParamSpec("include_children", "boolean", "Include child processes.", required=False, default=False),
+                    ],
+                    returns_description='{"processes": [...], "count": int}',
+                    permission_required="readonly",
+                ),
+                ActionSpec(
+                    name="kill_process",
+                    description="Send a signal (SIGTERM or SIGKILL) to a process by PID.",
+                    params=[
+                        ParamSpec("pid", "integer", "PID of the process to kill."),
+                        ParamSpec("signal", "string", "Signal to send.", required=False, default="SIGTERM",
+                                  enum=["SIGTERM", "SIGKILL"]),
+                    ],
+                    returns_description='{"pid": int, "signal": str, "success": bool}',
+                    permission_required="power_user",
+                ),
+                ActionSpec(
+                    name="get_process_info",
+                    description="Get detailed information about a running process by PID.",
+                    params=[
+                        ParamSpec("pid", "integer", "PID of the process."),
+                    ],
+                    returns_description='{"pid", "name", "status", "cpu_percent", "memory_mb", "cmdline", "cwd", "created"}',
+                    permission_required="readonly",
+                ),
+                ActionSpec(
+                    name="open_application",
+                    description="Launch an application as a detached process.",
+                    params=[
+                        ParamSpec("application", "string", "Application name or full path to the executable."),
+                        ParamSpec("arguments", "array", "Command-line arguments.", required=False),
+                        ParamSpec("working_directory", "string", "Working directory.", required=False),
+                    ],
+                    returns_description='{"application": str, "pid": int}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="close_application",
+                    description="Close all processes matching an application name.",
+                    params=[
+                        ParamSpec("application_name", "string", "Name of the application to close."),
+                        ParamSpec("force", "boolean", "Forcibly kill (SIGKILL) instead of terminate.", required=False, default=False),
+                    ],
+                    returns_description='{"application": str, "closed_pids": [int]}',
+                    permission_required="power_user",
+                ),
+                ActionSpec(
+                    name="set_env_var",
+                    description="Set an environment variable in the current process scope.",
+                    params=[
+                        ParamSpec("name", "string", "Environment variable name."),
+                        ParamSpec("value", "string", "Value to set."),
+                        ParamSpec("scope", "string", "Scope of the variable.", required=False, default="process",
+                                  enum=["process"]),
+                    ],
+                    returns_description='{"name": str, "scope": str}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="get_env_var",
+                    description="Read the value of an environment variable.",
+                    params=[
+                        ParamSpec("name", "string", "Environment variable name to read."),
+                    ],
+                    returns_description='{"name": str, "value": str | null, "exists": bool}',
+                    permission_required="readonly",
+                ),
+                ActionSpec(
+                    name="get_system_info",
+                    description="Get CPU, memory, disk, and OS information.",
+                    params=[
+                        ParamSpec("include", "array", "Categories to include: cpu, memory, disk, os.", required=False,
+                                  example=["cpu", "memory", "disk", "os"]),
                     ],
                     permission_required="readonly",
                 ),

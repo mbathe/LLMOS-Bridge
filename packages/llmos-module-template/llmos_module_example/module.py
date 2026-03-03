@@ -1,18 +1,19 @@
 """Example LLMOS Bridge module — Implementation.
 
-Demonstrates the minimum required structure:
+Demonstrates the minimum required structure (Module Spec v3):
   1. Subclass BaseModule
   2. Set MODULE_ID, VERSION, SUPPORTED_PLATFORMS
   3. Implement one ``_action_<name>`` method per action
   4. Implement ``get_manifest()``
   5. Optionally implement ``_check_dependencies()``
+  6. Optionally override v3 hooks: policy_rules(), describe(), estimate_cost()
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from llmos_bridge.modules.base import BaseModule, Platform
+from llmos_bridge.modules.base import BaseModule, ModulePolicy, Platform, ResourceEstimate
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 
 from llmos_module_example.params import CountWordsParams, SayHelloParams
@@ -54,6 +55,32 @@ class ExampleModule(BaseModule):
         return {"text": p.text, "word_count": len(words)}
 
     # ------------------------------------------------------------------
+    # Module Spec v3 — Policy, cost estimation, self-description
+    # ------------------------------------------------------------------
+
+    def policy_rules(self) -> ModulePolicy:
+        return ModulePolicy(
+            max_parallel_calls=10,
+            cooldown_seconds=0.0,
+            allow_remote_invocation=True,
+        )
+
+    async def estimate_cost(self, action: str, params: dict) -> ResourceEstimate:
+        return ResourceEstimate(
+            estimated_duration_seconds=0.01,
+            estimated_memory_mb=1.0,
+            confidence=0.95,
+        )
+
+    def describe(self) -> dict:
+        return {
+            "module_id": self.MODULE_ID,
+            "version": self.VERSION,
+            "capabilities": ["greeting", "word_counting"],
+            "status": "ready",
+        }
+
+    # ------------------------------------------------------------------
     # Manifest — describes the module for the Capability Manifest system.
     # ------------------------------------------------------------------
 
@@ -77,6 +104,14 @@ class ExampleModule(BaseModule):
                     returns="object",
                     returns_description='{"greeting": str, "formal": bool}',
                     permission_required="readonly",
+                    output_schema={
+                        "type": "object",
+                        "properties": {
+                            "greeting": {"type": "string"},
+                            "formal": {"type": "boolean"},
+                        },
+                        "required": ["greeting", "formal"],
+                    },
                     examples=[
                         {
                             "description": "Informal greeting",
@@ -103,6 +138,14 @@ class ExampleModule(BaseModule):
                     returns="object",
                     returns_description='{"text": str, "word_count": int}',
                     permission_required="readonly",
+                    output_schema={
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "word_count": {"type": "integer"},
+                        },
+                        "required": ["text", "word_count"],
+                    },
                     examples=[
                         {
                             "description": "Count words",

@@ -60,6 +60,7 @@ _SECURITY_ATTRS = (
     "_data_classification",
     "_intent_verified",
     "_intent_strict",
+    "_streams_progress",
 )
 
 

@@ -1,0 +1,70 @@
+[module]
+module_id = "recording"
+version = "1.0.0"
+description = "Record sequences of plan executions into named sessions for later replay. Shadow Recorder Phase A."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.recording.module:RecordingModule"
+platforms = ["linux", "darwin", "windows"]
+requirements = []
+tags = ["recording", "replay", "workflow", "automation", "shadow-recorder"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "start_recording"
+description = "Start a new named recording session. All subsequent plan executions will be captured."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "stop_recording"
+description = "Stop the active recording session and generate a replay IML plan."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "list_recordings"
+description = "List all workflow recordings with optional status filter."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_recording"
+description = "Retrieve a recording including its captured plans and generated replay plan."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "generate_replay_plan"
+description = "Regenerate the replay IML plan for a stopped recording."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "delete_recording"
+description = "Permanently delete a recording and all its captured plans."
+risk_level = "medium"
+permission = "power_user"
+
+[module.capabilities]
+permissions = []
+side_effects = [
+    "Captures plan execution sequences into persistent recording sessions",
+    "Generates replay IML plans from captured workflows",
+    "Deletes recording data from the RecordingStore",
+]
+events_emitted = [
+    "llmos.recording.started",
+    "llmos.recording.stopped",
+    "llmos.recording.deleted",
+    "llmos.recording.replay_generated",
+]
+events_subscribed = []
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

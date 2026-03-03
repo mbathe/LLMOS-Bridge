@@ -78,6 +78,14 @@ class IoTModule(BaseModule):
             # Non-Pi environment — use Mock for development/CI.
             self._gpio = MockGPIO()
 
+    async def on_stop(self) -> None:
+        """Release GPIO resources on module shutdown."""
+        if self._gpio is not None:
+            try:
+                self._gpio.cleanup()
+            except Exception:
+                pass
+
     @property
     def gpio(self) -> GPIOInterface:
         assert self._gpio is not None

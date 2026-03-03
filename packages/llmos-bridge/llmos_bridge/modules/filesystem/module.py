@@ -18,6 +18,7 @@ from typing import Any
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import (
     audit_trail,
     rate_limited,
@@ -45,6 +46,7 @@ from llmos_bridge.protocol.params.filesystem import (
 class FilesystemModule(BaseModule):
     MODULE_ID = "filesystem"
     VERSION = "1.0.0"
+    MODULE_TYPE = "system"
     SUPPORTED_PLATFORMS = [Platform.ALL]
 
     @staticmethod
@@ -219,10 +221,12 @@ class FilesystemModule(BaseModule):
         entries = await asyncio.to_thread(_list)
         return {"path": str(base), "entries": entries, "count": len(entries)}
 
+    @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, reason="Search files by pattern")
     async def _action_search_files(self, params: dict[str, Any]) -> dict[str, Any]:
         import re
 
+        stream = params.pop("_stream", None)
         p = SearchFilesParams.model_validate(params)
         base = Path(p.directory)
 
@@ -231,6 +235,9 @@ class FilesystemModule(BaseModule):
             if p.content_pattern
             else None
         )
+
+        if stream:
+            await stream.emit_status("searching")
 
         def _search() -> list[dict[str, Any]]:
             results = []
@@ -250,6 +257,8 @@ class FilesystemModule(BaseModule):
             return results
 
         results = await asyncio.to_thread(_search)
+        if stream:
+            await stream.emit_progress(100, f"{len(results)} matches found")
         return {"matches": results, "count": len(results)}
 
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads file metadata")
@@ -273,8 +282,10 @@ class FilesystemModule(BaseModule):
             "suffix": path.suffix,
         }
 
+    @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Create archive")
     async def _action_create_archive(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = CreateArchiveParams.model_validate(params)
         src = self._resolve_path(Path(p.source))
 
@@ -287,23 +298,38 @@ class FilesystemModule(BaseModule):
         archive_format = format_map[p.format]
         dest = Path(p.destination)
 
+        if stream:
+            await stream.emit_status("creating_archive")
         await asyncio.to_thread(
             shutil.make_archive, str(dest.with_suffix("")), archive_format, str(src.parent), src.name
         )
+        if stream:
+            await stream.emit_progress(100, f"Archive created: {dest}")
         return {"archive": str(dest), "source": str(src)}
 
+    @streams_progress
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Extract archive to disk")
     async def _action_extract_archive(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ExtractArchiveParams.model_validate(params)
         src, dst = self._resolve_path(Path(p.source)), self._resolve_path(Path(p.destination))
         dst.mkdir(parents=True, exist_ok=True)
+        if stream:
+            await stream.emit_status("extracting")
         await asyncio.to_thread(shutil.unpack_archive, src, dst)
+        if stream:
+            await stream.emit_progress(100, f"Extracted to {dst}")
         return {"source": str(src), "destination": str(dst)}
 
+    @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, reason="Compute file checksum")
     async def _action_compute_checksum(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ComputeChecksumParams.model_validate(params)
         path = Path(p.path)
+
+        if stream:
+            await stream.emit_status("computing_checksum")
 
         def _hash() -> str:
             h = hashlib.new(p.algorithm)
@@ -313,12 +339,16 @@ class FilesystemModule(BaseModule):
             return h.hexdigest()
 
         checksum = await asyncio.to_thread(_hash)
+        if stream:
+            await stream.emit_progress(100, f"{p.algorithm} checksum computed")
         return {"path": str(path), "algorithm": p.algorithm, "checksum": checksum}
 
+    @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, reason="Watch path for changes")
     async def _action_watch_path(self, params: dict[str, Any]) -> dict[str, Any]:
         from llmos_bridge.protocol.params.filesystem import WatchPathParams
 
+        stream = params.pop("_stream", None)
         p = WatchPathParams.model_validate(params)
         # Basic polling implementation — Phase 3 will integrate watchdog.
         path = Path(p.path)
@@ -327,8 +357,14 @@ class FilesystemModule(BaseModule):
 
         while time.time() < deadline:
             await asyncio.sleep(0.5)
+            if stream:
+                elapsed = p.timeout - (deadline - time.time())
+                pct = min(99.0, (elapsed / p.timeout) * 100)
+                await stream.emit_progress(pct, f"Watching {path.name}")
             current_mtime = path.stat().st_mtime if path.exists() else None
             if current_mtime != initial_mtime:
+                if stream:
+                    await stream.emit_progress(100, "Change detected")
                 return {
                     "path": str(path),
                     "event": "modified" if path.exists() else "deleted",
@@ -357,6 +393,7 @@ class FilesystemModule(BaseModule):
                         ParamSpec("encoding", "string", "Text encoding.", required=False, default="utf-8"),
                         ParamSpec("start_line", "integer", "First line to read (1-indexed).", required=False),
                         ParamSpec("end_line", "integer", "Last line to read (1-indexed).", required=False),
+                        ParamSpec("max_bytes", "integer", "Maximum bytes to read.", required=False),
                     ],
                     returns="object",
                     returns_description='{"path": str, "content": str, "size_bytes": int}',
@@ -373,9 +410,45 @@ class FilesystemModule(BaseModule):
                     params=[
                         ParamSpec("path", "string", "Path to write to."),
                         ParamSpec("content", "string", "Content to write."),
+                        ParamSpec("encoding", "string", "Text encoding.", required=False, default="utf-8"),
                         ParamSpec("create_dirs", "boolean", "Create parent directories.", required=False, default=False),
                         ParamSpec("overwrite", "boolean", "Overwrite existing file.", required=False, default=True),
                     ],
+                    returns_description='{"path": str, "bytes_written": int}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="append_file",
+                    description="Append text content to an existing file.",
+                    params=[
+                        ParamSpec("path", "string", "Path to the file to append to."),
+                        ParamSpec("content", "string", "Text to append."),
+                        ParamSpec("encoding", "string", "Text encoding.", required=False, default="utf-8"),
+                        ParamSpec("newline", "boolean", "Prepend a newline before appending.", required=False, default=True),
+                    ],
+                    returns_description='{"path": str, "bytes_appended": int}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="copy_file",
+                    description="Copy a file or directory to a new location.",
+                    params=[
+                        ParamSpec("source", "string", "Source path."),
+                        ParamSpec("destination", "string", "Destination path."),
+                        ParamSpec("overwrite", "boolean", "Overwrite if destination exists.", required=False, default=False),
+                    ],
+                    returns_description='{"source": str, "destination": str}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="move_file",
+                    description="Move or rename a file or directory.",
+                    params=[
+                        ParamSpec("source", "string", "Source path."),
+                        ParamSpec("destination", "string", "Destination path."),
+                        ParamSpec("overwrite", "boolean", "Overwrite if destination exists.", required=False, default=False),
+                    ],
+                    returns_description='{"source": str, "destination": str}',
                     permission_required="local_worker",
                 ),
                 ActionSpec(
@@ -385,7 +458,95 @@ class FilesystemModule(BaseModule):
                         ParamSpec("path", "string", "Path to delete."),
                         ParamSpec("recursive", "boolean", "Delete directory recursively.", required=False, default=False),
                     ],
+                    returns_description='{"deleted": str}',
                     permission_required="power_user",
+                ),
+                ActionSpec(
+                    name="create_directory",
+                    description="Create a new directory, optionally creating parent directories.",
+                    params=[
+                        ParamSpec("path", "string", "Path of the directory to create."),
+                        ParamSpec("parents", "boolean", "Create all missing parent directories.", required=False, default=True),
+                        ParamSpec("exist_ok", "boolean", "Do not raise if directory exists.", required=False, default=True),
+                    ],
+                    returns_description='{"path": str, "created": bool}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="list_directory",
+                    description="List the contents of a directory with optional glob filtering.",
+                    params=[
+                        ParamSpec("path", "string", "Directory to list."),
+                        ParamSpec("recursive", "boolean", "Recurse into subdirectories.", required=False, default=False),
+                        ParamSpec("pattern", "string", "Glob pattern to filter entries (e.g. '*.py').", required=False),
+                        ParamSpec("include_hidden", "boolean", "Include hidden files.", required=False, default=False),
+                        ParamSpec("max_results", "integer", "Maximum entries to return.", required=False, default=500),
+                    ],
+                    returns_description='{"path": str, "entries": [...], "count": int}',
+                ),
+                ActionSpec(
+                    name="search_files",
+                    description="Search for files by name pattern and optional content regex.",
+                    params=[
+                        ParamSpec("directory", "string", "Root directory for the search."),
+                        ParamSpec("pattern", "string", "Glob filename pattern (e.g. '*.log')."),
+                        ParamSpec("content_pattern", "string", "Regex to match inside file contents.", required=False),
+                        ParamSpec("case_sensitive", "boolean", "Case-sensitive content matching.", required=False, default=False),
+                        ParamSpec("max_results", "integer", "Maximum results to return.", required=False, default=100),
+                    ],
+                    returns_description='{"matches": [...], "count": int}',
+                ),
+                ActionSpec(
+                    name="get_file_info",
+                    description="Get metadata about a file or directory (size, permissions, timestamps).",
+                    params=[
+                        ParamSpec("path", "string", "Path to inspect."),
+                    ],
+                    returns_description='{"path", "name", "type", "size_bytes", "created", "modified", "permissions", "is_symlink", "suffix"}',
+                ),
+                ActionSpec(
+                    name="create_archive",
+                    description="Create a zip, tar, tar.gz, or tar.bz2 archive from a file or directory.",
+                    params=[
+                        ParamSpec("source", "string", "File or directory to archive."),
+                        ParamSpec("destination", "string", "Output archive path."),
+                        ParamSpec("format", "string", "Archive format.", required=False, default="zip",
+                                  enum=["zip", "tar", "tar.gz", "tar.bz2"]),
+                    ],
+                    returns_description='{"archive": str, "source": str}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="extract_archive",
+                    description="Extract an archive to a destination directory.",
+                    params=[
+                        ParamSpec("source", "string", "Archive file to extract."),
+                        ParamSpec("destination", "string", "Directory to extract into."),
+                        ParamSpec("overwrite", "boolean", "Overwrite existing files.", required=False, default=False),
+                    ],
+                    returns_description='{"source": str, "destination": str}',
+                    permission_required="local_worker",
+                ),
+                ActionSpec(
+                    name="compute_checksum",
+                    description="Compute a hash checksum (md5, sha1, sha256, sha512) of a file.",
+                    params=[
+                        ParamSpec("path", "string", "File to hash."),
+                        ParamSpec("algorithm", "string", "Hash algorithm.", required=False, default="sha256",
+                                  enum=["md5", "sha1", "sha256", "sha512"]),
+                    ],
+                    returns_description='{"path": str, "algorithm": str, "checksum": str}',
+                ),
+                ActionSpec(
+                    name="watch_path",
+                    description="Watch a file or directory for changes within a timeout window.",
+                    params=[
+                        ParamSpec("path", "string", "File or directory to watch."),
+                        ParamSpec("events", "array", "Event types to watch.", required=False,
+                                  example=["created", "modified", "deleted"]),
+                        ParamSpec("timeout", "integer", "Watch timeout in seconds.", required=False, default=60),
+                    ],
+                    returns_description='{"path": str, "event": str, "detected_at": float} or {"event": "timeout"}',
                 ),
             ],
         )

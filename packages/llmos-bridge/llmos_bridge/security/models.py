@@ -67,6 +67,7 @@ class PermissionGrant:
     granted_by: str = "user"
     reason: str = ""
     expires_at: float | None = None
+    app_id: str = "default"  # Which application this grant belongs to
 
     def is_expired(self) -> bool:
         if self.expires_at is None:
@@ -82,6 +83,7 @@ class PermissionGrant:
             "granted_by": self.granted_by,
             "reason": self.reason,
             "expires_at": self.expires_at,
+            "app_id": self.app_id,
         }
 
 
@@ -134,9 +136,12 @@ class Permission:
     PERSONAL_DATA = "data.personal"
 
     # -- Operating System ---------------------------------------------------
+    PROCESS_READ = "os.process.read"
     PROCESS_EXECUTE = "os.process.execute"
     PROCESS_KILL = "os.process.kill"
     ADMIN = "os.admin"
+    ENV_READ = "os.environment.read"
+    ENV_WRITE = "os.environment.write"
 
     # -- Applications -------------------------------------------------------
     BROWSER = "app.browser"
@@ -148,6 +153,11 @@ class Permission:
     GPIO_WRITE = "iot.gpio.write"
     SENSOR = "iot.sensor"
     ACTUATOR = "iot.actuator"
+
+    # -- Module Management --------------------------------------------------
+    MODULE_READ = "module.read"
+    MODULE_MANAGE = "module.manage"
+    MODULE_INSTALL = "module.install"
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +186,12 @@ PERMISSION_RISK: dict[str, RiskLevel] = {
     Permission.CREDENTIALS: RiskLevel.CRITICAL,
     Permission.PERSONAL_DATA: RiskLevel.HIGH,
     # OS
+    Permission.PROCESS_READ: RiskLevel.LOW,
     Permission.PROCESS_EXECUTE: RiskLevel.MEDIUM,
     Permission.PROCESS_KILL: RiskLevel.HIGH,
     Permission.ADMIN: RiskLevel.CRITICAL,
+    Permission.ENV_READ: RiskLevel.LOW,
+    Permission.ENV_WRITE: RiskLevel.MEDIUM,
     # Apps
     Permission.BROWSER: RiskLevel.MEDIUM,
     Permission.EMAIL_READ: RiskLevel.MEDIUM,
@@ -188,4 +201,8 @@ PERMISSION_RISK: dict[str, RiskLevel] = {
     Permission.GPIO_WRITE: RiskLevel.MEDIUM,
     Permission.SENSOR: RiskLevel.LOW,
     Permission.ACTUATOR: RiskLevel.HIGH,
+    # Module Management
+    Permission.MODULE_READ: RiskLevel.LOW,
+    Permission.MODULE_MANAGE: RiskLevel.MEDIUM,
+    Permission.MODULE_INSTALL: RiskLevel.HIGH,
 }

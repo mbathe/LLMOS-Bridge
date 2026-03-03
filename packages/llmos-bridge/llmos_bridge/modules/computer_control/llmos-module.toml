@@ -1,0 +1,85 @@
+[module]
+module_id = "computer_control"
+version = "1.0.0"
+description = "Semantic GUI automation gateway. Describe UI elements in natural language and interact with them automatically via vision + GUI modules."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.computer_control.module:ComputerControlModule"
+platforms = ["linux", "macos", "windows"]
+requirements = ["pyautogui"]
+tags = ["gui", "automation", "semantic", "computer-use", "perception", "vision"]
+sandbox_level = "strict"
+module_type = "daemon"
+
+[[module.actions]]
+name = "click_element"
+description = "Find a UI element by description and click it."
+risk_level = "high"
+permission = "screen_capture, keyboard"
+
+[[module.actions]]
+name = "type_into_element"
+description = "Find an input field by description, click it, and type text."
+risk_level = "high"
+permission = "screen_capture, keyboard"
+
+[[module.actions]]
+name = "wait_for_element"
+description = "Poll the screen until an element matching the description appears."
+risk_level = "medium"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "read_screen"
+description = "Capture the screen and parse all UI elements. Returns structured element list, OCR text, and optionally an annotated screenshot."
+risk_level = "medium"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "find_and_interact"
+description = "Find an element by description and perform an interaction (click, double_click, right_click, hover)."
+risk_level = "high"
+permission = "screen_capture, keyboard"
+
+[[module.actions]]
+name = "get_element_info"
+description = "Find an element by description and return its details without interacting."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "execute_gui_sequence"
+description = "Execute a multi-step GUI workflow: a sequence of semantic actions."
+risk_level = "critical"
+permission = "screen_capture, keyboard"
+
+[[module.actions]]
+name = "move_to_element"
+description = "Find an element by description and move the mouse cursor to its center."
+risk_level = "high"
+permission = "screen_capture, keyboard"
+
+[[module.actions]]
+name = "scroll_to_element"
+description = "Scroll the screen until an element matching the description becomes visible."
+risk_level = "medium"
+permission = "screen_capture, keyboard"
+
+[module.capabilities]
+permissions = [
+    "screen_capture",
+    "keyboard",
+]
+side_effects = [
+    "screen_capture",
+    "keyboard_input",
+    "mouse_control",
+    "element_resolution",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

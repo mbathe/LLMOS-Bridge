@@ -27,6 +27,7 @@ from typing import Any
 from llmos_bridge.exceptions import ActionExecutionError
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import (
     audit_trail,
     requires_permission,
@@ -64,6 +65,15 @@ class BrowserModule(BaseModule):
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._meta_lock = asyncio.Lock()
         super().__init__()
+
+    async def on_stop(self) -> None:
+        """Close all open browser sessions on module shutdown."""
+        for sid in list(self._sessions):
+            try:
+                await self._close_session(sid)
+            except Exception:
+                pass
+        self._sessions.clear()
 
     def _check_dependencies(self) -> None:
         global _playwright_mod
@@ -161,6 +171,7 @@ class BrowserModule(BaseModule):
                 "status": "opened",
             }
 
+    @requires_permission(Permission.BROWSER, reason="Controls browser session")
     async def _action_close_browser(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CloseBrowserParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
@@ -193,8 +204,10 @@ class BrowserModule(BaseModule):
     # Actions — Navigation
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.BROWSER, reason="Navigates to URL")
     async def _action_navigate_to(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = NavigateToParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
         lock = await self._get_session_lock(sid)
@@ -202,7 +215,11 @@ class BrowserModule(BaseModule):
         async with lock:
             session = self._get_session(sid)
             page = session["page"]
+            if stream:
+                await stream.emit_status("navigating")
             response = await page.goto(p.url, wait_until=p.wait_until, timeout=p.timeout)
+            if stream:
+                await stream.emit_progress(100, f"Loaded: {page.url}")
             return {
                 "url": page.url,
                 "title": await page.title(),
@@ -252,8 +269,10 @@ class BrowserModule(BaseModule):
                 "session_id": sid,
             }
 
+    @streams_progress
     @requires_permission(Permission.BROWSER, reason="Interacts with web page")
     async def _action_submit_form(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = SubmitFormParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
         lock = await self._get_session_lock(sid)
@@ -261,9 +280,13 @@ class BrowserModule(BaseModule):
         async with lock:
             session = self._get_session(sid)
             page = session["page"]
+            if stream:
+                await stream.emit_status("submitting")
             # Click the submit element and wait for navigation.
             async with page.expect_navigation(timeout=p.timeout):
                 await page.click(p.selector, timeout=p.timeout)
+            if stream:
+                await stream.emit_progress(100, f"Navigated to {page.url}")
             return {
                 "submitted": True,
                 "url": page.url,
@@ -288,6 +311,7 @@ class BrowserModule(BaseModule):
                 "session_id": sid,
             }
 
+    @requires_permission(Permission.BROWSER, reason="Reads browser DOM content")
     async def _action_get_element_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetElementTextParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
@@ -308,6 +332,7 @@ class BrowserModule(BaseModule):
     # Actions — Content extraction
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.BROWSER, reason="Reads full page content")
     async def _action_get_page_content(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetPageContentParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
@@ -340,6 +365,7 @@ class BrowserModule(BaseModule):
                 "session_id": sid,
             }
 
+    @requires_permission(Permission.BROWSER, Permission.SCREEN_CAPTURE, reason="Captures browser screenshot")
     async def _action_take_screenshot(self, params: dict[str, Any]) -> dict[str, Any]:
         p = TakeScreenshotParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
@@ -368,7 +394,10 @@ class BrowserModule(BaseModule):
                     "session_id": sid,
                 }
 
+    @requires_permission(Permission.BROWSER, Permission.NETWORK_READ, reason="Downloads file via browser")
+    @streams_progress
     async def _action_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = DownloadFileParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
         lock = await self._get_session_lock(sid)
@@ -379,12 +408,16 @@ class BrowserModule(BaseModule):
             dest = Path(p.destination)
             dest.parent.mkdir(parents=True, exist_ok=True)
 
+            if stream:
+                await stream.emit_status("downloading")
             # Navigate to URL and capture download.
             async with page.expect_download(timeout=p.timeout) as download_info:
                 await page.goto(p.url)
             download = await download_info.value
             await download.save_as(str(dest))
 
+            if stream:
+                await stream.emit_progress(100, f"Downloaded to {dest}")
             return {
                 "url": p.url,
                 "destination": str(dest),
@@ -417,7 +450,10 @@ class BrowserModule(BaseModule):
     # Actions — Wait
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.BROWSER, reason="Observes browser DOM")
+    @streams_progress
     async def _action_wait_for_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = WaitForElementParams.model_validate(params)
         sid = self._resolve_session_id(p.session_id)
         lock = await self._get_session_lock(sid)
@@ -425,10 +461,14 @@ class BrowserModule(BaseModule):
         async with lock:
             session = self._get_session(sid)
             page = session["page"]
+            if stream:
+                await stream.emit_status("waiting_for_element")
             element = await page.wait_for_selector(
                 p.selector, state=p.state, timeout=p.timeout
             )
             found = element is not None
+            if stream:
+                await stream.emit_progress(100, "found" if found else "not found")
             return {
                 "selector": p.selector,
                 "state": p.state,

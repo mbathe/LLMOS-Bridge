@@ -62,6 +62,16 @@ class DatabaseModule(BaseModule):
         self._meta_lock = threading.Lock()
         super().__init__()
 
+    async def on_stop(self) -> None:
+        """Close all open database connections on module shutdown."""
+        for cid, (driver, conn) in list(self._connections.items()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._connections.clear()
+        self._conn_locks.clear()
+
     # ------------------------------------------------------------------
     # Lock helpers
     # ------------------------------------------------------------------
@@ -187,6 +197,7 @@ class DatabaseModule(BaseModule):
         conn.autocommit = True
         return conn
 
+    @requires_permission(Permission.DATABASE_READ, reason="Closes database connection")
     async def _action_disconnect(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DisconnectParams.model_validate(params)
 
@@ -444,7 +455,7 @@ class DatabaseModule(BaseModule):
                 if driver == "sqlite":
                     sql = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 elif driver == "postgresql":
-                    schema = p.schema or "public"
+                    schema = p.schema_name or "public"
                     sql = (
                         "SELECT table_name FROM information_schema.tables "
                         f"WHERE table_schema = '{schema}' ORDER BY table_name"
@@ -519,6 +530,7 @@ class DatabaseModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @requires_permission(Permission.DATABASE_WRITE, reason="Commits pending transaction")
     @audit_trail("standard")
     async def _action_commit_transaction(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CommitTransactionParams.model_validate(params)
@@ -537,6 +549,7 @@ class DatabaseModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @requires_permission(Permission.DATABASE_WRITE, reason="Rolls back pending transaction")
     @audit_trail("standard")
     async def _action_rollback_transaction(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RollbackTransactionParams.model_validate(params)

@@ -44,6 +44,7 @@ from llmos_bridge.exceptions import (
     ApprovalRequiredError,
     ExecutionTimeoutError,
     LLMOSError,
+    NodeUnreachableError,
     PermissionNotGrantedError,
     RateLimitExceededError,
 )
@@ -69,6 +70,7 @@ from llmos_bridge.protocol.models import (
     PlanStatus,
 )
 from llmos_bridge.protocol.template import TemplateResolver
+from llmos_bridge.events.bus import TOPIC_ACTION_RESULTS
 from llmos_bridge.security.audit import AuditEvent, AuditLogger
 from llmos_bridge.security.guard import PermissionGuard
 from llmos_bridge.security.sanitizer import OutputSanitizer
@@ -169,6 +171,9 @@ class PlanExecutor:
         max_result_size: int = _DEFAULT_MAX_RESULT_SIZE,
         intent_verifier: Any | None = None,
         scanner_pipeline: Any | None = None,  # SecurityPipeline (optional)
+        policy_enforcer: Any | None = None,  # PolicyEnforcer (optional)
+        routing_config: Any | None = None,  # RoutingConfig (optional, Phase 4)
+        authorization: Any | None = None,  # AuthorizationGuard (optional, Phase 6)
     ) -> None:
         self._registry = module_registry
         self._nodes = node_registry or NodeRegistry(LocalNode(module_registry))
@@ -184,15 +189,41 @@ class PlanExecutor:
         self._max_result_size = max_result_size
         self._intent_verifier = intent_verifier
         self._scanner_pipeline = scanner_pipeline
+        self._policy_enforcer = policy_enforcer
+        self._authorization = authorization
         self._rollback = RollbackEngine(module_registry=module_registry)
         # plan_id → asyncio.Task for background execution tracking
         self._running_tasks: dict[str, asyncio.Task[ExecutionState]] = {}
+
+        # Phase 4: Smart routing components (only active if routing_config provided).
+        self._routing_config = routing_config
+        self._router: Any = None
+        self._selector: Any = None
+        self._quarantine: Any = None
+        self._load_tracker: Any = None
+        if routing_config is not None and node_registry is not None:
+            from llmos_bridge.orchestration.routing import (
+                ActiveActionCounter,
+                CapabilityRouter,
+                NodeQuarantine,
+                NodeSelector,
+            )
+
+            self._router = CapabilityRouter(node_registry)
+            self._selector = NodeSelector(
+                routing_config.strategy, routing_config.module_affinity,
+            )
+            self._quarantine = NodeQuarantine(
+                routing_config.quarantine_threshold,
+                routing_config.quarantine_duration,
+            )
+            self._load_tracker = ActiveActionCounter()
 
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
 
-    async def submit_plan(self, plan: IMLPlan) -> str:
+    async def submit_plan(self, plan: IMLPlan, identity: Any | None = None) -> str:
         """Fire-and-forget plan submission.
 
         Starts ``run(plan)`` as a background asyncio task and returns
@@ -201,12 +232,13 @@ class PlanExecutor:
 
         Args:
             plan: The IML plan to execute.
+            identity: Optional IdentityContext for authorization checks.
 
         Returns:
             plan_id — the same value as ``plan.plan_id``.
         """
         task: asyncio.Task[ExecutionState] = asyncio.create_task(
-            self.run(plan), name=f"plan_{plan.plan_id}"
+            self.run(plan, identity=identity), name=f"plan_{plan.plan_id}"
         )
         self._running_tasks[plan.plan_id] = task
         task.add_done_callback(lambda t: self._running_tasks.pop(plan.plan_id, None))
@@ -229,8 +261,15 @@ class PlanExecutor:
             return True
         return False
 
-    async def run(self, plan: IMLPlan) -> ExecutionState:
-        """Execute *plan* and return the final :class:`ExecutionState`."""
+    async def run(self, plan: IMLPlan, identity: Any | None = None) -> ExecutionState:
+        """Execute *plan* and return the final :class:`ExecutionState`.
+
+        Args:
+            plan: The IML plan to execute.
+            identity: Optional IdentityContext for authorization matrix checks.
+                      When provided and AuthorizationGuard is active, enforces
+                      application module/action allowlists and quotas.
+        """
         bind_plan_context(plan_id=plan.plan_id, session_id=plan.session_id)
 
         state = ExecutionState.from_plan(plan)
@@ -238,6 +277,49 @@ class PlanExecutor:
         await self._audit.log(AuditEvent.PLAN_STARTED, plan_id=plan.plan_id)
 
         execution_results: dict[str, Any] = {}
+
+        # ---- Step 0: Identity-based authorization matrix ----
+        _auth_app = None  # Resolved Application for per-action checks
+        if self._authorization is not None and identity is not None:
+            try:
+                _auth_app = await self._authorization.check_plan_submission(identity, plan)
+                if _auth_app is not None:
+                    self._authorization.plan_started(identity.app_id)
+            except LLMOSError as exc:
+                log.error("authorization_failed", plan_id=plan.plan_id, error=str(exc))
+                state.plan_status = PlanStatus.FAILED
+                state.rejection_details = {
+                    "source": "authorization",
+                    "error": str(exc),
+                    "app_id": identity.app_id,
+                    "role": identity.role.value if hasattr(identity, "role") else "unknown",
+                }
+                await self._store.update_plan_status(
+                    plan.plan_id, PlanStatus.FAILED,
+                    rejection_details=state.rejection_details,
+                )
+                await self._audit.log(
+                    AuditEvent.PLAN_FAILED, plan_id=plan.plan_id, error=str(exc)
+                )
+                return state
+
+        try:
+            return await self._run_with_auth(
+                plan, state, execution_results, _auth_app, identity,
+            )
+        finally:
+            if self._authorization is not None and identity is not None and _auth_app is not None:
+                self._authorization.plan_finished(identity.app_id)
+
+    async def _run_with_auth(
+        self,
+        plan: IMLPlan,
+        state: ExecutionState,
+        execution_results: dict[str, Any],
+        auth_app: Any | None,
+        identity: Any | None,
+    ) -> ExecutionState:
+        """Inner execution loop, wrapped by run() for authorization cleanup."""
 
         # ---- Step 1: module version compatibility check ----
         if plan.module_requirements:
@@ -437,6 +519,7 @@ class PlanExecutor:
                     state=state,
                     execution_results=execution_results,
                     cascade_skipped=cascade_skipped,
+                    auth_app=auth_app,
                 )
                 for aid in runnable
                 if plan.get_action(aid) is not None
@@ -502,6 +585,7 @@ class PlanExecutor:
         state: ExecutionState,
         execution_results: dict[str, Any],
         cascade_skipped: set[str],
+        auth_app: Any | None = None,
     ) -> None:
         bind_plan_context(plan_id=plan.plan_id, action_id=action.id)
         action_state = state.get_action(action.id)
@@ -539,6 +623,19 @@ class PlanExecutor:
                 module_id=action.module, action_name=action.action,
             )
             return
+
+        # Authorization matrix check at dispatch time (identity-based).
+        if self._authorization is not None and auth_app is not None:
+            try:
+                self._authorization.check_action_allowed(
+                    auth_app, action.module, action.action,
+                )
+            except LLMOSError as exc:
+                await self._fail_action(
+                    plan.plan_id, action.id, action_state, str(exc),
+                    module_id=action.module, action_name=action.action,
+                )
+                return
 
         # Permission check at dispatch time.
         try:
@@ -599,6 +696,24 @@ class PlanExecutor:
                 perception_before = await self._perception.capture_before(
                     action.id, action.perception
                 )
+
+            # Inject ActionStream for @streams_progress-decorated actions.
+            try:
+                module = self._registry.get(action.module)
+                handler = module._get_handler(action.action)
+                if getattr(handler, "_streams_progress", False):
+                    from llmos_bridge.orchestration.stream import ActionStream, _STREAM_KEY
+
+                    stream = ActionStream(
+                        plan_id=plan.plan_id,
+                        action_id=action.id,
+                        module_id=action.module,
+                        action_name=action.action,
+                        _bus=self._audit.bus,
+                    )
+                    resolved_params[_STREAM_KEY] = stream
+            except Exception:
+                pass  # Stream injection failure must never block execution.
 
             try:
                 raw_result, fallback_used = await asyncio.wait_for(
@@ -722,8 +837,29 @@ class PlanExecutor:
             await self._audit.log(
                 AuditEvent.ACTION_COMPLETED, plan_id=plan.plan_id, action_id=action.id
             )
+            # Emit action_result_ready event for SSE streaming.
+            await self._audit.bus.emit(TOPIC_ACTION_RESULTS, {
+                "event": "action_result_ready",
+                "plan_id": plan.plan_id,
+                "action_id": action.id,
+                "module_id": action.module,
+                "action": action.action,
+                "status": "completed",
+                "result": _truncate_result(clean_result, self._max_result_size),
+            })
             log.info("action_completed", action=f"{action.module}.{action.action}")
             return
+
+    def _resolve_node(self, action: IMLAction) -> Any:
+        """Resolve target node with smart routing (Phase 4)."""
+        return self._nodes.resolve_for_action(
+            target=action.target_node,
+            module_id=action.module,
+            router=self._router,
+            selector=self._selector,
+            quarantine=self._quarantine,
+            load_tracker=self._load_tracker,
+        )
 
     async def _dispatch_with_resource_limit(
         self, action: IMLAction, resolved_params: dict[str, Any]
@@ -759,7 +895,7 @@ class PlanExecutor:
 
             for fallback_module in fallback_chain:
                 try:
-                    node = self._nodes.resolve(action.target_node)
+                    node = self._resolve_node(action)
                     result = await node.execute_action(
                         fallback_module, action.action, resolved_params
                     )
@@ -778,8 +914,181 @@ class PlanExecutor:
             raise primary_exc
 
     async def _dispatch(self, action: IMLAction, resolved_params: dict[str, Any]) -> Any:
-        node = self._nodes.resolve(action.target_node)
-        return await node.execute_action(action.module, action.action, resolved_params)
+        # Module Spec v2: Check lifecycle state before dispatching.
+        lifecycle = getattr(self._registry, "_lifecycle", None)
+        if lifecycle is not None:
+            from llmos_bridge.modules.types import ModuleState
+            from llmos_bridge.exceptions import ActionDisabledError, ActionExecutionError
+
+            state = lifecycle.get_state(action.module)
+            if state == ModuleState.PAUSED:
+                raise ActionExecutionError(
+                    module_id=action.module,
+                    action=action.action,
+                    cause=RuntimeError(f"Module '{action.module}' is paused"),
+                )
+            if state == ModuleState.DISABLED:
+                raise ActionExecutionError(
+                    module_id=action.module,
+                    action=action.action,
+                    cause=RuntimeError(f"Module '{action.module}' is disabled"),
+                )
+            if not lifecycle.is_action_enabled(action.module, action.action):
+                raise ActionDisabledError(
+                    module_id=action.module,
+                    action=action.action,
+                    reason=lifecycle.get_disabled_actions(action.module).get(action.action, ""),
+                )
+
+        # Module Spec v3: Policy enforcement (cooldown, concurrency limits).
+        if self._policy_enforcer is not None:
+            await self._policy_enforcer.check_and_acquire(action.module, action.action)
+
+        try:
+            # Module Spec v3: Execution mode runtime enforcement.
+            execution_mode = self._get_execution_mode(action)
+
+            if execution_mode == "background":
+                return await self._dispatch_background(action, resolved_params)
+            elif execution_mode == "sync":
+                return await self._dispatch_sync(action, resolved_params)
+            else:
+                # "async" (default) and "scheduled" (treated as async for now).
+                node = self._resolve_node(action)
+                try:
+                    if self._load_tracker:
+                        self._load_tracker.increment(node.node_id)
+                    result = await node.execute_action(
+                        action.module, action.action, resolved_params
+                    )
+                    if self._quarantine:
+                        self._quarantine.record_success(node.node_id)
+                    return result
+                except NodeUnreachableError:
+                    if self._quarantine:
+                        self._quarantine.record_failure(node.node_id)
+                    if (
+                        self._routing_config
+                        and self._routing_config.node_fallback_enabled
+                    ):
+                        return await self._dispatch_with_node_fallback(
+                            action, resolved_params, exclude=[node.node_id],
+                        )
+                    raise
+                finally:
+                    if self._load_tracker:
+                        self._load_tracker.decrement(node.node_id)
+        finally:
+            if self._policy_enforcer is not None:
+                self._policy_enforcer.release(action.module)
+
+    def _get_execution_mode(self, action: IMLAction) -> str:
+        """Look up the execution_mode for an action from its manifest ActionSpec."""
+        try:
+            manifest = self._registry.get_manifest(action.module)
+            spec = manifest.get_action(action.action)
+            if spec and spec.execution_mode:
+                return spec.execution_mode
+        except Exception:
+            pass
+        return "async"
+
+    async def _dispatch_background(
+        self, action: IMLAction, resolved_params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fire-and-forget dispatch: creates a background task, returns immediately."""
+        import uuid
+
+        task_id = uuid.uuid4().hex[:12]
+
+        async def _run() -> Any:
+            node = self._resolve_node(action)
+            return await node.execute_action(
+                action.module, action.action, resolved_params
+            )
+
+        task = asyncio.create_task(_run(), name=f"bg_{action.module}_{action.action}_{task_id}")
+        # Store for tracking; auto-cleanup on done.
+        self._running_tasks[f"bg_{task_id}"] = task
+        task.add_done_callback(lambda t: self._running_tasks.pop(f"bg_{task_id}", None))
+
+        return {
+            "background": True,
+            "task_id": task_id,
+            "status": "running",
+            "message": f"Action '{action.module}.{action.action}' dispatched in background.",
+        }
+
+    async def _dispatch_sync(
+        self, action: IMLAction, resolved_params: dict[str, Any]
+    ) -> Any:
+        """Run a synchronous action in a thread pool to avoid blocking the event loop."""
+        node = self._resolve_node(action)
+        # The node.execute_action is itself async, but the module's handler
+        # may be CPU-bound.  We wrap it in asyncio.to_thread for safety.
+        return await asyncio.to_thread(
+            asyncio.run,
+            node.execute_action(action.module, action.action, resolved_params),
+        )
+
+    async def _dispatch_with_node_fallback(
+        self,
+        action: IMLAction,
+        resolved_params: dict[str, Any],
+        exclude: list[str],
+    ) -> Any:
+        """Retry action on alternate capable nodes after NodeUnreachableError.
+
+        Tries up to ``max_node_retries`` alternate nodes, excluding *exclude*.
+        """
+        max_retries = (
+            self._routing_config.max_node_retries if self._routing_config else 0
+        )
+        if not self._router:
+            raise NodeUnreachableError(
+                exclude[0] if exclude else "unknown",
+                "No router available for node fallback",
+            )
+
+        candidates = self._router.find_capable_nodes(action.module)
+        candidates = [c for c in candidates if c.node_id not in exclude]
+        if self._quarantine:
+            candidates = [
+                c for c in candidates
+                if not self._quarantine.is_quarantined(c.node_id)
+            ]
+
+        for i, node in enumerate(candidates[:max_retries]):
+            try:
+                if self._load_tracker:
+                    self._load_tracker.increment(node.node_id)
+                result = await node.execute_action(
+                    action.module, action.action, resolved_params
+                )
+                if self._quarantine:
+                    self._quarantine.record_success(node.node_id)
+                log.warning(
+                    "node_fallback_used",
+                    action=f"{action.module}.{action.action}",
+                    original_nodes=exclude,
+                    fallback_node=node.node_id,
+                    attempt=i + 1,
+                )
+                return result
+            except NodeUnreachableError:
+                if self._quarantine:
+                    self._quarantine.record_failure(node.node_id)
+                exclude.append(node.node_id)
+                continue
+            finally:
+                if self._load_tracker:
+                    self._load_tracker.decrement(node.node_id)
+
+        # All fallback nodes exhausted.
+        raise NodeUnreachableError(
+            exclude[0] if exclude else "unknown",
+            f"All {len(exclude)} nodes failed for {action.module}.{action.action}",
+        )
 
     def _suggest_alternatives(
         self, module_id: str, action_name: str, error: str
@@ -835,6 +1144,16 @@ class PlanExecutor:
         await self._audit.log(
             AuditEvent.ACTION_FAILED, plan_id=plan_id, action_id=action_id, error=error
         )
+        # Emit action_result_ready event for SSE streaming (failure).
+        await self._audit.bus.emit(TOPIC_ACTION_RESULTS, {
+            "event": "action_result_ready",
+            "plan_id": plan_id,
+            "action_id": action_id,
+            "module_id": module_id,
+            "action": action_name,
+            "status": "failed",
+            "error": error,
+        })
         log.error("action_failed", action_id=action_id, error=error)
 
     async def _skip_action(

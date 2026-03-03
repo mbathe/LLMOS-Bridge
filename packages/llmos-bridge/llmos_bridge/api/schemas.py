@@ -128,6 +128,10 @@ class ModuleActionSchema(BaseModel):
     permission_required: str
     platforms: list[str]
     examples: list[dict[str, Any]] = Field(default_factory=list)
+    os_permissions: list[str] = Field(
+        default_factory=list,
+        description="OS-level permission strings required by this action (from @requires_permission).",
+    )
 
 
 class ModuleManifestResponse(BaseModel):
@@ -256,3 +260,221 @@ class PlanGroupResponse(BaseModel):
     results: dict[str, Any]
     errors: dict[str, str]
     duration: float
+
+
+# ---------------------------------------------------------------------------
+# Admin schemas
+# ---------------------------------------------------------------------------
+
+class InstallModuleRequest(BaseModel):
+    """POST /admin/hub/install — Install a module."""
+    source: str = Field(default="hub", description="'hub' or 'local'.")
+    module_id: str = Field(default="", description="Module ID (for hub install).")
+    path: str = Field(default="", description="Local path (for local install).")
+    version: str = Field(default="latest", description="Version constraint.")
+
+class ConfigUpdateRequest(BaseModel):
+    """PUT /admin/modules/{id}/config — Update module config."""
+    config: dict[str, Any] = Field(description="Configuration dict to apply.")
+
+class PermissionGrantRequest(BaseModel):
+    """POST /admin/security/permissions/grant."""
+    permission: str
+    module_id: str
+    reason: str = ""
+    scope: str = Field(default="session", description="'session' or 'permanent'.")
+
+class PermissionRevokeRequest(BaseModel):
+    """DELETE /admin/security/permissions/revoke."""
+    permission: str
+    module_id: str
+
+class AppPermissionGrantRequest(BaseModel):
+    """POST /applications/{app_id}/permissions/grant — app-scoped permission grant."""
+    permission: str = Field(description="Permission string, e.g. 'filesystem.write'.")
+    module_id: str = Field(description="Module ID this permission applies to.")
+    reason: str = Field(default="", description="Reason for the grant.")
+    scope: str = Field(default="permanent", description="'session' or 'permanent'.")
+
+class AppPermissionRevokeRequest(BaseModel):
+    """POST /applications/{app_id}/permissions/revoke — app-scoped permission revoke."""
+    permission: str = Field(description="Permission string to revoke.")
+    module_id: str = Field(description="Module ID this permission applies to.")
+
+class ActionToggleRequest(BaseModel):
+    """POST /admin/modules/{id}/actions/{action}/disable."""
+    reason: str = Field(default="", description="Reason for disabling.")
+
+class UpgradeModuleRequest(BaseModel):
+    """POST /admin/hub/modules/{id}/upgrade."""
+    path: str = Field(description="Path to new version package directory.")
+
+
+class IntentTestRequest(BaseModel):
+    """POST /admin/security/intent-verifier/test."""
+    text: str = Field(description="Plan text to test against the intent verifier.")
+
+
+class PatternAddRequest(BaseModel):
+    """POST /admin/security/scanners/patterns — add a custom heuristic pattern."""
+    id: str = Field(description="Unique pattern identifier.")
+    category: str = Field(description="Threat category (e.g. 'prompt_injection').")
+    pattern: str = Field(description="Regex pattern string.")
+    severity: float = Field(default=0.5, ge=0.0, le=1.0, description="Risk score 0.0-1.0.")
+    description: str = Field(default="", description="Human-readable description.")
+
+
+# ---------------------------------------------------------------------------
+# Identity / Application schemas
+# ---------------------------------------------------------------------------
+
+
+class CreateApplicationRequest(BaseModel):
+    """POST /applications — Create an application."""
+    name: str = Field(description="Unique application name.")
+    description: str = Field(default="", description="Application description.")
+    max_concurrent_plans: int = Field(default=10, ge=1, le=100)
+    max_actions_per_plan: int = Field(default=50, ge=1, le=500)
+    allowed_modules: list[str] = Field(default_factory=list)
+    allowed_actions: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-module action whitelist. Empty = all actions allowed. "
+            "Format: {'module_id': ['action1', 'action2']}."
+        ),
+    )
+    tags: dict[str, str] = Field(default_factory=dict)
+
+
+class UpdateApplicationRequest(BaseModel):
+    """PUT /applications/{app_id} — Update an application."""
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    max_concurrent_plans: int | None = Field(default=None, ge=1, le=100)
+    max_actions_per_plan: int | None = Field(default=None, ge=1, le=500)
+    allowed_modules: list[str] | None = None
+    allowed_actions: dict[str, list[str]] | None = None
+    tags: dict[str, str] | None = None
+
+
+class ApplicationResponse(BaseModel):
+    """Application detail response."""
+    app_id: str
+    name: str
+    description: str
+    created_at: float
+    updated_at: float
+    enabled: bool
+    max_concurrent_plans: int
+    max_actions_per_plan: int
+    allowed_modules: list[str]
+    allowed_actions: dict[str, list[str]] = Field(default_factory=dict)
+    tags: dict[str, str]
+    agent_count: int = 0
+    session_count: int = 0
+
+
+class CreateAgentRequest(BaseModel):
+    """POST /applications/{app_id}/agents — Create an agent."""
+    name: str = Field(description="Agent display name.")
+    role: str = Field(default="agent", description="RBAC role: admin, app_admin, operator, viewer, agent.")
+
+
+class AgentResponse(BaseModel):
+    """Agent detail response."""
+    agent_id: str
+    name: str
+    app_id: str
+    role: str
+    created_at: float
+    enabled: bool
+
+
+class ApiKeyResponse(BaseModel):
+    """API key response — cleartext only available at creation."""
+    key_id: str
+    prefix: str
+    api_key: str | None = None
+    created_at: float
+    expires_at: float | None = None
+
+
+class SessionResponse(BaseModel):
+    """Session detail response."""
+    session_id: str
+    app_id: str
+    agent_id: str | None
+    created_at: float
+    last_active: float
+    expires_at: float | None = None
+    idle_timeout_seconds: int | None = None
+    allowed_modules: list[str] = Field(default_factory=list)
+    permission_grants: list[str] = Field(default_factory=list)
+    permission_denials: list[str] = Field(default_factory=list)
+    expired: bool = False
+
+
+class CreateSessionRequest(BaseModel):
+    """POST /applications/{app_id}/sessions — Create a session with optional constraints."""
+    agent_id: str | None = None
+    expires_in_seconds: float | None = Field(
+        default=None,
+        description="Seconds from now until session expires. None = no expiry.",
+    )
+    idle_timeout_seconds: int | None = Field(
+        default=None,
+        description="Seconds of inactivity before auto-expiry. None = no idle timeout.",
+    )
+    allowed_modules: list[str] = Field(
+        default_factory=list,
+        description="Session-level module whitelist (subset of app's allowed_modules). Empty = inherit all.",
+    )
+    permission_grants: list[str] = Field(
+        default_factory=list,
+        description="OS permissions temporarily granted for this session.",
+    )
+    permission_denials: list[str] = Field(
+        default_factory=list,
+        description="OS permissions explicitly blocked for this session.",
+    )
+
+
+class ClusterResponse(BaseModel):
+    """GET /cluster — Cluster information."""
+    cluster_id: str
+    cluster_name: str
+    node_id: str
+    mode: str
+    app_count: int = 0
+    identity_enabled: bool = False
+
+
+class NodeResponse(BaseModel):
+    """Node detail response (Phase 2 + Phase 4 routing fields)."""
+    node_id: str
+    url: str | None = None
+    location: str = ""
+    available: bool = True
+    last_heartbeat: float | None = None
+    modules: list[str] = Field(default_factory=list)
+    is_local: bool = False
+    latency_ms: float | None = None
+    active_actions: int = 0
+    quarantined: bool = False
+
+
+class NodeRegisterRequest(BaseModel):
+    """POST /nodes — Register a remote node."""
+    node_id: str = Field(description="Unique node identifier.")
+    url: str = Field(description="Base URL of the remote daemon (e.g. 'http://192.168.1.50:40000').")
+    api_token: str | None = Field(default=None, description="API token for the remote daemon.")
+    location: str = Field(default="", description="Human-readable location.")
+
+
+class ClusterHealthResponse(BaseModel):
+    """GET /cluster/health — Cluster health overview."""
+    total_nodes: int
+    available_nodes: int
+    unavailable_nodes: int
+    nodes: list[NodeResponse] = Field(default_factory=list)

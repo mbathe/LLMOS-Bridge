@@ -17,13 +17,25 @@ from typing import Any
 
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
-from llmos_bridge.security.decorators import audit_trail, sensitive_action
-from llmos_bridge.security.models import PermissionGrant, PermissionScope, RiskLevel
+from llmos_bridge.security.decorators import (
+    audit_trail,
+    data_classification,
+    requires_permission,
+    sensitive_action,
+)
+from llmos_bridge.security.models import (
+    DataClassification,
+    Permission,
+    PermissionGrant,
+    PermissionScope,
+    RiskLevel,
+)
 
 
 class SecurityModule(BaseModule):
     MODULE_ID = "security"
     VERSION = "1.0.0"
+    MODULE_TYPE = "system"
     SUPPORTED_PLATFORMS = [Platform.ALL]
 
     def __init__(self) -> None:
@@ -39,6 +51,8 @@ class SecurityModule(BaseModule):
     # Actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.MODULE_READ, reason="Lists granted permissions")
+    @data_classification(DataClassification.INTERNAL)
     async def _action_list_permissions(self, params: dict[str, Any]) -> dict[str, Any]:
         """List all granted permissions, optionally filtered by module."""
         if self._security_manager is None:
@@ -51,6 +65,7 @@ class SecurityModule(BaseModule):
             "count": len(grants),
         }
 
+    @requires_permission(Permission.MODULE_READ, reason="Checks if a permission is granted")
     async def _action_check_permission(self, params: dict[str, Any]) -> dict[str, Any]:
         """Check if a specific permission is granted for a module."""
         if self._security_manager is None:
@@ -74,6 +89,8 @@ class SecurityModule(BaseModule):
             result["grant"] = grant.to_dict()
         return result
 
+    @requires_permission(Permission.ADMIN, reason="Request OS-level permission grant")
+    @sensitive_action(RiskLevel.HIGH)
     @audit_trail("detailed")
     async def _action_request_permission(self, params: dict[str, Any]) -> dict[str, Any]:
         """Request a permission grant for a module.
@@ -101,6 +118,7 @@ class SecurityModule(BaseModule):
             "grant": grant.to_dict(),
         }
 
+    @requires_permission(Permission.ADMIN, reason="Revoke OS-level permission grant")
     @audit_trail("detailed")
     @sensitive_action(RiskLevel.HIGH)
     async def _action_revoke_permission(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +137,8 @@ class SecurityModule(BaseModule):
             "revoked": revoked,
         }
 
+    @requires_permission(Permission.MODULE_READ, reason="Reads security layer status")
+    @data_classification(DataClassification.INTERNAL)
     async def _action_get_security_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get a security overview: profile, total grants, grants by risk level."""
         if self._security_manager is None:
@@ -141,6 +161,7 @@ class SecurityModule(BaseModule):
             "grants_by_risk_level": by_risk,
         }
 
+    @requires_permission(Permission.MODULE_READ, reason="Reads security audit log")
     async def _action_list_audit_events(self, params: dict[str, Any]) -> dict[str, Any]:
         """List recent audit events (stub — Phase 3 will add full query support)."""
         return {

@@ -81,6 +81,19 @@ class DatabaseGatewayModule(BaseModule):
         discover_adapters()
         super().__init__()
 
+    async def on_stop(self) -> None:
+        """Disconnect all adapters on module shutdown."""
+        for cid, adapter in list(self._connection_adapters.items()):
+            try:
+                if isinstance(adapter, BaseAsyncDbAdapter):
+                    await adapter.disconnect(cid)
+                else:
+                    await asyncio.to_thread(adapter.disconnect, cid)
+            except Exception:
+                pass
+        self._connection_adapters.clear()
+        self._adapter_instances.clear()
+
     def _check_dependencies(self) -> None:
         # SQLAlchemy is required for the built-in SQL adapter.
         # Non-SQL-only deployments could skip this in the future.
@@ -217,6 +230,7 @@ class DatabaseGatewayModule(BaseModule):
         self._connection_adapters[p.connection_id] = adapter
         return result
 
+    @requires_permission(Permission.DATABASE_READ, reason="Closes database connection")
     async def _action_disconnect(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GatewayDisconnectParams.model_validate(params)
         adapter = self._connection_adapters.pop(p.connection_id, None)

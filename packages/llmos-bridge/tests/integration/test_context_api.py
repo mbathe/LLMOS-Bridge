@@ -180,6 +180,7 @@ class TestContextEdgeCases:
             },
             logging={"level": "warning", "format": "console", "audit_file": None},
             modules={"enabled": []},
+            module_manager={"enabled": False},
             security_advanced={"enable_decorators": False},
         )
         app = create_app(settings=settings)

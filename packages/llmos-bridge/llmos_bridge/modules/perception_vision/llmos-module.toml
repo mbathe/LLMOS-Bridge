@@ -1,0 +1,56 @@
+[module]
+module_id = "vision"
+version = "2.0.0"
+description = "Visual perception module powered by Microsoft OmniParser v2. Combines YOLO v8 detection, Florence-2 captioning, and OCR to parse GUI screenshots into structured lists of interactable elements (icons, buttons, text fields) with bounding boxes and labels."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.perception_vision.omniparser.module:OmniParserModule"
+platforms = ["linux", "darwin", "windows"]
+requirements = ["Pillow", "mss", "torch", "ultralytics", "easyocr", "transformers"]
+tags = ["vision", "perception", "gui", "ocr", "omniparser"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "parse_screen"
+description = "Parse a screenshot and return a structured list of UI elements with labels, bounding boxes and confidence scores."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "capture_and_parse"
+description = "Capture the current screen and immediately parse it into UI elements."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "find_element"
+description = "Parse the screen and find a specific UI element by label or type. Returns the first matching element and its pixel coordinates."
+risk_level = "low"
+permission = "screen_capture"
+
+[[module.actions]]
+name = "get_screen_text"
+description = "Extract all visible text from the current screen using OCR. Returns concatenated text without element bounding boxes."
+risk_level = "low"
+permission = "screen_capture"
+
+[module.capabilities]
+permissions = [
+    "screen_capture",
+]
+side_effects = [
+    "Captures screenshots of the user's screen via mss",
+    "Loads and runs ML models (YOLO v8, Florence-2, OCR) on GPU/CPU",
+    "Auto-downloads model weights from HuggingFace on first use",
+    "Reads screenshot files from disk when screenshot_path is provided",
+]
+events_emitted = []
+events_subscribed = []
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

@@ -438,6 +438,20 @@ class IMLPlan(BaseModel):
     actions: Annotated[
         list[IMLAction], Field(min_length=1, max_length=MAX_ACTIONS_PER_PLAN)
     ]
+    app_id: str | None = Field(
+        default=None,
+        description=(
+            "Application ID for multi-tenant isolation. "
+            "None = use the 'default' application (standalone mode)."
+        ),
+    )
+    agent_id: str | None = Field(
+        default=None,
+        description=(
+            "Agent ID that submitted this plan. "
+            "None = anonymous (standalone mode)."
+        ),
+    )
 
     @field_validator("plan_id")
     @classmethod

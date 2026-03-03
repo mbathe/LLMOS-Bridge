@@ -77,11 +77,22 @@ def fs_module(security_manager: SecurityManager) -> FilesystemModule:
     return module
 
 
-@pytest.fixture
-def security_module(security_manager: SecurityManager) -> SecurityModule:
+@pytest_asyncio.fixture
+async def security_module(security_manager: SecurityManager) -> SecurityModule:
     module = SecurityModule()
     module.set_security_manager(security_manager)
     return module
+
+
+@pytest_asyncio.fixture
+async def security_module_admin(
+    security_module: SecurityModule, security_manager: SecurityManager
+) -> SecurityModule:
+    """SecurityModule with ADMIN permission pre-granted for request/revoke tests."""
+    await security_manager.permission_manager.grant(
+        "os.admin", "security", PermissionScope.SESSION
+    )
+    return security_module
 
 
 # ---------------------------------------------------------------------------
@@ -244,12 +255,12 @@ class TestSecurityIntegration:
     # 8. SecurityModule request_permission grants successfully
     async def test_security_module_request_permission(
         self,
-        security_module: SecurityModule,
+        security_module_admin: SecurityModule,
         permission_store: PermissionStore,
     ) -> None:
         """request_permission via the SecurityModule should persist the
         grant in the store."""
-        result = await security_module.execute(
+        result = await security_module_admin.execute(
             "request_permission",
             {
                 "permission": Permission.NETWORK_READ,

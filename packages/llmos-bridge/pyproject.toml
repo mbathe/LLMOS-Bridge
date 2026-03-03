@@ -24,6 +24,7 @@ packages = [{ include = "llmos_bridge" }]
 [tool.poetry.dependencies]
 python           = "^3.11"
 pydantic         = "^2.7"
+pydantic-settings = "^2.3"
 fastapi          = "^0.111"
 uvicorn          = { version = "^0.30", extras = ["standard"] }
 websockets       = "^12.0"
@@ -31,11 +32,14 @@ networkx         = "^3.3"
 structlog        = "^24.1"
 aiosqlite        = "^0.20"
 httpx            = "^0.27"
-typer            = { version = "^0.12", extras = ["all"] }
+typer            = { version = ">=0.12", extras = ["all"] }
 rich             = "^13.7"
 pyyaml           = "^6.0"
 toml             = "^0.10"
 anyio            = "^4.4"
+psutil = "^5.9"
+sqlalchemy = "^2.0"
+redis = {version = "^5.0", optional = true, extras = ["hiredis"]}
 
 [tool.poetry.group.modules]
 optional = true
@@ -51,9 +55,23 @@ playwright       = { version = "^1.44", optional = true }
 pyautogui        = { version = "^0.9", optional = true }
 pytesseract      = { version = "^0.3", optional = true }
 mss              = { version = "^9.0", optional = true }
-# Vision (OmniParser)
+# Vision — shared deps
 Pillow           = { version = "^10.0", optional = true }
 huggingface-hub  = { version = "^0.23", optional = true }
+numpy            = { version = "^1.26", optional = true }
+torch            = { version = "^2.2", optional = true }
+torchvision      = { version = "^0.17", optional = true }
+transformers     = { version = "^4.40", optional = true }
+# Vision (OmniParser) — YOLO + Florence-2 + EasyOCR
+ultralytics      = { version = "^8.2", optional = true }
+easyocr          = { version = "^1.7", optional = true }
+opencv-python    = { version = "^4.9", optional = true }
+supervision      = { version = "^0.21", optional = true }
+# Vision (UltraVision) — UI-DETR + PP-OCRv5 + UGround
+rfdetr           = { version = "^1.0", optional = true }
+paddleocr        = { version = "^2.9", optional = true }
+paddlepaddle     = { version = "^2.6", optional = true }
+qwen-vl-utils    = { version = "^0.0.8", optional = true }
 # Database
 asyncpg          = { version = "^0.29", optional = true }
 aiomysql         = { version = "^0.2", optional = true }
@@ -78,18 +96,33 @@ types-toml       = "*"
 office    = ["openpyxl", "python-docx", "python-pptx"]
 browser   = ["playwright"]
 gui       = ["pyautogui", "pytesseract", "mss"]
-vision    = ["Pillow", "huggingface-hub", "mss"]
+vision    = [
+    "Pillow", "huggingface-hub", "mss",
+    "numpy", "torch", "torchvision", "transformers",
+    "ultralytics", "easyocr", "opencv-python", "supervision",
+]
+ultra-vision = [
+    "Pillow", "huggingface-hub", "mss",
+    "numpy", "torch", "transformers",
+    "rfdetr", "easyocr", "paddleocr", "paddlepaddle",
+    "qwen-vl-utils",
+]
 database  = ["asyncpg", "aiomysql"]
 iot       = ["paho-mqtt"]
 memory    = ["chromadb"]
+redis     = ["redis"]
 all       = [
     "openpyxl", "python-docx", "python-pptx",
     "playwright",
     "pyautogui", "pytesseract", "mss",
     "Pillow", "huggingface-hub",
+    "numpy", "torch", "torchvision", "transformers",
+    "ultralytics", "easyocr", "opencv-python", "supervision",
+    "rfdetr", "paddleocr", "paddlepaddle", "qwen-vl-utils",
     "asyncpg", "aiomysql",
     "paho-mqtt",
     "chromadb",
+    "redis",
 ]
 
 [tool.poetry.scripts]

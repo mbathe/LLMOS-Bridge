@@ -1,0 +1,115 @@
+[module]
+module_id = "filesystem"
+version = "1.0.0"
+description = "Read, write, move, copy, delete files and directories. Create and extract archives."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.filesystem.module:FilesystemModule"
+platforms = ["all"]
+requirements = []
+tags = ["files", "io", "filesystem"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "read_file"
+description = "Read the content of a text file."
+risk_level = "low"
+permission = "filesystem.read"
+
+[[module.actions]]
+name = "write_file"
+description = "Write text content to a file, creating it if necessary."
+risk_level = "medium"
+permission = "filesystem.write"
+
+[[module.actions]]
+name = "append_file"
+description = "Append text content to an existing file."
+risk_level = "medium"
+permission = "filesystem.write"
+
+[[module.actions]]
+name = "copy_file"
+description = "Copy a file or directory to a new location."
+risk_level = "medium"
+permission = "filesystem.read, filesystem.write"
+
+[[module.actions]]
+name = "move_file"
+description = "Move or rename a file or directory."
+risk_level = "medium"
+permission = "filesystem.read, filesystem.write"
+
+[[module.actions]]
+name = "delete_file"
+description = "Delete a file or directory."
+risk_level = "high"
+permission = "filesystem.delete"
+
+[[module.actions]]
+name = "create_directory"
+description = "Create a new directory, optionally creating parent directories."
+risk_level = "medium"
+permission = "filesystem.write"
+
+[[module.actions]]
+name = "list_directory"
+description = "List the contents of a directory with optional glob filtering."
+risk_level = "low"
+permission = "filesystem.read"
+
+[[module.actions]]
+name = "search_files"
+description = "Search for files by name pattern and optional content regex."
+risk_level = "low"
+permission = "filesystem.read"
+
+[[module.actions]]
+name = "get_file_info"
+description = "Get metadata about a file or directory (size, permissions, timestamps)."
+risk_level = "low"
+permission = "filesystem.read"
+
+[[module.actions]]
+name = "create_archive"
+description = "Create a zip, tar, tar.gz, or tar.bz2 archive from a file or directory."
+risk_level = "medium"
+permission = "filesystem.read, filesystem.write"
+
+[[module.actions]]
+name = "extract_archive"
+description = "Extract an archive to a destination directory."
+risk_level = "medium"
+permission = "filesystem.write"
+
+[[module.actions]]
+name = "compute_checksum"
+description = "Compute a hash checksum (md5, sha1, sha256, sha512) of a file."
+risk_level = "low"
+permission = "filesystem.read"
+
+[[module.actions]]
+name = "watch_path"
+description = "Watch a file or directory for changes within a timeout window."
+risk_level = "low"
+permission = "filesystem.read"
+
+[module.capabilities]
+permissions = [
+    "filesystem.read",
+    "filesystem.write",
+    "filesystem.delete",
+]
+side_effects = [
+    "Creates, modifies, and deletes files and directories on disk",
+    "Creates and extracts archive files",
+    "Reads file contents and metadata",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

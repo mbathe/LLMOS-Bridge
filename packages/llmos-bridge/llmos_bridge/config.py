@@ -129,23 +129,34 @@ class PerceptionConfig(BaseModel):
     screenshot_quality: Annotated[int, Field(ge=1, le=100)] = 85
 
 
+class NodePeerConfig(BaseModel):
+    """Configuration for an explicitly declared remote node."""
+
+    node_id: str = Field(description="Unique identifier for the remote node.")
+    url: str = Field(description="Base URL of the remote LLMOS Bridge daemon (e.g. 'http://192.168.1.50:40000').")
+    api_token: str | None = Field(
+        default=None,
+        description="Bearer token for authenticating to the remote node.",
+    )
+    location: str = Field(default="", description="Human-readable location label.")
+
+
 class NodeConfig(BaseModel):
     """Distributed mode configuration.
 
     In ``standalone`` mode (default) LLMOS Bridge behaves exactly as before —
     no network discovery, no remote nodes, zero extra dependencies.
 
-    Phase 4 will add ``node`` and ``orchestrator`` modes.  The fields below
-    are intentionally minimal: only the concepts that need to exist in the
-    interface from the start are declared here.  Implementation is deferred.
+    In ``orchestrator`` mode, this instance coordinates a network of nodes.
+    In ``node`` mode, this instance is a managed remote node.
     """
 
     mode: Literal["standalone", "node", "orchestrator"] = Field(
         default="standalone",
         description=(
             "standalone — single PC, no networking (default). "
-            "node       — Phase 4: this instance is a managed remote node. "
-            "orchestrator — Phase 4: this instance coordinates a network of nodes."
+            "node       — this instance is a managed remote node. "
+            "orchestrator — this instance coordinates a network of nodes."
         ),
     )
     node_id: str = Field(
@@ -158,6 +169,30 @@ class NodeConfig(BaseModel):
     location: str = Field(
         default="",
         description="Human-readable location label (e.g. 'Usine Lyon — Four 1'). Optional.",
+    )
+    cluster_id: str = Field(
+        default="",
+        description="Cluster this node belongs to. Empty = auto-generated on first start.",
+    )
+    cluster_name: str = Field(
+        default="default",
+        description="Human-readable cluster name.",
+    )
+    peers: list[NodePeerConfig] = Field(
+        default_factory=list,
+        description="Explicit list of remote nodes to connect to (orchestrator mode).",
+    )
+    heartbeat_interval: Annotated[float, Field(ge=5.0, le=300.0)] = Field(
+        default=10.0,
+        description="Seconds between heartbeat pings to remote nodes.",
+    )
+    heartbeat_timeout: Annotated[float, Field(ge=1.0, le=30.0)] = Field(
+        default=5.0,
+        description="Timeout for each heartbeat request.",
+    )
+    enable_mdns: bool = Field(
+        default=False,
+        description="Enable mDNS/zeroconf auto-discovery (requires: pip install zeroconf).",
     )
 
 
@@ -418,6 +453,62 @@ class ScannerPipelineConfig(BaseModel):
     )
 
 
+class ModuleIsolationSpec(BaseModel):
+    """Per-module isolation specification."""
+
+    module_id: str = Field(description="Module ID this spec applies to.")
+    module_class_path: str = Field(
+        description="Fully-qualified 'pkg.module:ClassName' path to the BaseModule subclass."
+    )
+    isolation: Literal["in_process", "subprocess"] = Field(
+        default="subprocess",
+        description="Isolation tier: 'subprocess' (default, full isolation) or 'in_process'.",
+    )
+    requirements: list[str] = Field(
+        default_factory=list,
+        description="pip requirements for the isolated venv.",
+    )
+    env_vars: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables to pass to the worker subprocess.",
+    )
+    timeout: Annotated[float, Field(ge=5.0, le=300.0)] = 30.0
+    max_restarts: Annotated[int, Field(ge=0, le=10)] = 3
+    restart_delay: Annotated[float, Field(ge=0.1, le=30.0)] = 1.0
+
+
+class IsolationConfig(BaseModel):
+    """Module isolation system configuration.
+
+    When enabled, modules with ``isolation: subprocess`` run in their own
+    subprocess with an independent virtual environment.  This provides
+    full dependency isolation: each module can use different versions of
+    the same package without conflicts.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the isolation system.  When False, all modules run in-process.",
+    )
+    default_isolation: Literal["in_process", "subprocess"] = Field(
+        default="subprocess",
+        description="Default isolation tier for modules not explicitly configured.",
+    )
+    venv_base_dir: str = Field(
+        default="~/.llmos/venvs",
+        description="Base directory for per-module virtual environments.",
+    )
+    prefer_uv: bool = Field(
+        default=True,
+        description="Prefer 'uv' for venv creation (10x faster).  Falls back to pip.",
+    )
+    health_check_interval: Annotated[float, Field(ge=1.0, le=300.0)] = 10.0
+    modules: dict[str, ModuleIsolationSpec] = Field(
+        default_factory=dict,
+        description="Per-module isolation specs.  Key is a unique label (e.g. 'vision_ultra').",
+    )
+
+
 class VisionConfig(BaseModel):
     """Configuration for the visual perception (vision) module."""
 
@@ -425,6 +516,7 @@ class VisionConfig(BaseModel):
         default="omniparser",
         description=(
             "Vision backend to use. 'omniparser' (default) uses Microsoft OmniParser v2. "
+            "'ultra' uses UltraVision (GUI-trained UI-DETR + PP-OCRv5 + UGround). "
             "Custom backends: subclass BaseVisionModule, install as a package, and set "
             "the fully-qualified class path here (e.g. 'mypackage.MyVisionModule')."
         ),
@@ -471,12 +563,239 @@ class VisionConfig(BaseModel):
         description="Start background screen parse after each action to reduce latency.",
     )
 
+    # --- UltraVision backend settings ---
+    ultra_model_dir: str = Field(
+        default="~/.llmos/models/ultra_vision",
+        description="Directory for UltraVision model weights (UI-DETR, UGround, etc.).",
+    )
+    ultra_device: str = Field(
+        default="auto",
+        description="Torch device for UltraVision: 'auto', 'cpu', 'cuda', 'mps'.",
+    )
+    ultra_box_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
+        default=0.3,
+        description="Detection confidence threshold for UltraVision's UI-DETR.",
+    )
+    ultra_ocr_engine: str = Field(
+        default="paddleocr",
+        description="OCR engine for UltraVision: 'paddleocr' (recommended) or 'easyocr' (fallback).",
+    )
+    ultra_enable_grounding: bool = Field(
+        default=True,
+        description="Enable UGround-V1-2B visual grounding for find_element (lazy loads ~1.5GB VRAM).",
+    )
+    ultra_grounding_idle_timeout: Annotated[float, Field(ge=10.0, le=600.0)] = Field(
+        default=60.0,
+        description="Seconds to keep UGround loaded after last use before auto-unloading.",
+    )
+    ultra_max_vram_mb: Annotated[int, Field(ge=500, le=24000)] = Field(
+        default=3000,
+        description="VRAM budget for UltraVision models in MB.",
+    )
+    ultra_auto_download: bool = Field(
+        default=True,
+        description="Auto-download UltraVision model weights from HuggingFace on first use.",
+    )
+
 
 class LoggingConfig(BaseModel):
     level: Literal["debug", "info", "warning", "error", "critical"] = "info"
     format: Literal["json", "console"] = "console"
     file: Path | None = None
     audit_file: Path | None = Path("~/.llmos/audit.log")
+
+
+class ModuleManagerConfig(BaseModel):
+    """Configuration for the Module Manager module."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable the Module Manager module.",
+    )
+    allow_runtime_disable: bool = Field(
+        default=True,
+        description="Allow disabling user modules at runtime via Module Manager.",
+    )
+    allow_action_disable: bool = Field(
+        default=True,
+        description="Allow disabling individual actions at runtime.",
+    )
+
+
+class HubConfig(BaseModel):
+    """Configuration for the Module Hub (community module management)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable hub integration for community module management.",
+    )
+    local_install_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable local module installation from a directory path. "
+            "Does not require hub.enabled=True. "
+            "Useful for development and testing custom modules before publishing to the hub."
+        ),
+    )
+    registry_url: str = Field(
+        default="https://hub.llmos-bridge.io/api/v1",
+        description="Module hub API endpoint.",
+    )
+    trust_store_path: Path = Field(
+        default=Path("~/.llmos/trust_store"),
+        description="Directory containing trusted public keys (.pub files).",
+    )
+    require_signatures: bool = Field(
+        default=True,
+        description="Reject unsigned modules from the hub.",
+    )
+    cache_dir: Path = Field(
+        default=Path("~/.llmos/hub_cache"),
+        description="Cache directory for downloaded module packages.",
+    )
+    auto_update: bool = Field(
+        default=False,
+        description="Automatically update modules when new versions are available.",
+    )
+    install_dir: Path = Field(
+        default=Path("~/.llmos/modules"),
+        description="Directory where community modules are installed.",
+    )
+    # Source code scanning
+    source_scan_enabled: bool = Field(
+        default=True,
+        description="Run source code scanner before installing modules.",
+    )
+    source_scan_reject_threshold: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=100.0,
+        description="Modules with scan score below this are rejected (default 30).",
+    )
+    source_scan_warn_threshold: float = Field(
+        default=70.0,
+        ge=0.0,
+        le=100.0,
+        description="Modules with scan score below this get a warning (default 70).",
+    )
+    default_trust_tier: str = Field(
+        default="unverified",
+        description="Default trust tier for new installations.",
+    )
+    allow_unverified_modules: bool = Field(
+        default=True,
+        description="When False, only verified/trusted/official modules can be installed.",
+    )
+
+
+class IdentityConfig(BaseModel):
+    """Multi-tenant identity configuration.
+
+    When ``enabled=False`` (default), all requests use the implicit
+    ``"default"`` application and no API key authentication is required.
+    This is identical to standalone behaviour.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable multi-tenant identity system. When False, all requests use the 'default' app.",
+    )
+    db_path: Path = Field(
+        default=Path("~/.llmos/identity.db"),
+        description="SQLite database for applications, agents, and API keys.",
+    )
+    default_app_name: str = Field(
+        default="default",
+        description="Name of the auto-created default application.",
+    )
+    session_timeout_seconds: Annotated[int, Field(ge=60, le=86400)] = Field(
+        default=3600,
+        description="Idle timeout for sessions before auto-cleanup.",
+    )
+    require_api_keys: bool = Field(
+        default=False,
+        description="When True, all API requests must include a valid app-scoped API key.",
+    )
+
+
+class RedisConfig(BaseModel):
+    """Redis backend for distributed event streaming.
+
+    When enabled, events are published to Redis Streams (XADD) and consumed
+    via XREADGROUP for cross-node visibility.  Redis is fully optional —
+    standalone mode never imports the redis package.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable Redis Streams event backend.",
+    )
+    url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL.",
+    )
+    consumer_group: str = Field(
+        default="llmos-bridge",
+        description="Redis consumer group name for XREADGROUP.",
+    )
+    max_stream_length: Annotated[int, Field(ge=100, le=1_000_000)] = Field(
+        default=10_000,
+        description="MAXLEN cap per Redis stream (approximate trimming).",
+    )
+    node_name: str = Field(
+        default="",
+        description=(
+            "Node name used for _source_node tagging on events. "
+            "Auto-set from node.node_id if left empty."
+        ),
+    )
+
+
+class RoutingConfig(BaseModel):
+    """Smart routing configuration for distributed action dispatch.
+
+    Controls how the executor selects target nodes when ``target_node`` is
+    not explicitly set on an action.  Only active when
+    ``node.mode != "standalone"`` — standalone deployments never instantiate
+    routing components.
+    """
+
+    strategy: Literal["local_first", "round_robin", "least_loaded", "affinity"] = Field(
+        default="local_first",
+        description=(
+            "Node selection strategy when multiple nodes can handle an action. "
+            "local_first: prefer local, fallback to remote (default). "
+            "round_robin: distribute evenly across capable nodes. "
+            "least_loaded: pick node with fewest active actions. "
+            "affinity: use module_affinity map."
+        ),
+    )
+    node_fallback_enabled: bool = Field(
+        default=True,
+        description="On NodeUnreachableError, retry on another capable node.",
+    )
+    max_node_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Max number of alternate nodes to try on failure.",
+    )
+    quarantine_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Consecutive failures before quarantining a node.",
+    )
+    quarantine_duration: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+        description="Seconds a quarantined node is excluded from routing.",
+    )
+    module_affinity: dict[str, str] = Field(
+        default_factory=dict,
+        description="Module-to-preferred-node map (e.g. {'vision': 'gpu-node'}).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +826,12 @@ class Settings(BaseSettings):
     scanner_pipeline: ScannerPipelineConfig = Field(default_factory=ScannerPipelineConfig)
     node: NodeConfig = Field(default_factory=NodeConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    isolation: IsolationConfig = Field(default_factory=IsolationConfig)
+    module_manager: ModuleManagerConfig = Field(default_factory=ModuleManagerConfig)
+    hub: HubConfig = Field(default_factory=HubConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    redis: RedisConfig = Field(default_factory=RedisConfig)
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
 
     @field_validator("memory", mode="before")
     @classmethod

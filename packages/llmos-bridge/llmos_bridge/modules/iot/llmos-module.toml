@@ -1,0 +1,101 @@
+[module]
+module_id = "iot"
+version = "0.1.0"
+description = "GPIO and sensor control for Raspberry Pi and Linux SBCs. Supports digital I/O, PWM, and edge-detection events."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.iot.module:IoTModule"
+platforms = ["raspberry_pi", "linux"]
+requirements = ["RPi.GPIO"]
+tags = ["iot", "gpio", "raspberry-pi", "hardware", "embedded"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "set_pin_mode"
+description = "Configure a GPIO pin as input or output."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "digital_read"
+description = "Read the digital value (0 or 1) of a GPIO pin."
+risk_level = "low"
+permission = "power_user"
+
+[[module.actions]]
+name = "digital_write"
+description = "Set a GPIO output pin HIGH (1) or LOW (0)."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "pwm_start"
+description = "Start a PWM signal on a GPIO pin."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "pwm_set_duty_cycle"
+description = "Update the duty cycle of an active PWM channel."
+risk_level = "low"
+permission = "power_user"
+
+[[module.actions]]
+name = "pwm_stop"
+description = "Stop the PWM channel on a pin."
+risk_level = "low"
+permission = "power_user"
+
+[[module.actions]]
+name = "add_event_detect"
+description = "Register an edge-detection event on a GPIO input pin."
+risk_level = "low"
+permission = "power_user"
+
+[[module.actions]]
+name = "remove_event_detect"
+description = "Remove edge-detection from a GPIO pin."
+risk_level = "low"
+permission = "power_user"
+
+[[module.actions]]
+name = "cleanup"
+description = "Release GPIO resources."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "get_pin_state"
+description = "Return the current state of all configured pins (MockGPIO only)."
+risk_level = "low"
+permission = "readonly"
+
+[module.capabilities]
+permissions = [
+    "gpio.read",
+    "gpio.write",
+    "gpio.access",
+    "actuator",
+]
+side_effects = [
+    "Reads and writes GPIO pin voltage levels",
+    "Starts and stops PWM signals on hardware pins",
+    "Registers and removes hardware interrupt event listeners",
+    "Releases GPIO resources back to the operating system",
+]
+events_emitted = [
+    "llmos.iot.pin_configured",
+    "llmos.iot.pin_written",
+    "llmos.iot.pwm_started",
+    "llmos.iot.pwm_stopped",
+    "llmos.iot.event_detected",
+    "llmos.iot.cleanup",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

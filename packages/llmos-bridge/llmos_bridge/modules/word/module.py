@@ -197,6 +197,7 @@ class WordModule(BaseModule):
     # Lifecycle actions
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Opens Word document from disk")
     async def _action_open_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OpenDocumentParams.model_validate(params)
 
@@ -292,6 +293,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_set_props)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads document metadata")
     async def _action_get_document_meta(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetDocumentMetaParams.model_validate(params)
 
@@ -380,6 +382,7 @@ class WordModule(BaseModule):
     # Read operations
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads document content")
     async def _action_read_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadDocumentParams.model_validate(params)
 
@@ -420,6 +423,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Lists document paragraphs")
     async def _action_list_paragraphs(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListParagraphsParams.model_validate(params)
 
@@ -445,6 +449,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Lists document tables")
     async def _action_list_tables(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListTablesParams.model_validate(params)
 
@@ -468,6 +473,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Extracts plain text from document")
     async def _action_extract_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExtractTextParams.model_validate(params)
 
@@ -493,6 +499,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_extract)
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Counts words in document")
     async def _action_count_words(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CountWordsParams.model_validate(params)
 

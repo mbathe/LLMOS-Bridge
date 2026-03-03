@@ -1,0 +1,305 @@
+[module]
+module_id = "excel"
+version = "1.0.0"
+description = "Full-featured Excel spreadsheet automation using openpyxl."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.excel.module:ExcelModule"
+platforms = ["all"]
+requirements = ["openpyxl>=3.1.0"]
+tags = ["excel", "spreadsheet", "office", "xlsx"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+# -- Workbook lifecycle -------------------------------------------------------
+
+[[module.actions]]
+name = "create_workbook"
+description = "Create a new blank Excel workbook (.xlsx) with an initial sheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "open_workbook"
+description = "Open an Excel workbook (.xlsx/.xlsm) and cache it for subsequent operations."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "close_workbook"
+description = "Close a cached workbook, optionally saving it first."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "save_workbook"
+description = "Save a workbook to disk (optionally to a new path)."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "get_workbook_info"
+description = "Retrieve metadata about a workbook: sheets, named ranges, defined names."
+risk_level = "medium"
+permission = "filesystem_read"
+
+# -- Sheet management ---------------------------------------------------------
+
+[[module.actions]]
+name = "list_sheets"
+description = "List all worksheet names in a workbook."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "create_sheet"
+description = "Add a new worksheet to a workbook."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_sheet"
+description = "Delete a worksheet from a workbook."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "rename_sheet"
+description = "Rename a worksheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "copy_sheet"
+description = "Copy a worksheet within the same workbook."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "get_sheet_info"
+description = "Get information about a worksheet: dimensions, merged cells, etc."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "protect_sheet"
+description = "Protect a worksheet with an optional password."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "unprotect_sheet"
+description = "Remove protection from a worksheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "set_page_setup"
+description = "Configure page setup (orientation, margins, paper size, print area) for a worksheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Cell & range operations --------------------------------------------------
+
+[[module.actions]]
+name = "read_cell"
+description = "Read the value of a single cell."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "write_cell"
+description = "Write a value to a single cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "read_range"
+description = "Read a rectangular range of cells from a worksheet."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "write_range"
+description = "Write a 2-D list of values starting at a given cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "copy_range"
+description = "Copy a range of cells to another location (same or different sheet)."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Row & column operations --------------------------------------------------
+
+[[module.actions]]
+name = "insert_rows"
+description = "Insert empty rows before a given row."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_rows"
+description = "Delete rows from a worksheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "insert_columns"
+description = "Insert empty columns before a given column."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_columns"
+description = "Delete columns from a worksheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "set_column_width"
+description = "Set column width or auto-fit."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "set_row_height"
+description = "Set the height of a row."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Cell manipulation --------------------------------------------------------
+
+[[module.actions]]
+name = "merge_cells"
+description = "Merge a range of cells into one."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "unmerge_cells"
+description = "Split a merged cell range back into individual cells."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "freeze_panes"
+description = "Freeze rows and/or columns at a given cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Data operations ----------------------------------------------------------
+
+[[module.actions]]
+name = "find_replace"
+description = "Find and replace text across one or all worksheets."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "remove_duplicates"
+description = "Remove duplicate rows from a range."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "apply_formula"
+description = "Write an Excel formula to a cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_named_range"
+description = "Define a named range in the workbook."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_data_validation"
+description = "Add data validation rules to a range (dropdown list, number range, etc.)."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_autofilter"
+description = "Enable auto-filter (dropdown arrows) on a range."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Formatting ---------------------------------------------------------------
+
+[[module.actions]]
+name = "format_range"
+description = "Apply font, fill, border, and alignment formatting to a cell range."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "apply_conditional_format"
+description = "Apply conditional formatting (color scales, data bars, icon sets, cell rules) to a range."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Charts -------------------------------------------------------------------
+
+[[module.actions]]
+name = "create_chart"
+description = "Create a chart from a data range and embed it in the sheet."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Images -------------------------------------------------------------------
+
+[[module.actions]]
+name = "insert_image"
+description = "Insert an image (PNG, JPEG, BMP, GIF) into a worksheet."
+risk_level = "medium"
+permission = "filesystem_read, filesystem_write"
+
+# -- Comments -----------------------------------------------------------------
+
+[[module.actions]]
+name = "add_comment"
+description = "Add a comment to a cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_comment"
+description = "Delete a comment from a cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Export -------------------------------------------------------------------
+
+[[module.actions]]
+name = "export_to_csv"
+description = "Export a single worksheet to a CSV file."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "export_to_pdf"
+description = "Convert the workbook to PDF using LibreOffice."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[module.capabilities]
+permissions = [
+    "filesystem_read",
+    "filesystem_write",
+]
+side_effects = [
+    "Creates, modifies, and saves Excel workbook files on disk",
+    "Reads cell data, sheet metadata, and workbook structure",
+    "Exports worksheets to CSV and PDF formats",
+    "Invokes LibreOffice for PDF conversion when configured",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

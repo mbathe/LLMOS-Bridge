@@ -301,6 +301,7 @@ class PowerPointModule(BaseModule):
                 "slide_height_cm": self._emu_to_cm(prs.slide_height),
             }
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Opens PowerPoint presentation from disk")
     async def _action_open_presentation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = OpenPresentationParams.model_validate(params)
         return await asyncio.to_thread(self._sync_open_presentation, p)
@@ -334,6 +335,7 @@ class PowerPointModule(BaseModule):
             dest = self._save_prs(p.path, prs, p.output_path)
             return {"saved_to": dest}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads presentation metadata")
     async def _action_get_presentation_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetPresentationInfoParams.model_validate(params)
         return await asyncio.to_thread(self._sync_get_presentation_info, p)
@@ -490,6 +492,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"from_index": p.from_index, "to_index": p.to_index}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Lists presentation slides")
     async def _action_list_slides(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListSlidesParams.model_validate(params)
         return await asyncio.to_thread(self._sync_list_slides, p)
@@ -518,6 +521,7 @@ class PowerPointModule(BaseModule):
                 )
             return {"slides": result, "slide_count": len(prs.slides)}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Reads slide content")
     async def _action_read_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadSlideParams.model_validate(params)
         return await asyncio.to_thread(self._sync_read_slide, p)
@@ -548,6 +552,7 @@ class PowerPointModule(BaseModule):
 
             return result
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_layout(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideLayoutParams.model_validate(params)
         return await asyncio.to_thread(self._sync_set_slide_layout, p)
@@ -582,6 +587,7 @@ class PowerPointModule(BaseModule):
     # Text content
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_title(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideTitleParams.model_validate(params)
         return await asyncio.to_thread(self._sync_set_slide_title, p)
@@ -1034,6 +1040,7 @@ class PowerPointModule(BaseModule):
                 "cols": p.cols,
             }
 
+    @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_format_table_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatTableCellParams.model_validate(params)
         return await asyncio.to_thread(self._sync_format_table_cell, p)
@@ -1320,6 +1327,7 @@ class PowerPointModule(BaseModule):
     # Export
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Exports presentation to PDF")
     async def _action_export_to_pdf(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportToPdfParams.model_validate(params)
         return await asyncio.to_thread(self._sync_export_to_pdf, p)
@@ -1364,6 +1372,7 @@ class PowerPointModule(BaseModule):
 
             return {"pdf_path": p.output_path}
 
+    @requires_permission(Permission.FILESYSTEM_READ, reason="Exports slide as image")
     async def _action_export_slide_as_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportSlideAsImageParams.model_validate(params)
         return await asyncio.to_thread(self._sync_export_slide_as_image, p)

@@ -147,3 +147,20 @@ class UpdateTriggerParams(BaseModel):
     resource_lock: str | None = Field(default=None)
     tags: list[str] | None = Field(default=None)
     expires_at: float | None = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# PARAMS_MAP — used by SchemaRegistry and ALL_PARAMS
+# ---------------------------------------------------------------------------
+
+PARAMS_MAP: dict[str, type[BaseModel]] = {
+    "register_trigger": RegisterTriggerParams,
+    "activate_trigger": ActivateTriggerParams,
+    "deactivate_trigger": DeactivateTriggerParams,
+    "delete_trigger": DeleteTriggerParams,
+    "list_triggers": ListTriggersParams,
+    "get_trigger": GetTriggerParams,
+}
+# Note: UpdateTriggerParams is defined above but the action is not yet
+# implemented in TriggerModule.  Add "update_trigger" here once the
+# _action_update_trigger method exists.

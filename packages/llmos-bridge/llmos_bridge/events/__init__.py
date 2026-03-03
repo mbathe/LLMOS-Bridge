@@ -5,12 +5,12 @@ Events flow from producers (executor, modules, audit logger) through an
 EventBus implementation to consumers (audit file, dashboard, LLM observer).
 
 Current implementations:
-  - NullEventBus  — default, discards all events
-  - LogEventBus   — NDJSON append-only file (Phase 1/2)
-  - FanoutEventBus — broadcasts to multiple backends (Phase 3+)
+  - NullEventBus    — default, discards all events
+  - LogEventBus     — NDJSON append-only file (Phase 1/2)
+  - FanoutEventBus  — broadcasts to multiple backends (Phase 3+)
+  - RedisStreamsBus — Redis Streams backend (optional, Phase 3)
 
 Planned (not yet implemented):
-  - RedisStreamsBus — Redis Streams backend (Phase 4)
   - KafkaBus        — Apache Kafka / Redpanda backend (Phase 5)
 
 Quick start::
@@ -23,10 +23,14 @@ Quick start::
 
 from llmos_bridge.events.bus import (
     TOPIC_ACTIONS,
+    TOPIC_ACTION_PROGRESS,
+    TOPIC_ACTION_RESULTS,
     TOPIC_DB,
     TOPIC_ERRORS,
     TOPIC_FILESYSTEM,
     TOPIC_IOT,
+    TOPIC_MODULES,
+    TOPIC_NODES,
     TOPIC_PERCEPTION,
     TOPIC_PERMISSIONS,
     TOPIC_PLANS,
@@ -37,6 +41,12 @@ from llmos_bridge.events.bus import (
     NullEventBus,
 )
 
+# RedisStreamsBus is optional — requires ``pip install llmos-bridge[redis]``.
+try:
+    from llmos_bridge.events.redis_bus import RedisStreamsBus
+except ImportError:
+    RedisStreamsBus = None  # type: ignore[misc, assignment]
+
 __all__ = [
     # Interface
     "EventBus",
@@ -44,9 +54,12 @@ __all__ = [
     "NullEventBus",
     "LogEventBus",
     "FanoutEventBus",
+    "RedisStreamsBus",
     # Topic constants
     "TOPIC_PLANS",
     "TOPIC_ACTIONS",
+    "TOPIC_ACTION_PROGRESS",
+    "TOPIC_ACTION_RESULTS",
     "TOPIC_SECURITY",
     "TOPIC_ERRORS",
     "TOPIC_PERCEPTION",
@@ -54,4 +67,6 @@ __all__ = [
     "TOPIC_DB",
     "TOPIC_FILESYSTEM",
     "TOPIC_PERMISSIONS",
+    "TOPIC_MODULES",
+    "TOPIC_NODES",
 ]

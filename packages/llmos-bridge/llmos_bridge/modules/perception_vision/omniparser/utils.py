@@ -34,17 +34,25 @@ log = logging.getLogger(__name__)
 try:
     from paddleocr import PaddleOCR
 
-    _paddle_ocr = PaddleOCR(
-        lang="en",
-        use_angle_cls=False,
-        use_gpu=False,
-        show_log=False,
-        max_batch_size=1024,
-        use_dilation=True,
-        det_db_score_mode="slow",
-        rec_batch_num=1024,
-    )
-except ImportError:
+    # PaddleOCR v3+ removed use_gpu, use_angle_cls, show_log, and other legacy params.
+    # Try minimal new API first, then progressively add legacy params.
+    try:
+        _paddle_ocr = PaddleOCR(lang="en")
+    except (TypeError, ValueError):
+        try:
+            _paddle_ocr = PaddleOCR(
+                lang="en",
+                use_angle_cls=False,
+                use_gpu=False,
+            )
+        except (TypeError, ValueError):
+            _paddle_ocr = PaddleOCR(
+                lang="en",
+                use_angle_cls=False,
+                use_gpu=False,
+                show_log=False,
+            )
+except (ImportError, Exception):
     PaddleOCR = None  # type: ignore[assignment,misc]
     _paddle_ocr = None
 
@@ -93,9 +101,17 @@ def get_caption_model_processor(
             "microsoft/Florence-2-base", trust_remote_code=True
         )
         dtype = torch.float32 if device == "cpu" else torch.float16
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path, torch_dtype=dtype, trust_remote_code=True
-        )
+        # attn_implementation="eager" avoids _supports_sdpa check that breaks
+        # with newer transformers versions + Florence-2 custom code.
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name_or_path, torch_dtype=dtype, trust_remote_code=True,
+                attn_implementation="eager",
+            )
+        except (TypeError, ValueError):
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name_or_path, torch_dtype=dtype, trust_remote_code=True,
+            )
     else:
         raise ValueError(f"Unknown caption model: {model_name}")
 

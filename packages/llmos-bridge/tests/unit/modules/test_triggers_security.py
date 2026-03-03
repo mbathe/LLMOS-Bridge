@@ -33,3 +33,11 @@ class TestTriggersSecurity:
             fn = getattr(self.module, action_name)
             meta = collect_security_metadata(fn)
             assert meta == {}, f"{action_name} should have no security metadata"
+
+    def test_activate_trigger_requires_process_execute(self):
+        meta = collect_security_metadata(self.module._action_activate_trigger)
+        assert "os.process.execute" in meta.get("permissions", [])
+
+    def test_deactivate_trigger_requires_process_execute(self):
+        meta = collect_security_metadata(self.module._action_deactivate_trigger)
+        assert "os.process.execute" in meta.get("permissions", [])

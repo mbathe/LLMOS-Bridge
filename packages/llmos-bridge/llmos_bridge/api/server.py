@@ -21,10 +21,19 @@ from llmos_bridge.api.middleware import (
     build_error_handler,
 )
 from llmos_bridge.api.routes import health, modules, plans, plan_groups, websocket, triggers as triggers_router, recordings as recordings_router, context as context_router, intent_verifier as intent_verifier_router, scanners as scanners_router
+from llmos_bridge.api.routes import stream as stream_router
+from llmos_bridge.api.routes import (
+    admin_modules as admin_modules_router,
+    admin_hub as admin_hub_router,
+    admin_security as admin_security_router,
+    admin_system as admin_system_router,
+)
+from llmos_bridge.api.routes import applications as applications_router
+from llmos_bridge.api.routes import cluster as cluster_router
 from llmos_bridge.api.routes.websocket import WebSocketEventBus, manager as ws_manager
 from llmos_bridge.config import Settings, get_settings
 from llmos_bridge.events.bus import FanoutEventBus, LogEventBus
-from llmos_bridge.exceptions import LLMOSError
+from llmos_bridge.exceptions import LLMOSError, ModuleLoadError
 from llmos_bridge.logging import configure_logging, get_logger
 from llmos_bridge.memory.store import KeyValueStore
 from llmos_bridge.modules.api_http import ApiHttpModule
@@ -33,6 +42,7 @@ from llmos_bridge.modules.database import DatabaseModule
 from llmos_bridge.modules.database_gateway import DatabaseGatewayModule
 from llmos_bridge.modules.excel import ExcelModule
 from llmos_bridge.modules.gui import GUIModule
+from llmos_bridge.modules.iot import IoTModule
 from llmos_bridge.modules.filesystem import FilesystemModule
 from llmos_bridge.modules.os_exec import OSExecModule
 from llmos_bridge.modules.powerpoint import PowerPointModule
@@ -88,7 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost", "http://127.0.0.1"],
+        allow_origins=["http://localhost", "http://127.0.0.1", "http://localhost:3000"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -107,6 +117,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(context_router.router)
     app.include_router(intent_verifier_router.router)
     app.include_router(scanners_router.router)
+    app.include_router(admin_modules_router.router)
+    app.include_router(admin_hub_router.router)
+    app.include_router(admin_security_router.router)
+    app.include_router(admin_system_router.router)
+    app.include_router(stream_router.router)
+    app.include_router(applications_router.router)
+    app.include_router(cluster_router.router)
 
     # Startup / shutdown lifecycle
     @app.on_event("startup")
@@ -133,12 +150,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sandbox_paths=settings.security.sandbox_paths,
         )
 
-        # Build event bus — fanout to NDJSON file + live WebSocket clients.
+        # Build event bus — two-bus architecture for distributed mode.
+        #
+        # local_bus  = FanoutEventBus([LogEventBus, WebSocketEventBus])
+        #   → consumed by dashboard, audit file, SSE, listeners
+        #
+        # event_bus  = FanoutEventBus([local_bus, RedisStreamsBus])   (if redis enabled)
+        #            = local_bus                                       (standalone)
+        #   → all producers emit here
+        #
+        # The EventRebroadcaster reads from Redis and writes to local_bus ONLY,
+        # preventing infinite loops (local→Redis→local→Redis→...).
+        from llmos_bridge.events.bus import EventBus as _EventBusABC
+
         ws_bus = WebSocketEventBus(ws_manager)
-        if settings.logging.audit_file:
-            event_bus = FanoutEventBus([LogEventBus(settings.logging.audit_file), ws_bus])
+        log_bus = LogEventBus(settings.logging.audit_file) if settings.logging.audit_file else None
+        local_backends: list[_EventBusABC] = [b for b in [log_bus, ws_bus] if b is not None]
+        local_bus: _EventBusABC = (
+            FanoutEventBus(local_backends) if len(local_backends) > 1 else local_backends[0]
+        )
+
+        # Add Redis Streams backend if enabled (fully optional).
+        redis_bus = None
+        rebroadcaster = None
+        if settings.redis.enabled:
+            from llmos_bridge.events.redis_bus import RedisStreamsBus
+
+            node_name = settings.redis.node_name or settings.node.node_id
+            redis_bus = RedisStreamsBus(
+                settings.redis.url, node_name, settings.redis.max_stream_length,
+            )
+            await redis_bus.connect()
+            event_bus: _EventBusABC = FanoutEventBus([local_bus, redis_bus])
+
+            from llmos_bridge.cluster.rebroadcaster import EventRebroadcaster
+
+            rebroadcaster = EventRebroadcaster(
+                redis_url=settings.redis.url,
+                local_bus=local_bus,  # ← writes to local_bus, NOT full event_bus
+                node_name=node_name,
+                consumer_group=settings.redis.consumer_group,
+            )
+            await rebroadcaster.start()
+            log.info("redis_event_bus_enabled", node_name=node_name)
         else:
-            event_bus = ws_bus
+            event_bus = local_bus
 
         audit_logger = AuditLogger(bus=event_bus)
         sanitizer = OutputSanitizer()
@@ -168,6 +224,85 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             audit=audit_logger,
             intent_verifier=intent_verifier,
         )
+
+        # Build PermissionProxy for remote nodes (mode="node").
+        permission_proxy = None
+        if settings.node.mode == "node" and settings.redis.enabled and settings.node.peers:
+            from llmos_bridge.cluster.permission_proxy import PermissionProxy
+
+            orch_url = settings.node.peers[0].url
+            orch_token = settings.node.peers[0].api_token
+            if orch_url:
+                permission_proxy = PermissionProxy(
+                    orchestrator_url=orch_url,
+                    api_token=orch_token,
+                )
+                await permission_proxy.start()
+                log.info("permission_proxy_started", orchestrator=orch_url)
+
+        # Build Identity system (multi-tenant — disabled by default).
+        identity_store = None
+        identity_resolver = None
+        if settings.identity.enabled:
+            from llmos_bridge.identity.store import IdentityStore
+            from llmos_bridge.identity.auth import IdentityResolver
+
+            identity_store = IdentityStore(settings.identity.db_path)
+            await identity_store.init()
+            await identity_store.ensure_default_app(settings.identity.default_app_name)
+
+            identity_resolver = IdentityResolver(
+                store=identity_store,
+                enabled=True,
+                require_api_keys=settings.identity.require_api_keys,
+            )
+            log.info(
+                "identity_system_started",
+                require_api_keys=settings.identity.require_api_keys,
+                default_app=settings.identity.default_app_name,
+            )
+        else:
+            # Even when disabled, provide a resolver that always returns
+            # the default context so routes can depend on IdentityDep
+            # without conditional checks.
+            from llmos_bridge.identity.auth import IdentityResolver
+
+            identity_resolver = IdentityResolver(
+                store=None,
+                enabled=False,
+            )
+
+        # Build AuthorizationGuard (Phase 6 — identity-based authorization matrix).
+        from llmos_bridge.identity.authorization import AuthorizationGuard
+
+        authorization_guard = AuthorizationGuard(
+            store=identity_store,
+            enabled=settings.identity.enabled,
+        )
+
+        # Build NodeRegistry + node discovery (Phase 2 multi-node).
+        from llmos_bridge.orchestration.nodes import LocalNode, NodeRegistry
+
+        local_node = LocalNode(registry)
+        node_registry = NodeRegistry(local_node)
+
+        # Start node discovery and health monitoring (non-standalone only).
+        discovery = None
+        node_health_monitor = None
+        if settings.node.mode != "standalone":
+            from llmos_bridge.orchestration.discovery import NodeDiscoveryService
+            from llmos_bridge.orchestration.node_health import NodeHealthMonitor
+
+            discovery = NodeDiscoveryService(node_registry, event_bus, settings)
+            await discovery.start()
+
+            node_health_monitor = NodeHealthMonitor(
+                node_registry,
+                event_bus,
+                interval=settings.node.heartbeat_interval,
+                timeout=settings.node.heartbeat_timeout,
+            )
+            await node_health_monitor.start()
 
         # Build scanner pipeline (fast heuristic + optional ML scanners).
         scanner_pipeline = _build_scanner_pipeline(settings, audit_logger)
@@ -209,6 +344,171 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         )
 
         log.info("security_manager_started", auto_grant_low_risk=sec_cfg.auto_grant_low_risk)
+
+        # ---------------------------------------------------------------
+        # Module Spec v2: ServiceBus + LifecycleManager + ModuleManager
+        # ---------------------------------------------------------------
+        from llmos_bridge.modules.service_bus import ServiceBus
+        from llmos_bridge.modules.lifecycle import ModuleLifecycleManager
+        from llmos_bridge.modules.context import ModuleContext
+        from llmos_bridge.modules.types import ModuleType, SYSTEM_MODULE_IDS
+
+        service_bus = ServiceBus()
+
+        # Module Spec v3: Module state persistence for save/restore.
+        from llmos_bridge.modules.state_store import ModuleStateStore
+
+        module_state_store = ModuleStateStore(
+            Path(settings.memory.state_db_path).parent / "module_state.db"
+        )
+        await module_state_store.init()
+
+        lifecycle_manager = ModuleLifecycleManager(
+            registry, event_bus, service_bus, state_store=module_state_store
+        )
+        registry.set_lifecycle_manager(lifecycle_manager)
+
+        # Classify modules as SYSTEM or USER.
+        # Tolerate load failures for modules with missing optional dependencies.
+        for mod_id in list(registry.list_available()):
+            try:
+                mod_instance = registry.get(mod_id)
+            except BaseException as exc:
+                log.warning("module_skipped_at_startup", module_id=mod_id, reason=str(exc))
+                continue
+            if mod_id in SYSTEM_MODULE_IDS or getattr(mod_instance, "MODULE_TYPE", "user") == "system":
+                lifecycle_manager.set_type(mod_id, ModuleType.SYSTEM)
+            else:
+                lifecycle_manager.set_type(mod_id, ModuleType.USER)
+
+        # Register ModuleManagerModule (if enabled).
+        if settings.module_manager.enabled:
+            from llmos_bridge.modules.module_manager import ModuleManagerModule
+
+            module_manager_mod = ModuleManagerModule()
+            module_manager_mod.set_lifecycle_manager(lifecycle_manager)
+            module_manager_mod.set_service_bus(service_bus)
+            registry.register_instance(module_manager_mod)
+            lifecycle_manager.set_type("module_manager", ModuleType.SYSTEM)
+
+            # Inject security if decorators enabled.
+            if sec_cfg.enable_decorators:
+                module_manager_mod.set_security(security_manager)
+
+        # Module Spec v3: Hub / Package Manager integration.
+        # The installer is created when hub.enabled=True (full hub) OR
+        # hub.local_install_enabled=True (local-only — no hub client needed).
+        module_index = None
+        module_installer = None
+        hub_client = None
+        _need_installer = settings.hub.enabled or settings.hub.local_install_enabled
+
+        if _need_installer:
+            from llmos_bridge.hub.index import ModuleIndex
+            from llmos_bridge.hub.installer import ModuleInstaller
+            from llmos_bridge.modules.signing import SignatureVerifier
+            from llmos_bridge.isolation.venv_manager import VenvManager as _VenvMgr
+
+            install_dir = Path(settings.hub.install_dir).expanduser()
+            install_dir.mkdir(parents=True, exist_ok=True)
+
+            module_index = ModuleIndex(install_dir / "modules.db")
+            await module_index.init()
+
+            # Build signature verifier + load trust store.
+            sig_verifier = SignatureVerifier()
+            trust_store = Path(settings.hub.trust_store_path).expanduser()
+            if trust_store.exists():
+                loaded = sig_verifier.load_trust_store(trust_store)
+                log.info("trust_store_loaded", keys=loaded, path=str(trust_store))
+
+            hub_venv_mgr = _VenvMgr(
+                base_dir=install_dir / ".venvs",
+                prefer_uv=settings.isolation.prefer_uv,
+            )
+
+            module_installer = ModuleInstaller(
+                index=module_index,
+                registry=registry,
+                venv_manager=hub_venv_mgr,
+                verifier=sig_verifier,
+                require_signatures=settings.hub.require_signatures,
+                install_dir=install_dir,
+                lifecycle_manager=lifecycle_manager,
+            )
+
+            # Hub client — only when hub.enabled (requires registry_url).
+            if settings.hub.enabled:
+                from llmos_bridge.hub.client import HubClient
+                hub_client = HubClient(settings.hub.registry_url)
+                log.info(
+                    "hub_integration_started",
+                    registry_url=settings.hub.registry_url,
+                    require_signatures=settings.hub.require_signatures,
+                )
+            else:
+                log.info("local_install_enabled", install_dir=str(install_dir))
+
+            # Reload previously installed community modules from the SQLite index.
+            # This restores the registry after a daemon restart so that modules
+            # installed in a previous session are still available.
+            installed_modules = await module_index.list_enabled()
+            for _im in installed_modules:
+                install_path = Path(_im.install_path)
+                if not install_path.exists():
+                    log.warning(
+                        "community_module_path_missing",
+                        module_id=_im.module_id,
+                        install_path=str(install_path),
+                    )
+                    await module_index.set_enabled(_im.module_id, False)
+                    continue
+                try:
+                    registry.register_isolated(
+                        module_id=_im.module_id,
+                        module_class_path=_im.module_class_path,
+                        venv_manager=hub_venv_mgr,
+                        requirements=_im.requirements,
+                        source_path=install_path,
+                    )
+                    log.info(
+                        "community_module_restored",
+                        module_id=_im.module_id,
+                        version=_im.version,
+                    )
+                except Exception as _exc:
+                    log.warning(
+                        "community_module_restore_failed",
+                        module_id=_im.module_id,
+                        error=str(_exc),
+                    )
+
+            # Inject installer into ModuleManagerModule.
+            if settings.module_manager.enabled:
+                module_manager_mod.set_installer(module_installer)
+                if hub_client is not None:
+                    module_manager_mod.set_hub_client(hub_client)
+
+        # Build ModuleContext for each module.
+        for mod_id in registry.list_available():
+            mod_instance = registry.get(mod_id)
+            if hasattr(mod_instance, "set_context"):
+                ctx = ModuleContext(
+                    module_id=mod_id,
+                    event_bus=event_bus,
+                    service_bus=service_bus,
+                    settings=settings,
+                    security_manager=security_manager if sec_cfg.enable_decorators else None,
+                )
+                mod_instance.set_context(ctx)
+
+        # Start all modules (calls on_start lifecycle hooks).
+        await lifecycle_manager.start_all()
+
+        log.info(
+            "lifecycle_manager_started",
+            modules=registry.list_available(),
+        )
 
         # Build perception pipeline (optional — requires mss/pytesseract).
         perception_pipeline = None
@@ -259,6 +559,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default_limit=settings.resources.default_concurrency,
         )
 
+        # Module Spec v3: Build policy enforcer.
+        from llmos_bridge.modules.policy import PolicyEnforcer
+
+        policy_enforcer = PolicyEnforcer(registry)
+
+        # Module Spec v3: Build resource negotiator.
+        from llmos_bridge.modules.resource_negotiator import ResourceNegotiator
+
+        resource_negotiator = ResourceNegotiator(registry)
+
+        # Phase 4: Smart routing — only active outside standalone mode.
+        routing_config = None
+        if settings.node.mode != "standalone":
+            routing_config = settings.routing
+
         executor = PlanExecutor(
             module_registry=registry,
             guard=guard,
@@ -273,6 +588,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_result_size=settings.server.max_result_size,
             intent_verifier=intent_verifier,
             scanner_pipeline=scanner_pipeline,
+            policy_enforcer=policy_enforcer,
+            node_registry=node_registry,
+            routing_config=routing_config,
+            authorization=authorization_guard,
         )
 
         # Initialise TriggerDaemon (optional subsystem — disabled by default).
@@ -295,7 +614,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await trigger_daemon.start()
 
             # Wire TriggerDaemon into TriggerModule (if registered)
-            trigger_module = registry.get("triggers") if hasattr(registry, "get") else None
+            try:
+                trigger_module = registry.get("triggers") if hasattr(registry, "get") else None
+            except Exception:
+                trigger_module = None
             if trigger_module is not None and hasattr(trigger_module, "set_daemon"):
                 trigger_module.set_daemon(trigger_daemon)
 
@@ -312,7 +634,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             workflow_recorder = WorkflowRecorder(store=recording_store)
 
             # Wire WorkflowRecorder into RecordingModule (if registered).
-            recording_module = registry.get("recording") if hasattr(registry, "get") else None
+            try:
+                recording_module = registry.get("recording") if hasattr(registry, "get") else None
+            except Exception:
+                recording_module = None
             if recording_module is not None and hasattr(recording_module, "set_recorder"):
                 recording_module.set_recorder(workflow_recorder)
 
@@ -320,9 +645,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Wire ComputerControlModule to the registry for dynamic module access.
         if registry.is_available("computer_control"):
-            cc_module = registry.get("computer_control")
-            if cc_module is not None and hasattr(cc_module, "set_registry"):
-                cc_module.set_registry(registry)
+            try:
+                cc_module = registry.get("computer_control")
+                if cc_module is not None and hasattr(cc_module, "set_registry"):
+                    cc_module.set_registry(registry)
+            except Exception:
+                pass
 
         # Start auto-purge background task.
         import asyncio as _aio
@@ -358,6 +686,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.intent_verifier = intent_verifier  # None if not configured
         app.state.scanner_pipeline = scanner_pipeline  # None if disabled
         app.state.purge_task = purge_task  # Keep reference to prevent GC
+        app.state.service_bus = service_bus
+        app.state.lifecycle_manager = lifecycle_manager
+        app.state.module_index = module_index  # None if hub.enabled=False
+        app.state.module_installer = module_installer  # None if hub.enabled=False
+        app.state.hub_client = hub_client  # None if hub.enabled=False
+        app.state.module_state_store = module_state_store
+        app.state.event_bus = event_bus
+        app.state.resource_negotiator = resource_negotiator
+        app.state.identity_store = identity_store  # None if identity.enabled=False
+        app.state.identity_resolver = identity_resolver  # Always set (disabled = default context)
+        app.state.authorization_guard = authorization_guard  # Always set (disabled = no-op)
+        app.state.node_registry = node_registry
+        app.state.discovery = discovery  # None if standalone
+        app.state.node_health_monitor = node_health_monitor  # None if standalone
+        app.state.redis_bus = redis_bus  # None if redis.enabled=False
+        app.state.rebroadcaster = rebroadcaster  # None if redis.enabled=False
+        app.state.permission_proxy = permission_proxy  # None unless mode="node" + redis
+        app.state.load_tracker = executor._load_tracker  # None if standalone
+        app.state.quarantine = executor._quarantine  # None if standalone
+
+        # Start health monitor for isolated module workers.
+        app.state.health_monitor = None
+        if settings.isolation.enabled:
+            from llmos_bridge.isolation.health import HealthMonitor
+            from llmos_bridge.isolation.proxy import IsolatedModuleProxy
+
+            health_monitor = HealthMonitor(
+                check_interval=settings.isolation.health_check_interval,
+            )
+            for inst in registry._instances.values():
+                if isinstance(inst, IsolatedModuleProxy):
+                    health_monitor.register(inst)
+            if health_monitor.monitored_count > 0:
+                await health_monitor.start()
+                app.state.health_monitor = health_monitor
+                log.info("health_monitor_started", proxies=health_monitor.monitored_count)
 
         log.info(
             "daemon_ready",
@@ -370,6 +734,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown() -> None:
         log.info("daemon_stopping")
+        # Module Spec v2: stop all modules (calls on_stop lifecycle hooks).
+        if hasattr(app.state, "lifecycle_manager") and app.state.lifecycle_manager is not None:
+            await app.state.lifecycle_manager.stop_all()
+        if hasattr(app.state, "health_monitor") and app.state.health_monitor is not None:
+            await app.state.health_monitor.stop()
         if hasattr(app.state, "purge_task"):
             app.state.purge_task.cancel()
         if hasattr(app.state, "trigger_daemon") and app.state.trigger_daemon is not None:
@@ -382,6 +751,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.scanner_pipeline.registry.close_all()
         if hasattr(app.state, "intent_verifier") and app.state.intent_verifier is not None:
             await app.state.intent_verifier.close()
+        if hasattr(app.state, "hub_client") and app.state.hub_client is not None:
+            await app.state.hub_client.close()
+        if hasattr(app.state, "module_index") and app.state.module_index is not None:
+            await app.state.module_index.close()
+        if hasattr(app.state, "module_state_store") and app.state.module_state_store is not None:
+            await app.state.module_state_store.close()
+        if hasattr(app.state, "node_health_monitor") and app.state.node_health_monitor is not None:
+            await app.state.node_health_monitor.stop()
+        if hasattr(app.state, "discovery") and app.state.discovery is not None:
+            await app.state.discovery.stop()
+        if hasattr(app.state, "rebroadcaster") and app.state.rebroadcaster is not None:
+            await app.state.rebroadcaster.stop()
+        if hasattr(app.state, "redis_bus") and app.state.redis_bus is not None:
+            await app.state.redis_bus.close()
+        if hasattr(app.state, "permission_proxy") and app.state.permission_proxy is not None:
+            await app.state.permission_proxy.stop()
+        if hasattr(app.state, "identity_store") and app.state.identity_store is not None:
+            await app.state.identity_store.close()
         if hasattr(app.state, "state_store"):
             await app.state.state_store.close()
         if hasattr(app.state, "kv_store"):
@@ -496,6 +883,7 @@ def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> N
         "gui": GUIModule,
         "computer_control": ComputerControlModule,
         "window_tracker": WindowTrackerModule,
+        "iot": IoTModule,
         "triggers": TriggerModule,
         "recording": RecordingModule,
     }
@@ -503,15 +891,64 @@ def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> N
     # Vision module — supports custom backends via settings.vision.backend.
     active = settings.active_modules()
     if "vision" in active:
-        _apply_vision_config(settings)
         if settings.vision.backend == "omniparser":
+            _apply_vision_config(settings)
             builtin_map["vision"] = OmniParserModule
+        elif settings.vision.backend == "ultra":
+            _apply_ultra_vision_config(settings)
+            from llmos_bridge.modules.perception_vision.ultra import UltraVisionModule  # noqa: PLC0415
+            builtin_map["vision"] = UltraVisionModule
+            log.info("vision_backend_ultra", model_dir=settings.vision.ultra_model_dir)
         else:
+            _apply_vision_config(settings)
             custom_cls = _load_custom_vision_backend(settings.vision.backend)
             if custom_cls is not None:
                 builtin_map["vision"] = custom_cls
             else:
                 builtin_map["vision"] = OmniParserModule  # Fallback to default
+
+    # --- Module isolation support ---
+    # When isolation is enabled, modules declared as 'subprocess' are
+    # registered via IsolatedModuleProxy instead of in-process.
+    if settings.isolation.enabled:
+        from pathlib import Path as _Path
+        from llmos_bridge.isolation.venv_manager import VenvManager
+
+        venv_mgr = VenvManager(
+            base_dir=_Path(settings.isolation.venv_base_dir).expanduser(),
+            prefer_uv=settings.isolation.prefer_uv,
+        )
+
+        for spec_key, spec in settings.isolation.modules.items():
+            if spec.module_id not in active:
+                continue
+            if spec.isolation != "subprocess":
+                continue
+
+            # For vision modules, only register the one matching the active backend.
+            if spec.module_id == "vision":
+                backend = settings.vision.backend
+                if backend == "omniparser" and "omniparser" not in spec_key:
+                    continue
+                if backend == "ultra" and "ultra" not in spec_key:
+                    continue
+
+            # Remove from in-process map — it will be registered as isolated.
+            builtin_map.pop(spec.module_id, None)
+
+            try:
+                registry.register_isolated(
+                    module_id=spec.module_id,
+                    module_class_path=spec.module_class_path,
+                    venv_manager=venv_mgr,
+                    requirements=spec.requirements,
+                    env_vars=spec.env_vars,
+                    timeout=spec.timeout,
+                    max_restarts=spec.max_restarts,
+                )
+                log.info("module_isolated", module_id=spec.module_id, spec_key=spec_key)
+            except Exception as exc:
+                log.warning("isolated_module_register_failed", spec_key=spec_key, error=str(exc))
 
     for module_id, module_class in builtin_map.items():
         if module_id in active:
@@ -537,6 +974,33 @@ def _apply_vision_config(settings: Settings) -> None:
     _os.environ.setdefault("LLMOS_OMNIPARSER_CAPTION_MODEL", settings.vision.caption_model_name)
     _os.environ.setdefault("LLMOS_OMNIPARSER_USE_PADDLEOCR", str(settings.vision.use_paddleocr).lower())
     _os.environ.setdefault("LLMOS_OMNIPARSER_AUTO_DOWNLOAD", str(settings.vision.auto_download_weights).lower())
+
+
+def _apply_ultra_vision_config(settings: Settings) -> None:
+    """Set environment variables from VisionConfig for UltraVision."""
+    import os as _os
+
+    _os.environ.setdefault(
+        "LLMOS_ULTRA_VISION_MODEL_DIR",
+        _os.path.expanduser(settings.vision.ultra_model_dir),
+    )
+    if settings.vision.ultra_device != "auto":
+        _os.environ.setdefault("LLMOS_ULTRA_VISION_DEVICE", settings.vision.ultra_device)
+    _os.environ.setdefault("LLMOS_ULTRA_VISION_BOX_THRESH", str(settings.vision.ultra_box_threshold))
+    _os.environ.setdefault("LLMOS_ULTRA_VISION_OCR_ENGINE", settings.vision.ultra_ocr_engine)
+    _os.environ.setdefault(
+        "LLMOS_ULTRA_VISION_ENABLE_GROUNDING",
+        str(settings.vision.ultra_enable_grounding).lower(),
+    )
+    _os.environ.setdefault(
+        "LLMOS_ULTRA_VISION_GROUNDING_IDLE_TIMEOUT",
+        str(settings.vision.ultra_grounding_idle_timeout),
+    )
+    _os.environ.setdefault("LLMOS_ULTRA_VISION_MAX_VRAM_MB", str(settings.vision.ultra_max_vram_mb))
+    _os.environ.setdefault(
+        "LLMOS_ULTRA_VISION_AUTO_DOWNLOAD",
+        str(settings.vision.ultra_auto_download).lower(),
+    )
 
 
 def _load_custom_vision_backend(backend_path: str) -> type | None:

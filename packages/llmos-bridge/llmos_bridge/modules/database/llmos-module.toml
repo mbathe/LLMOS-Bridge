@@ -1,0 +1,110 @@
+[module]
+module_id = "database"
+version = "1.0.0"
+description = "SQL database operations — connect, query, CRUD, schema introspection, and transaction management. Supports SQLite (built-in), PostgreSQL, and MySQL."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.database.module:DatabaseModule"
+platforms = ["all"]
+requirements = ["aiosqlite"]
+tags = ["database", "sql", "sqlite", "postgresql", "mysql"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "connect"
+description = "Open a database connection (SQLite, PostgreSQL, or MySQL)."
+risk_level = "medium"
+permission = "database.read"
+
+[[module.actions]]
+name = "disconnect"
+description = "Close an active database connection."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "execute_query"
+description = "Execute a SQL statement (INSERT, UPDATE, DELETE, DDL). Returns rows affected."
+risk_level = "high"
+permission = "database.write"
+
+[[module.actions]]
+name = "fetch_results"
+description = "Execute a SELECT query and return rows as list of dicts."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "insert_record"
+description = "Insert a record into a table using column-value mapping."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "update_record"
+description = "Update records matching a WHERE clause."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "delete_record"
+description = "Delete records matching a WHERE clause. Requires confirm=true."
+risk_level = "high"
+permission = "database.delete"
+
+[[module.actions]]
+name = "create_table"
+description = "Create a new table with column definitions."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "list_tables"
+description = "List all tables in the connected database."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "get_table_schema"
+description = "Get column definitions for a table."
+risk_level = "low"
+permission = "database.read"
+
+[[module.actions]]
+name = "begin_transaction"
+description = "Start an explicit transaction."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "commit_transaction"
+description = "Commit the current transaction."
+risk_level = "medium"
+permission = "database.write"
+
+[[module.actions]]
+name = "rollback_transaction"
+description = "Roll back the current transaction."
+risk_level = "low"
+permission = "database.write"
+
+[module.capabilities]
+permissions = [
+    "database.read",
+    "database.write",
+    "database.delete",
+]
+side_effects = [
+    "Opens and closes database connections",
+    "Reads and modifies database tables and records",
+    "Creates and drops database tables",
+    "Manages explicit transactions (begin, commit, rollback)",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

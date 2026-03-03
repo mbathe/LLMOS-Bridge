@@ -138,7 +138,7 @@ class TestPermissionRisk:
     """PERMISSION_RISK maps all well-known permissions to a RiskLevel."""
 
     def test_has_expected_entries(self) -> None:
-        assert len(PERMISSION_RISK) == 26
+        assert len(PERMISSION_RISK) == 29
 
     def test_spot_check_mappings(self) -> None:
         assert PERMISSION_RISK[Permission.FILESYSTEM_READ] is RiskLevel.LOW

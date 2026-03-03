@@ -1,0 +1,76 @@
+[module]
+module_id = "triggers"
+version = "1.0.0"
+description = "Manage reactive triggers that fire IML plans in response to OS events, schedules, and conditions."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.triggers.module:TriggerModule"
+platforms = ["linux", "darwin", "windows"]
+requirements = []
+tags = ["triggers", "automation", "events", "cron", "reactive"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "register_trigger"
+description = "Register a new trigger that fires an IML plan when its condition is met."
+risk_level = "high"
+permission = "process.execute"
+
+[[module.actions]]
+name = "activate_trigger"
+description = "Enable and arm an existing trigger."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "deactivate_trigger"
+description = "Pause a trigger without deleting it."
+risk_level = "medium"
+permission = "power_user"
+
+[[module.actions]]
+name = "delete_trigger"
+description = "Permanently remove a trigger."
+risk_level = "high"
+permission = "process.execute"
+
+[[module.actions]]
+name = "list_triggers"
+description = "List all registered triggers with optional state/type filters."
+risk_level = "low"
+permission = "local_worker"
+
+[[module.actions]]
+name = "get_trigger"
+description = "Retrieve a single trigger by ID."
+risk_level = "low"
+permission = "local_worker"
+
+[module.capabilities]
+permissions = [
+    "process.execute",
+]
+side_effects = [
+    "Creates automated triggers that fire IML plans on OS events, schedules, and conditions",
+    "Activates and deactivates background watchers (filesystem, cron, process, resource)",
+    "Deletes trigger definitions from the TriggerDaemon",
+]
+events_emitted = [
+    "llmos.triggers.registered",
+    "llmos.triggers.activated",
+    "llmos.triggers.deactivated",
+    "llmos.triggers.deleted",
+    "llmos.triggers.fired",
+]
+events_subscribed = [
+    "llmos.plans.completed",
+    "llmos.plans.failed",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

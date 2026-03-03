@@ -17,6 +17,14 @@ Hierarchy:
     │   ├── SanitizationError
     │   ├── IntentVerificationError
     │   └── SuspiciousIntentError
+    ├── IdentityError
+    │   ├── AuthenticationError
+    │   ├── AuthorizationError
+    │   └── ApplicationNotFoundError
+    ├── ClusterError
+    │   ├── NodeUnreachableError
+    │   ├── NodeNotFoundError
+    │   └── QuotaExceededError
     ├── OrchestrationError
     │   ├── DAGCycleError
     │   ├── DependencyError
@@ -25,7 +33,15 @@ Hierarchy:
     │   ├── ModuleNotFoundError
     │   ├── ActionNotFoundError
     │   ├── ModuleLoadError
-    │   └── ActionExecutionError
+    │   ├── ActionExecutionError
+    │   ├── ModuleLifecycleError
+    │   ├── ServiceNotFoundError
+    │   ├── ActionDisabledError
+    │   └── WorkerError
+    │       ├── WorkerStartError
+    │       ├── WorkerCommunicationError
+    │       ├── WorkerCrashedError
+    │       └── VenvCreationError
     ├── PerceptionError
     │   ├── ScreenCaptureError
     │   └── OCRError
@@ -229,6 +245,86 @@ class InputScanRejectedError(SecurityError):
 
 
 # ---------------------------------------------------------------------------
+# Identity layer (multi-tenant)
+# ---------------------------------------------------------------------------
+
+
+class IdentityError(LLMOSError):
+    """Base for all identity/RBAC errors."""
+
+
+class AuthenticationError(IdentityError):
+    """API key authentication failed (missing, invalid, revoked, or expired)."""
+
+
+class AuthorizationError(IdentityError):
+    """Role-based access check failed — insufficient privileges."""
+
+    def __init__(self, role: str, required: str, resource: str = "") -> None:
+        msg = f"Role '{role}' insufficient (requires '{required}')"
+        if resource:
+            msg += f" for resource '{resource}'"
+        super().__init__(msg, context={"role": role, "required": required, "resource": resource})
+        self.role = role
+        self.required = required
+
+
+class ApplicationNotFoundError(IdentityError):
+    """No application with the given ID exists."""
+
+    def __init__(self, app_id: str) -> None:
+        super().__init__(
+            f"Application '{app_id}' not found",
+            context={"app_id": app_id},
+        )
+        self.app_id = app_id
+
+
+# ---------------------------------------------------------------------------
+# Cluster layer (distributed)
+# ---------------------------------------------------------------------------
+
+
+class ClusterError(LLMOSError):
+    """Base for all cluster/distributed errors."""
+
+
+class NodeUnreachableError(ClusterError):
+    """A remote node is not reachable."""
+
+    def __init__(self, node_id: str, reason: str = "") -> None:
+        super().__init__(
+            f"Node '{node_id}' is unreachable" + (f": {reason}" if reason else ""),
+            context={"node_id": node_id, "reason": reason},
+        )
+        self.node_id = node_id
+
+
+class NodeNotFoundError(ClusterError):
+    """No node with the given ID is registered."""
+
+    def __init__(self, node_id: str) -> None:
+        super().__init__(
+            f"Node '{node_id}' is not registered",
+            context={"node_id": node_id},
+        )
+        self.node_id = node_id
+
+
+class QuotaExceededError(ClusterError):
+    """Application resource quota exceeded."""
+
+    def __init__(self, app_id: str, resource: str, limit: int) -> None:
+        super().__init__(
+            f"Quota exceeded for app '{app_id}': {resource} (limit={limit})",
+            context={"app_id": app_id, "resource": resource, "limit": limit},
+        )
+        self.app_id = app_id
+        self.resource = resource
+        self.limit = limit
+
+
+# ---------------------------------------------------------------------------
 # Orchestration layer
 # ---------------------------------------------------------------------------
 
@@ -321,6 +417,113 @@ class ActionExecutionError(ModuleError):
             context={"module_id": module_id, "action": action, "cause": str(cause)},
         )
         self.cause = cause
+
+
+# -- Worker isolation errors (subprocess-based module isolation) --
+
+
+class WorkerError(ModuleError):
+    """Base for all isolated worker errors."""
+
+
+class WorkerStartError(WorkerError):
+    """The worker subprocess failed to start or complete handshake."""
+
+    def __init__(self, module_id: str, reason: str) -> None:
+        super().__init__(
+            f"Worker for '{module_id}' failed to start: {reason}",
+            context={"module_id": module_id, "reason": reason},
+        )
+
+
+class WorkerCommunicationError(WorkerError):
+    """JSON-RPC communication with the worker failed."""
+
+    def __init__(self, module_id: str, reason: str) -> None:
+        super().__init__(
+            f"Worker '{module_id}' communication error: {reason}",
+            context={"module_id": module_id, "reason": reason},
+        )
+
+
+class WorkerCrashedError(WorkerError):
+    """The worker subprocess terminated unexpectedly."""
+
+    def __init__(self, module_id: str, exit_code: int) -> None:
+        super().__init__(
+            f"Worker '{module_id}' crashed with exit code {exit_code}",
+            context={"module_id": module_id, "exit_code": exit_code},
+        )
+
+
+class VenvCreationError(WorkerError):
+    """Failed to create or validate a virtual environment."""
+
+    def __init__(self, module_id: str, reason: str) -> None:
+        super().__init__(
+            f"Venv creation for '{module_id}' failed: {reason}",
+            context={"module_id": module_id, "reason": reason},
+        )
+
+
+# -- Module Spec v2 errors --
+
+
+class ModuleLifecycleError(ModuleError):
+    """Invalid lifecycle state transition."""
+
+    def __init__(self, module_id: str, current_state: str, target_state: str) -> None:
+        super().__init__(
+            f"Module '{module_id}' cannot transition from "
+            f"'{current_state}' to '{target_state}'",
+            context={
+                "module_id": module_id,
+                "current_state": current_state,
+                "target_state": target_state,
+            },
+        )
+        self.module_id = module_id
+        self.current_state = current_state
+        self.target_state = target_state
+
+
+class ServiceNotFoundError(ModuleError):
+    """No service with this name is registered on the ServiceBus."""
+
+    def __init__(self, service: str) -> None:
+        super().__init__(
+            f"Service '{service}' is not registered",
+            context={"service": service},
+        )
+        self.service = service
+
+
+class ActionDisabledError(ModuleError):
+    """An action has been administratively disabled by the Module Manager."""
+
+    def __init__(self, module_id: str, action: str, reason: str = "") -> None:
+        msg = f"Action '{module_id}.{action}' is disabled"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(
+            msg,
+            context={"module_id": module_id, "action": action, "reason": reason},
+        )
+        self.module_id = module_id
+        self.action = action
+        self.reason = reason
+
+
+class PolicyViolationError(ModuleError):
+    """A module policy constraint was violated (cooldown, concurrency, etc.)."""
+
+    def __init__(self, module_id: str, violation: str) -> None:
+        super().__init__(
+            f"Policy violation for module '{module_id}': {violation}",
+            context={"module_id": module_id, "violation": violation},
+        )
+        self.module_id = module_id
+        self.violation = violation
 
 
 # ---------------------------------------------------------------------------

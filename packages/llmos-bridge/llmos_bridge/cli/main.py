@@ -4,6 +4,9 @@ Usage:
     llmos-bridge start
     llmos-bridge stop
     llmos-bridge status
+    llmos-bridge module validate <path>
+    llmos-bridge module sign <path> --key <key>
+    llmos-bridge module package <path>
     llmos-bridge modules list
     llmos-bridge modules inspect <module_id>
     llmos-bridge plans list
@@ -18,7 +21,7 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
-from llmos_bridge.cli.commands import daemon, modules, plans, schema
+from llmos_bridge.cli.commands import daemon, module_cmd, modules, plans, schema
 
 app = typer.Typer(
     name="llmos-bridge",
@@ -30,6 +33,7 @@ app = typer.Typer(
 console = Console()
 
 app.add_typer(daemon.app, name="daemon")
+app.add_typer(module_cmd.app, name="module")
 app.add_typer(modules.app, name="modules")
 app.add_typer(plans.app, name="plans")
 app.add_typer(schema.app, name="schema")

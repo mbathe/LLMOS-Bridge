@@ -59,6 +59,7 @@ class TriggerModule(BaseModule):
 
     MODULE_ID = "triggers"
     VERSION = "1.0.0"
+    MODULE_TYPE = "system"
     SUPPORTED_PLATFORMS = ["linux", "darwin", "windows"]
 
     def __init__(self) -> None:
@@ -159,6 +160,7 @@ class TriggerModule(BaseModule):
             "enabled": registered.enabled,
         }
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Enable automated execution trigger")
     @audit_trail("standard")
     async def _action_activate_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
@@ -166,6 +168,7 @@ class TriggerModule(BaseModule):
         await self._daemon.activate(params["trigger_id"])
         return {"trigger_id": params["trigger_id"], "state": "active"}
 
+    @requires_permission(Permission.PROCESS_EXECUTE, reason="Disable automated execution trigger")
     @audit_trail("standard")
     async def _action_deactivate_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
@@ -182,6 +185,7 @@ class TriggerModule(BaseModule):
         deleted = await self._daemon.delete(params["trigger_id"])
         return {"trigger_id": params["trigger_id"], "deleted": deleted}
 
+    @requires_permission(Permission.MODULE_READ, reason="Lists registered triggers")
     async def _action_list_triggers(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available")
@@ -226,6 +230,7 @@ class TriggerModule(BaseModule):
 
         return {"triggers": results, "count": len(results)}
 
+    @requires_permission(Permission.MODULE_READ, reason="Reads trigger configuration")
     async def _action_get_trigger(self, params: dict[str, Any]) -> Any:
         if self._daemon is None:
             return ActionResult(success=False, error="TriggerDaemon not available")

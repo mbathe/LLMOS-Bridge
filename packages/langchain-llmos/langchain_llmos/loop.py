@@ -245,6 +245,7 @@ class ReactivePlanLoop:
         verbose: bool = False,
         safeguards: SafeguardConfig | None = None,
         approval_mode: str = "auto",
+        session_config: dict[str, Any] | None = None,
     ) -> None:
         self._provider = provider
         self._daemon = daemon
@@ -255,6 +256,13 @@ class ReactivePlanLoop:
         self._verbose = verbose
         self._safeguards = safeguards or SafeguardConfig()
         self._approval_mode = approval_mode
+        # Session auto-management: create/delete a session for each run().
+        # Keys match create_session() keyword args:
+        #   app_id, expires_in_seconds, idle_timeout_seconds,
+        #   allowed_modules, permission_grants, permission_denials
+        self._session_config = session_config
+        # Progress log for SSE-streamed progress events.
+        self._progress_log: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -266,10 +274,42 @@ class ReactivePlanLoop:
         system_prompt: str,
         tools: list[ToolDefinition],
     ) -> AgentResult:
-        """Execute a task using the reactive plan loop."""
+        """Execute a task using the reactive plan loop.
+
+        If ``session_config`` was provided to the constructor, a session is
+        created before the loop starts and deleted (revoked) after the loop
+        finishes, whether it completes successfully or raises an exception.
+        All plan submissions in between carry the ``X-LLMOS-Session`` header.
+        """
         t0 = time.monotonic()
         all_steps: list[StepRecord] = []
         total_actions = 0
+
+        # Session lifecycle: create before the loop, clean up in finally.
+        _loop_session_id = await self._maybe_create_session()
+        try:
+            return await self._run_loop(
+                task=task,
+                system_prompt=system_prompt,
+                tools=tools,
+                t0=t0,
+                all_steps=all_steps,
+                total_actions=total_actions,
+            )
+        finally:
+            await self._maybe_delete_session(_loop_session_id)
+
+    async def _run_loop(
+        self,
+        *,
+        task: str,
+        system_prompt: str,
+        tools: list[ToolDefinition],
+        t0: float,
+        all_steps: list[StepRecord],
+        total_actions: int,
+    ) -> AgentResult:
+        """Inner loop implementation (separated to allow clean try/finally)."""
 
         # Augment system prompt with planning instructions.
         augmented_prompt = system_prompt + _PLANNING_INSTRUCTION
@@ -453,6 +493,50 @@ class ReactivePlanLoop:
         )
 
     # ------------------------------------------------------------------
+    # Session lifecycle helpers
+    # ------------------------------------------------------------------
+
+    async def _maybe_create_session(self) -> str | None:
+        """Create a daemon session if ``session_config`` is set.
+
+        Returns the new ``session_id`` (or ``None`` if sessions are not
+        configured or creation fails).  On success the session_id is also
+        injected into ``self._daemon.session_id`` so all subsequent plan
+        submissions include ``X-LLMOS-Session`` automatically.
+        """
+        if not self._session_config:
+            return None
+        try:
+            session = await self._daemon.create_session(**self._session_config)
+            sid = session.get("session_id")
+            if sid:
+                self._daemon.session_id = sid
+                if self._verbose:
+                    print(f"  [session] Created: {sid}")
+            return sid
+        except Exception as exc:
+            if self._verbose:
+                print(f"  [session] Warning: failed to create session — {exc}")
+            return None
+
+    async def _maybe_delete_session(self, session_id: str | None) -> None:
+        """Delete the session created by ``_maybe_create_session``.
+
+        Always clears ``self._daemon.session_id`` so future runs start clean,
+        even if the DELETE call fails (e.g. daemon already restarted).
+        """
+        if not session_id:
+            return
+        self._daemon.session_id = None
+        try:
+            await self._daemon.delete_session(session_id)
+            if self._verbose:
+                print(f"  [session] Deleted: {session_id}")
+        except Exception as exc:
+            if self._verbose:
+                print(f"  [session] Warning: failed to delete session {session_id} — {exc}")
+
+    # ------------------------------------------------------------------
     # LLM interaction
     # ------------------------------------------------------------------
 
@@ -586,8 +670,9 @@ class ReactivePlanLoop:
         except Exception as exc:
             return {"error": f"Plan submission failed: {exc}"}, []
 
-        # Poll for completion.
-        result = await self._poll_plan(plan_id)
+        # Stream (SSE) or fall back to polling.
+        self._progress_log.clear()
+        result = await self._stream_plan(plan_id)
         total_ms = (time.monotonic() - t0) * 1000
 
         # Build step records from results.
@@ -625,6 +710,61 @@ class ReactivePlanLoop:
             await asyncio.sleep(0.5)
 
         return {"error": f"Plan timed out after {max_wait}s", "status": "failed"}
+
+    async def _stream_plan(
+        self, plan_id: str, max_wait: float = 300.0
+    ) -> dict[str, Any]:
+        """Stream plan events via SSE, falling back to polling on failure.
+
+        When the optional ``httpx-sse`` package is installed, connects to the
+        daemon's ``GET /plans/{plan_id}/stream`` SSE endpoint for real-time
+        event streaming.  Progress events are collected in ``_progress_log``
+        for inclusion in the observation text.
+
+        Falls back to ``_poll_plan()`` when:
+          - ``httpx-sse`` is not installed
+          - SSE connection fails
+        """
+        try:
+            import httpx
+            import httpx_sse  # noqa: F401 — presence check
+        except ImportError:
+            return await self._poll_plan(plan_id, max_wait)
+
+        url = f"{self._daemon._base_url}/plans/{plan_id}/stream"
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(max_wait + 10)) as client:
+                async with httpx_sse.aconnect_sse(client, "GET", url) as source:
+                    async for sse in source.aiter_sse():
+                        if sse.event == "action_progress":
+                            try:
+                                data = json.loads(sse.data)
+                                self._progress_log.append(data)
+                                if self._verbose:
+                                    pct = data.get("percent", "?")
+                                    msg = data.get("message", "")
+                                    print(f"  [progress] {pct}% {msg}")
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                        elif sse.event in (
+                            "action_result_ready",
+                            "action_intermediate",
+                            "action_status",
+                        ):
+                            # Collect for observation but keep streaming.
+                            try:
+                                data = json.loads(sse.data)
+                                self._progress_log.append(data)
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                        elif sse.event in ("plan_completed", "plan_failed"):
+                            # Terminal — fetch full plan state.
+                            return await self._daemon.get_plan(plan_id)
+        except Exception:
+            # SSE connection failed — fall back to polling.
+            pass
+
+        return await self._poll_plan(plan_id, max_wait)
 
     async def _handle_approval(
         self, plan_id: str, action_data: dict[str, Any]
@@ -775,6 +915,20 @@ class ReactivePlanLoop:
             lines.append("### Results")
             lines.extend(result_summaries)
             lines.append("")
+
+        # Include progress log from SSE streaming (if any).
+        if self._progress_log:
+            progress_entries = [
+                e for e in self._progress_log if e.get("event") == "action_progress"
+            ]
+            if progress_entries:
+                lines.append("### Progress Updates")
+                for entry in progress_entries[-10:]:  # Last 10 entries.
+                    pct = entry.get("percent", "?")
+                    msg = entry.get("message", "")
+                    aid = entry.get("action_id", "?")
+                    lines.append(f"- **{aid}**: {pct}% {msg}")
+                lines.append("")
 
         if failed_details:
             lines.append("### Failures")

@@ -2,14 +2,9 @@
 
 Design goals
 ------------
-Phase 1 (today): LLMOS Bridge runs on a single machine.  ``NodeRegistry``
-holds only a ``LocalNode`` that delegates directly to the ``ModuleRegistry``.
-All existing behaviour is preserved — ``target_node=None`` is resolved to
-the local node, which is identical to the pre-distributed code path.
-
-Phase 4 (future): ``RemoteNode`` implements ``BaseNode`` over HTTP/gRPC to
-a remote LLMOS instance.  ``NodeRegistry.register_remote()`` adds it.
-The executor never changes — it always calls ``node.execute_action()``.
+LLMOS Bridge supports single-machine (standalone) and multi-node (orchestrator)
+modes.  ``NodeRegistry`` routes action dispatch to either a ``LocalNode``
+(delegates to ``ModuleRegistry``) or a ``RemoteNode`` (HTTP to a remote daemon).
 
 Standalone guarantee
 --------------------
@@ -21,9 +16,8 @@ no-op for single-machine deployments.
 
 Interface contract
 ------------------
-Any future ``RemoteNode`` implementation MUST implement the same
-``BaseNode`` interface — specifically ``execute_action()``.  The executor
-is the only consumer of this interface, and it calls only that method.
+Any ``BaseNode`` implementation MUST implement ``execute_action()``.  The
+executor is the only consumer of this interface, and it calls only that method.
 """
 
 from __future__ import annotations
@@ -35,6 +29,12 @@ from llmos_bridge.logging import get_logger
 
 if TYPE_CHECKING:
     from llmos_bridge.modules.registry import ModuleRegistry
+    from llmos_bridge.orchestration.routing import (
+        ActiveActionCounter,
+        CapabilityRouter,
+        NodeQuarantine,
+        NodeSelector,
+    )
 
 log = get_logger(__name__)
 
@@ -47,11 +47,8 @@ log = get_logger(__name__)
 class BaseNode(ABC):
     """Abstract interface for a node that can execute IML actions.
 
-    Phase 1 implementation: ``LocalNode`` — delegates to ``ModuleRegistry``.
-    Phase 4 implementation: ``RemoteNode`` — sends actions over HTTP/gRPC
-    to a remote LLMOS Bridge instance.
-
-    Both implementations are interchangeable from the executor's perspective.
+    Implementations: ``LocalNode`` (in-process), ``RemoteNode`` (HTTP).
+    Both are interchangeable from the executor's perspective.
     """
 
     @property
@@ -91,7 +88,7 @@ class BaseNode(ABC):
 
 
 # ---------------------------------------------------------------------------
-# LocalNode — Phase 1 implementation
+# LocalNode — in-process implementation
 # ---------------------------------------------------------------------------
 
 
@@ -135,15 +132,6 @@ class LocalNode(BaseNode):
 class NodeRegistry:
     """Maps node IDs to BaseNode instances.
 
-    Phase 1: contains only the single ``LocalNode``.
-    Phase 4: ``register_remote()`` populates additional ``RemoteNode``
-    instances discovered via mDNS or explicit config.
-
-    Thread/async safety: registrations happen at startup before any
-    concurrent requests arrive, so no lock is needed for Phase 1.
-    Phase 4 should add an asyncio.Lock around mutations if nodes can
-    join/leave at runtime.
-
     Usage::
 
         registry = NodeRegistry(LocalNode(module_registry))
@@ -152,7 +140,7 @@ class NodeRegistry:
         node = registry.resolve(None)
         node = registry.resolve("local")
 
-        # Phase 4 — resolves to a remote node
+        # Multi-node — resolves to a remote node
         node = registry.resolve("node_lyon_2")
         result = await node.execute_action("filesystem", "read_file", params)
     """
@@ -160,6 +148,11 @@ class NodeRegistry:
     def __init__(self, local_node: LocalNode) -> None:
         self._nodes: dict[str, BaseNode] = {local_node.node_id: local_node}
         self._local = local_node
+
+    @property
+    def local_node(self) -> LocalNode:
+        """Return the local node."""
+        return self._local
 
     def resolve(self, target: str | None) -> BaseNode:
         """Return the BaseNode for *target*.
@@ -180,30 +173,78 @@ class NodeRegistry:
             )
         return node
 
-    def register(self, node: BaseNode) -> None:
-        """Register a node.  Overwrites any existing entry with the same ID.
+    def get_node(self, node_id: str) -> BaseNode | None:
+        """Look up a node by ID without fallback.  Returns None if not found."""
+        return self._nodes.get(node_id)
 
-        Called at startup for the local node, and at Phase 4 runtime for
-        remote nodes discovered via mDNS or explicit config.
-        """
+    def register(self, node: BaseNode) -> None:
+        """Register a node.  Overwrites any existing entry with the same ID."""
         self._nodes[node.node_id] = node
         log.info("node_registered", node_id=node.node_id)
 
-    def unregister(self, node_id: str) -> None:
-        """Remove a node from the registry (e.g. when it goes offline).
+    def unregister(self, node_id: str) -> bool:
+        """Remove a node from the registry.
 
         The local node cannot be unregistered.
+        Returns True if a node was actually removed.
         """
         if node_id == self._local.node_id:
             log.warning("node_unregister_local_ignored")
-            return
+            return False
         removed = self._nodes.pop(node_id, None)
         if removed is not None:
             log.info("node_unregistered", node_id=node_id)
+            return True
+        return False
 
     def list_nodes(self) -> list[str]:
         """Return all registered node IDs."""
         return list(self._nodes)
+
+    def get_remote_nodes(self) -> list[BaseNode]:
+        """Return all non-local nodes."""
+        return [n for nid, n in self._nodes.items() if nid != self._local.node_id]
+
+    def resolve_for_action(
+        self,
+        target: str | None,
+        module_id: str,
+        router: "CapabilityRouter | None" = None,
+        selector: "NodeSelector | None" = None,
+        quarantine: "NodeQuarantine | None" = None,
+        load_tracker: "ActiveActionCounter | None" = None,
+    ) -> BaseNode:
+        """Smart resolve: explicit target → direct lookup; None → auto-route.
+
+        Routing order:
+        1. Explicit *target* — direct lookup (backward compatible).
+        2. No *router* — fallback to local (standalone behaviour).
+        3. Smart routing: find capable nodes → exclude quarantined → select best.
+        4. No capable node found → fallback to local.
+        """
+        # 1. Explicit target — direct lookup (backward compat).
+        if target is not None:
+            return self.resolve(target)
+
+        # 2. No router — standalone, always local.
+        if router is None:
+            return self._local
+
+        # 3. Smart routing.
+        candidates = router.find_capable_nodes(module_id)
+        if quarantine:
+            candidates = [
+                c for c in candidates if not quarantine.is_quarantined(c.node_id)
+            ]
+        if not candidates:
+            return self._local  # Fallback to local even if no capability.
+
+        node = (
+            selector.select(candidates, module_id, load_tracker)
+            if selector
+            else candidates[0]
+        )
+        return node or self._local
 
     def __len__(self) -> int:
         return len(self._nodes)

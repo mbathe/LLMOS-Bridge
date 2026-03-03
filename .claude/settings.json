@@ -95,7 +95,9 @@
       "Bash(xargs cat)",
       "Bash(python -m pytest packages/langchain-llmos/tests/ -v --no-cov --tb=short)",
       "Bash(python -c \"import openai; print\\(''openai installed:'', openai.__version__\\)\")",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "WebFetch(domain:alexflint.github.io)",
+      "Bash(curl -s http://localhost:40000/health)"
     ]
   }
 }

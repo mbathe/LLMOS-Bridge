@@ -1,0 +1,109 @@
+[module]
+module_id = "gui"
+version = "1.0.0"
+description = "Desktop GUI automation via PyAutoGUI — mouse clicks, keyboard input, image matching, screenshots, OCR, and window management."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.gui.module:GUIModule"
+platforms = ["linux", "macos", "windows"]
+requirements = ["pyautogui"]
+tags = ["gui", "automation", "desktop", "mouse", "keyboard", "screenshot"]
+sandbox_level = "strict"
+module_type = "daemon"
+
+[[module.actions]]
+name = "click_position"
+description = "Click at specific screen coordinates."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "click_image"
+description = "Find a template image on screen and click its center."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "double_click"
+description = "Double-click at coordinates or on an image."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "right_click"
+description = "Right-click at coordinates or on an image."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "type_text"
+description = "Type text as keyboard input."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "key_press"
+description = "Press a key or key combination (hotkey)."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "scroll"
+description = "Scroll the mouse wheel at the given position."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "drag_drop"
+description = "Drag from one position to another."
+risk_level = "high"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "find_on_screen"
+description = "Find a template image on the screen and return its location."
+risk_level = "low"
+permission = "gui.screen_capture"
+
+[[module.actions]]
+name = "get_screen_text"
+description = "Extract text from the screen via OCR (Tesseract)."
+risk_level = "low"
+permission = "gui.screen_capture"
+
+[[module.actions]]
+name = "get_window_info"
+description = "Get information about windows (active or all)."
+risk_level = "low"
+permission = "gui.screen_capture"
+
+[[module.actions]]
+name = "focus_window"
+description = "Find and focus a window by title pattern."
+risk_level = "medium"
+permission = "gui.keyboard"
+
+[[module.actions]]
+name = "take_screenshot"
+description = "Take a screenshot of the screen or a region."
+risk_level = "low"
+permission = "gui.screen_capture"
+
+[module.capabilities]
+permissions = [
+    "gui_control",
+    "screen_capture",
+]
+side_effects = [
+    "screen_capture",
+    "keyboard_input",
+    "mouse_control",
+    "window_management",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

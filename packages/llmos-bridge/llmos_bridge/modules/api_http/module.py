@@ -36,6 +36,7 @@ from typing import Any
 from llmos_bridge.modules.api_http._ssrf import SSRFError, validate_url
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import (
     audit_trail,
     data_classification,
@@ -79,6 +80,16 @@ class ApiHttpModule(BaseModule):
         self._sessions: dict[str, Any] = {}  # session_id -> httpx.AsyncClient
         self._session_lock = asyncio.Lock()
         super().__init__()
+
+    async def on_stop(self) -> None:
+        """Close all open HTTP sessions on module shutdown."""
+        async with self._session_lock:
+            for sid, client in list(self._sessions.items()):
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+            self._sessions.clear()
 
     # ------------------------------------------------------------------
     # Dependency check
@@ -278,8 +289,10 @@ class ApiHttpModule(BaseModule):
     # File transfer
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.NETWORK_READ, reason="Download file")
     async def _action_download_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = DownloadFileParams.model_validate(params)
         self._check_ssrf(p.url)
         destination = Path(p.destination)
@@ -294,6 +307,9 @@ class ApiHttpModule(BaseModule):
         start = time.monotonic()
         bytes_downloaded = 0
 
+        if stream:
+            await stream.emit_status("connecting")
+
         async with _httpx.AsyncClient(
             verify=p.verify_ssl,
             timeout=p.timeout,
@@ -301,20 +317,32 @@ class ApiHttpModule(BaseModule):
         ) as client:
             async with client.stream("GET", p.url, headers=p.headers) as response:
                 response.raise_for_status()
+                total = 0
+                if hasattr(response, "headers"):
+                    total = int(response.headers.get("content-length", 0))
+                if stream:
+                    await stream.emit_status("downloading")
                 with open(destination, "wb") as fh:
                     async for chunk in response.aiter_bytes(p.chunk_size):
                         fh.write(chunk)
                         bytes_downloaded += len(chunk)
+                        if stream and total > 0:
+                            pct = min(99.0, (bytes_downloaded / total) * 100)
+                            await stream.emit_progress(pct, f"{bytes_downloaded}/{total} bytes")
 
         elapsed_ms = (time.monotonic() - start) * 1000
+        if stream:
+            await stream.emit_progress(100, f"{bytes_downloaded} bytes downloaded")
         return {
             "bytes_downloaded": bytes_downloaded,
             "destination": str(destination),
             "elapsed_ms": elapsed_ms,
         }
 
+    @streams_progress
     @requires_permission(Permission.NETWORK_SEND, reason="Upload file")
     async def _action_upload_file(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = UploadFileParams.model_validate(params)
         self._check_ssrf(p.url)
         file_path = Path(p.file_path)
@@ -322,11 +350,15 @@ class ApiHttpModule(BaseModule):
         if not file_path.exists():
             raise FileNotFoundError(f"File to upload not found: {file_path}")
 
+        if stream:
+            await stream.emit_status("reading_file")
         file_bytes = await asyncio.to_thread(file_path.read_bytes)
 
         files = {p.field_name: (file_path.name, file_bytes)}
         data = dict(p.extra_fields)
 
+        if stream:
+            await stream.emit_status("uploading")
         async with _httpx.AsyncClient(
             verify=p.verify_ssl,
             timeout=p.timeout,
@@ -339,6 +371,8 @@ class ApiHttpModule(BaseModule):
                 data=data,
             )
 
+        if stream:
+            await stream.emit_progress(100, f"Upload complete ({len(file_bytes)} bytes)")
         return self._build_response(response)
 
     # ------------------------------------------------------------------
@@ -624,13 +658,20 @@ class ApiHttpModule(BaseModule):
     # Email — outbound (SMTP)
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.EMAIL_SEND, reason="Send email")
     @sensitive_action(RiskLevel.HIGH, irreversible=True)
     @rate_limited(calls_per_minute=30)
     @audit_trail("detailed")
     async def _action_send_email(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = SendEmailParams.model_validate(params)
-        return await asyncio.to_thread(self._send_email_sync, p)
+        if stream:
+            await stream.emit_status("connecting_smtp")
+        result = await asyncio.to_thread(self._send_email_sync, p)
+        if stream:
+            await stream.emit_progress(100, "Email sent")
+        return result
 
     def _send_email_sync(self, p: SendEmailParams) -> dict[str, Any]:
         # Build the MIME message
@@ -691,11 +732,17 @@ class ApiHttpModule(BaseModule):
     # Email — inbound (IMAP)
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.EMAIL_READ, reason="Read email messages")
     @data_classification(DataClassification.CONFIDENTIAL)
     async def _action_read_email(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ReadEmailParams.model_validate(params)
+        if stream:
+            await stream.emit_status("connecting_imap")
         messages = await asyncio.to_thread(self._read_email_sync, p)
+        if stream:
+            await stream.emit_progress(100, f"{len(messages)} messages fetched")
         return {"messages": messages, "count": len(messages)}
 
     def _read_email_sync(self, p: ReadEmailParams) -> list[dict[str, Any]]:
@@ -806,9 +853,11 @@ class ApiHttpModule(BaseModule):
     # Webhooks
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(Permission.NETWORK_SEND, reason="Trigger webhook")
     @audit_trail("standard")
     async def _action_webhook_trigger(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = WebhookTriggerParams.model_validate(params)
         self._check_ssrf(p.url)
 
@@ -835,6 +884,9 @@ class ApiHttpModule(BaseModule):
 
         for attempt in range(1, max_attempts + 1):
             attempts = attempt
+            if stream:
+                pct = ((attempt - 1) / max_attempts) * 100
+                await stream.emit_progress(pct, f"Attempt {attempt}/{max_attempts}")
             try:
                 async with _httpx.AsyncClient(
                     verify=p.verify_ssl,
@@ -886,6 +938,7 @@ class ApiHttpModule(BaseModule):
     # Session management
     # ------------------------------------------------------------------
 
+    @requires_permission(Permission.NETWORK_READ, reason="Configures HTTP session settings")
     async def _action_set_session(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSessionParams.model_validate(params)
         if p.base_url:
@@ -919,6 +972,7 @@ class ApiHttpModule(BaseModule):
             "created": True,
         }
 
+    @requires_permission(Permission.NETWORK_READ, reason="Closes HTTP session")
     async def _action_close_session(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CloseSessionParams.model_validate(params)
 

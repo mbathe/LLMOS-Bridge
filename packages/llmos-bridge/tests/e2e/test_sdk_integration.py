@@ -104,7 +104,7 @@ class TestSDKClientIntegration:
         health = sdk_client.health()
         assert health["status"] == "ok"
         assert "version" in health
-        assert health["modules_loaded"] == 2  # filesystem + os_exec
+        assert health["modules_loaded"] == 3  # filesystem + os_exec + module_manager
 
     def test_list_modules(self, sdk_client) -> None:
         modules = sdk_client.list_modules()

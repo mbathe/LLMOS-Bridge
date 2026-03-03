@@ -1,0 +1,226 @@
+[module]
+module_id = "word"
+version = "1.0.0"
+description = "Create, read, edit, and export Microsoft Word (.docx) documents. Supports paragraphs, tables, images, headers/footers, hyperlinks, bookmarks, table of contents, find-and-replace, and PDF export."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.word.module:WordModule"
+platforms = ["all"]
+requirements = ["python-docx>=1.0"]
+tags = ["word", "docx", "document", "office"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+# -- Document lifecycle -------------------------------------------------------
+
+[[module.actions]]
+name = "open_document"
+description = "Open a .docx file and return its structure summary."
+risk_level = "medium"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "create_document"
+description = "Create a new blank Word document, set metadata and default font, and save it."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "save_document"
+description = "Save a cached document to disk."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "set_document_properties"
+description = "Update core document properties (title, author, subject, etc.)."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "get_document_meta"
+description = "Return all core_properties of the document."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "set_margins"
+description = "Set page margins for a section."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "set_default_font"
+description = "Change the Normal style font name and/or size for the whole document."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Read operations ----------------------------------------------------------
+
+[[module.actions]]
+name = "read_document"
+description = "Extract full document content -- paragraphs, optionally tables and headers/footers."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "list_paragraphs"
+description = "List all paragraphs with their index, text, style and empty status."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "list_tables"
+description = "List all tables with index, row/col counts, and first cell preview."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "extract_text"
+description = "Extract all text from the document as a single string."
+risk_level = "low"
+permission = "filesystem_read"
+
+[[module.actions]]
+name = "count_words"
+description = "Count total words across all paragraph and table cell text."
+risk_level = "low"
+permission = "filesystem_read"
+
+# -- Paragraph operations -----------------------------------------------------
+
+[[module.actions]]
+name = "write_paragraph"
+description = "Add a paragraph with text, style, and formatting."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "format_text"
+description = "Apply character-level formatting to a specific run within a paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "apply_style"
+description = "Apply a named Word style to a paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "delete_paragraph"
+description = "Remove a paragraph from the document."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "insert_page_break"
+description = "Insert a page break, optionally after a specific paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "insert_section_break"
+description = "Insert a section break of the given type."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "insert_list"
+description = "Insert a bulleted or numbered list."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Table operations ---------------------------------------------------------
+
+[[module.actions]]
+name = "insert_table"
+description = "Insert a table with given dimensions, optional data, style, and header row."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "modify_table_cell"
+description = "Update text and formatting of a specific table cell."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_table_row"
+description = "Append a new row to an existing table."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Rich content -------------------------------------------------------------
+
+[[module.actions]]
+name = "insert_image"
+description = "Insert an image into the document with optional width, caption, and alignment."
+risk_level = "medium"
+permission = "filesystem_read, filesystem_write"
+
+[[module.actions]]
+name = "insert_hyperlink"
+description = "Add a clickable hyperlink to an existing paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_bookmark"
+description = "Add a named bookmark to a paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "add_comment"
+description = "Add a comment to a paragraph."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[[module.actions]]
+name = "insert_toc"
+description = "Insert a Table of Contents field code."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Header / footer ----------------------------------------------------------
+
+[[module.actions]]
+name = "add_header_footer"
+description = "Set header and/or footer text for a section, with optional page numbers."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Search & replace ---------------------------------------------------------
+
+[[module.actions]]
+name = "find_replace"
+description = "Find and replace all occurrences of a text string throughout the document."
+risk_level = "medium"
+permission = "filesystem_write"
+
+# -- Export -------------------------------------------------------------------
+
+[[module.actions]]
+name = "export_to_pdf"
+description = "Export the document to PDF using LibreOffice headless."
+risk_level = "medium"
+permission = "filesystem_write"
+
+[module.capabilities]
+permissions = [
+    "filesystem_read",
+    "filesystem_write",
+]
+side_effects = [
+    "Creates, modifies, and saves Word document files on disk",
+    "Reads document text, structure, and metadata",
+    "Exports documents to PDF format via LibreOffice",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

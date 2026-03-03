@@ -1,0 +1,84 @@
+[module]
+module_id = "os_exec"
+version = "1.0.0"
+description = "Execute system commands, manage processes, and query system information."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.os_exec.module:OSExecModule"
+platforms = ["all"]
+requirements = ["psutil"]
+tags = ["system", "process", "os"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "run_command"
+description = "Run an external command. Command must be a list, never a shell string. Returns stdout, stderr, and return code."
+risk_level = "medium"
+permission = "os.process.execute"
+
+[[module.actions]]
+name = "list_processes"
+description = "List running processes with optional name filtering."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "kill_process"
+description = "Send a signal (SIGTERM or SIGKILL) to a process by PID."
+risk_level = "high"
+permission = "os.process.kill"
+
+[[module.actions]]
+name = "get_process_info"
+description = "Get detailed information about a running process by PID."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "open_application"
+description = "Launch an application as a detached process."
+risk_level = "medium"
+permission = "os.process.execute"
+
+[[module.actions]]
+name = "close_application"
+description = "Close all processes matching an application name."
+risk_level = "medium"
+permission = "os.process.kill"
+
+[[module.actions]]
+name = "set_env_var"
+description = "Set an environment variable in the current process scope."
+risk_level = "medium"
+permission = "local_worker"
+
+[[module.actions]]
+name = "get_env_var"
+description = "Read the value of an environment variable."
+risk_level = "low"
+permission = "readonly"
+
+[[module.actions]]
+name = "get_system_info"
+description = "Get CPU, memory, disk, and OS information."
+risk_level = "low"
+permission = "readonly"
+
+[module.capabilities]
+permissions = [
+    "os.process.execute",
+    "os.process.kill",
+]
+side_effects = [
+    "Executes arbitrary system commands as subprocesses",
+    "Launches and terminates applications and processes",
+    "Modifies environment variables in the daemon process",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

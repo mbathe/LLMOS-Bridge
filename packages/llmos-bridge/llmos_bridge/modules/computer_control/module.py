@@ -42,6 +42,7 @@ from llmos_bridge.protocol.params.computer_control import (
     TypeIntoElementParams,
     WaitForElementParams,
 )
+from llmos_bridge.orchestration.streaming_decorators import streams_progress
 from llmos_bridge.security.decorators import (
     audit_trail,
     rate_limited,
@@ -62,6 +63,7 @@ class ComputerControlModule(BaseModule):
 
     MODULE_ID = "computer_control"
     VERSION = "1.0.0"
+    MODULE_TYPE = "system"
     SUPPORTED_PLATFORMS = [Platform.LINUX, Platform.MACOS, Platform.WINDOWS]
 
     def __init__(self) -> None:
@@ -218,6 +220,7 @@ class ComputerControlModule(BaseModule):
     # Actions — Semantic GUI automation
     # ------------------------------------------------------------------
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -227,9 +230,14 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     @audit_trail("standard")
     async def _action_click_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ClickElementParams.model_validate(params)
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         parse_result = await self._capture_and_parse()
+        if stream:
+            await stream.emit_status("resolving_element")
         resolved = self._resolve_element(p.target_description, parse_result, p.element_type)
 
         if resolved is None:
@@ -251,6 +259,7 @@ class ComputerControlModule(BaseModule):
             "click_type": p.click_type,
         }
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -260,9 +269,14 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     @audit_trail("standard")
     async def _action_type_into_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = TypeIntoElementParams.model_validate(params)
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         parse_result = await self._capture_and_parse()
+        if stream:
+            await stream.emit_status("resolving_element")
         resolved = self._resolve_element(p.target_description, parse_result, p.element_type)
 
         if resolved is None:
@@ -289,21 +303,31 @@ class ComputerControlModule(BaseModule):
             "length": len(p.text),
         }
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Polls screen for element appearance")
     @rate_limited(calls_per_minute=30)
     @audit_trail("standard")
     async def _action_wait_for_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = WaitForElementParams.model_validate(params)
 
         start = time.monotonic()
         deadline = start + p.timeout
+        poll_count = 0
 
         while time.monotonic() < deadline:
+            poll_count += 1
+            elapsed = time.monotonic() - start
+            if stream:
+                pct = min(99.0, (elapsed / p.timeout) * 100)
+                await stream.emit_progress(pct, f"Poll {poll_count}, {elapsed:.1f}s elapsed")
             parse_result = await self._capture_and_parse()
             resolved = self._resolve_element(p.target_description, parse_result, p.element_type)
 
             if resolved is not None:
                 elapsed_ms = (time.monotonic() - start) * 1000
+                if stream:
+                    await stream.emit_progress(100, "Element found")
                 return {
                     "found": True,
                     **self._element_dict(resolved),
@@ -321,13 +345,19 @@ class ComputerControlModule(BaseModule):
             "wait_time_ms": round(elapsed_ms, 1),
         }
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Captures and parses screen content")
     @audit_trail("standard")
     async def _action_read_screen(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ReadScreenParams.model_validate(params)
         start = time.monotonic()
 
+        if stream:
+            await stream.emit_status("capturing_and_parsing")
         parse_result = await self._capture_and_parse()
+        if stream:
+            await stream.emit_progress(100, f"{len(parse_result.elements)} elements detected")
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
@@ -361,6 +391,7 @@ class ComputerControlModule(BaseModule):
 
         return result
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -370,9 +401,14 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     @audit_trail("standard")
     async def _action_find_and_interact(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = FindAndInteractParams.model_validate(params)
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         parse_result = await self._capture_and_parse()
+        if stream:
+            await stream.emit_status("resolving_element")
         resolved = self._resolve_element(p.target_description, parse_result)
 
         if resolved is None:
@@ -405,11 +441,15 @@ class ComputerControlModule(BaseModule):
             "interaction": p.interaction,
         }
 
+    @streams_progress
     @requires_permission(Permission.SCREEN_CAPTURE, reason="Finds element details")
     @audit_trail("standard")
     async def _action_get_element_info(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = GetElementInfoParams.model_validate(params)
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         parse_result = await self._capture_and_parse()
         resolved = self._resolve_element(p.target_description, parse_result, p.element_type)
 
@@ -433,6 +473,7 @@ class ComputerControlModule(BaseModule):
             "alternatives": alternatives,
         }
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -442,13 +483,19 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=20)
     @audit_trail("standard")
     async def _action_execute_gui_sequence(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ExecuteGuiSequenceParams.model_validate(params)
+        total = len(p.steps)
 
         results: list[dict[str, Any]] = []
         for i, step in enumerate(p.steps):
             action = step.get("action", "click_element")
             target = step.get("target", "")
             step_params = step.get("params", {})
+
+            if stream:
+                pct = (i / total) * 100
+                await stream.emit_progress(pct, f"Step {i + 1}/{total}: {action} '{target}'")
 
             # Build params dict for the sub-action.
             sub_params = {"target_description": target, **step_params}
@@ -463,7 +510,7 @@ class ComputerControlModule(BaseModule):
                 if p.stop_on_failure and failed:
                     return {
                         "completed": i,
-                        "total": len(p.steps),
+                        "total": total,
                         "stopped_at_step": i,
                         "results": results,
                     }
@@ -472,17 +519,20 @@ class ComputerControlModule(BaseModule):
                 if p.stop_on_failure:
                     return {
                         "completed": i,
-                        "total": len(p.steps),
+                        "total": total,
                         "stopped_at_step": i,
                         "results": results,
                     }
 
+        if stream:
+            await stream.emit_progress(100, f"All {total} steps completed")
         return {
-            "completed": len(p.steps),
-            "total": len(p.steps),
+            "completed": total,
+            "total": total,
             "results": results,
         }
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -491,9 +541,14 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=60)
     @audit_trail("standard")
     async def _action_move_to_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = MoveToElementParams.model_validate(params)
 
+        if stream:
+            await stream.emit_status("capturing_screen")
         parse_result = await self._capture_and_parse()
+        if stream:
+            await stream.emit_status("resolving_element")
         resolved = self._resolve_element(p.target_description, parse_result, p.element_type)
 
         if resolved is None:
@@ -512,6 +567,7 @@ class ComputerControlModule(BaseModule):
             **self._element_dict(resolved),
         }
 
+    @streams_progress
     @requires_permission(
         Permission.SCREEN_CAPTURE,
         Permission.KEYBOARD,
@@ -520,16 +576,22 @@ class ComputerControlModule(BaseModule):
     @rate_limited(calls_per_minute=30)
     @audit_trail("standard")
     async def _action_scroll_to_element(self, params: dict[str, Any]) -> dict[str, Any]:
+        stream = params.pop("_stream", None)
         p = ScrollToElementParams.model_validate(params)
 
         gui = self._get_gui_module()
         scroll_amount = 3 if p.direction == "down" else -3
 
         for i in range(p.max_scrolls):
+            if stream:
+                pct = (i / p.max_scrolls) * 100
+                await stream.emit_progress(pct, f"Scroll {i + 1}/{p.max_scrolls}")
             parse_result = await self._capture_and_parse()
             resolved = self._resolve_element(p.target_description, parse_result)
 
             if resolved is not None:
+                if stream:
+                    await stream.emit_progress(100, "Element found")
                 return {
                     "found": True,
                     **self._element_dict(resolved),

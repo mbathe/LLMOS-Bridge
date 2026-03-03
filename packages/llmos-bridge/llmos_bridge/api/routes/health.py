@@ -46,9 +46,10 @@ async def health(
     scanner_status: dict[str, str] | None = None
     if scanner_pipeline is not None:
         try:
+            reg = scanner_pipeline.registry
             scanner_status = {
-                s.scanner_id: "enabled" if s.enabled else "disabled"
-                for s in scanner_pipeline.scanners
+                s.scanner_id: "enabled" if reg.is_enabled(s.scanner_id) else "disabled"
+                for s in reg.list_all()
             }
         except Exception:
             scanner_status = {"error": "unavailable"}

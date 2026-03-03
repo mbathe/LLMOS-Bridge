@@ -60,6 +60,7 @@ async def get_module(
             permission_required=a.permission_required,
             platforms=a.platforms,
             examples=a.examples,
+            os_permissions=a.permissions,
         )
         for a in manifest.actions
     ]

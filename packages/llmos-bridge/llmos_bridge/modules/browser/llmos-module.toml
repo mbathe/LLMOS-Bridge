@@ -1,0 +1,110 @@
+[module]
+module_id = "browser"
+version = "1.0.0"
+description = "Web browser automation via Playwright — navigate, click, fill forms, extract content, take screenshots, and execute JavaScript."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.browser.module:BrowserModule"
+platforms = ["linux", "macos", "windows"]
+requirements = ["playwright"]
+tags = ["browser", "web", "automation", "playwright", "scraping"]
+sandbox_level = "strict"
+module_type = "daemon"
+
+[[module.actions]]
+name = "open_browser"
+description = "Launch a browser instance (Chromium, Firefox, or WebKit)."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "navigate_to"
+description = "Navigate to a URL and wait for page load."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "click_element"
+description = "Click an element matching a CSS selector or XPath."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "fill_input"
+description = "Fill a text input or textarea with a value."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "submit_form"
+description = "Click a submit button and wait for navigation."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "select_option"
+description = "Select option(s) in a <select> element."
+risk_level = "medium"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "get_element_text"
+description = "Get the text content of an element."
+risk_level = "low"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "get_page_content"
+description = "Get the page content as HTML, text, or within a specific selector."
+risk_level = "low"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "take_screenshot"
+description = "Take a screenshot of the current page."
+risk_level = "low"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "download_file"
+description = "Download a file from a URL via the browser."
+risk_level = "high"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "execute_script"
+description = "Execute JavaScript in the page context."
+risk_level = "critical"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "wait_for_element"
+description = "Wait for an element to reach a specific state."
+risk_level = "low"
+permission = "browser.browser_control"
+
+[[module.actions]]
+name = "close_browser"
+description = "Close the browser and free resources."
+risk_level = "low"
+permission = "browser.browser_control"
+
+[module.capabilities]
+permissions = [
+    "browser_control",
+    "network_access",
+]
+side_effects = [
+    "browser_navigation",
+    "network_requests",
+    "file_downloads",
+    "javascript_execution",
+    "form_submission",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

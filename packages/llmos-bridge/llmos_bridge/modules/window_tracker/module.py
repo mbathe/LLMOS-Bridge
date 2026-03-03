@@ -263,6 +263,7 @@ class WindowTrackerModule(BaseModule):
             "count": len(windows),
         }
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Monitors active window changes")
     @audit_trail("standard")
     async def _action_start_tracking(self, params: dict[str, Any]) -> dict[str, Any]:
         title_pattern = params.get("title_pattern")
@@ -289,12 +290,14 @@ class WindowTrackerModule(BaseModule):
             "target_window_id": window_id,
         }
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Stops window monitoring")
     @audit_trail("standard")
     async def _action_stop_tracking(self, params: dict[str, Any]) -> dict[str, Any]:
         switches = self._tracking.context_switches
         self._tracking = TrackingState()
         return {"tracking": False, "total_context_switches": switches}
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Reads tracking state")
     @audit_trail("standard")
     async def _action_get_tracking_status(self, params: dict[str, Any]) -> dict[str, Any]:
         if not self._tracking.is_tracking:
@@ -357,6 +360,7 @@ class WindowTrackerModule(BaseModule):
 
         return {"focused": success}
 
+    @requires_permission(Permission.SCREEN_CAPTURE, reason="Detects application context changes")
     @audit_trail("standard")
     async def _action_detect_context_switch(self, params: dict[str, Any]) -> dict[str, Any]:
         if not self._tracking.is_tracking:

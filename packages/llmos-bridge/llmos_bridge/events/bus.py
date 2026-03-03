@@ -39,8 +39,9 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from llmos_bridge.logging import get_logger
 
@@ -59,6 +60,10 @@ TOPIC_IOT = "llmos.iot"
 TOPIC_DB = "llmos.db.changes"
 TOPIC_FILESYSTEM = "llmos.filesystem"
 TOPIC_PERMISSIONS = "llmos.permissions"
+TOPIC_MODULES = "llmos.modules"
+TOPIC_NODES = "llmos.cluster.nodes"
+TOPIC_ACTION_PROGRESS = "llmos.actions.progress"
+TOPIC_ACTION_RESULTS = "llmos.actions.results"
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +78,11 @@ class EventBus(ABC):
     ``_timestamp`` (Unix epoch float) before forwarding to the backend.
     Consumers must not depend on field ordering.
     """
+
+    def __init__(self) -> None:
+        # Callback-based listeners: topic → list of async callables.
+        self._listeners: dict[str, list[Callable[..., Any]]] = {}
+        self._recent_events: deque[dict[str, Any]] = deque(maxlen=500)
 
     @abstractmethod
     async def emit(self, topic: str, event: dict[str, Any]) -> None:
@@ -97,10 +107,62 @@ class EventBus(ABC):
         return  # type: ignore[misc]
         yield {}  # noqa: unreachable
 
+    # ------------------------------------------------------------------
+    # Callback-based listener registration (Module Spec v3)
+    # ------------------------------------------------------------------
+
+    def register_listener(
+        self, topic: str, callback: Callable[..., Any]
+    ) -> None:
+        """Register a callback that is invoked whenever an event is emitted to *topic*.
+
+        The callback must be an async callable with signature::
+
+            async def callback(topic: str, event: dict[str, Any]) -> None
+        """
+        if topic not in self._listeners:
+            self._listeners[topic] = []
+        if callback not in self._listeners[topic]:
+            self._listeners[topic].append(callback)
+
+    def unregister_listener(
+        self, topic: str, callback: Callable[..., Any]
+    ) -> None:
+        """Remove a previously registered listener for *topic*."""
+        if topic in self._listeners:
+            try:
+                self._listeners[topic].remove(callback)
+            except ValueError:
+                pass
+            if not self._listeners[topic]:
+                del self._listeners[topic]
+
+    def unregister_all_listeners(self, callback: Callable[..., Any]) -> None:
+        """Remove a listener from ALL topics it is registered on."""
+        for topic in list(self._listeners):
+            self.unregister_listener(topic, callback)
+
+    async def _dispatch_to_listeners(self, topic: str, event: dict[str, Any]) -> None:
+        """Dispatch event to all registered listeners for *topic*.  Never raises."""
+        listeners = self._listeners.get(topic, [])
+        if not listeners:
+            return
+        for cb in listeners:
+            try:
+                await cb(topic, event)
+            except Exception as exc:
+                log.warning(
+                    "event_listener_error",
+                    topic=topic,
+                    listener=getattr(cb, "__qualname__", str(cb)),
+                    error=str(exc),
+                )
+
     def _stamp(self, topic: str, event: dict[str, Any]) -> dict[str, Any]:
         """Add metadata fields to *event* in-place and return it."""
         event.setdefault("_topic", topic)
         event.setdefault("_timestamp", time.time())
+        self._recent_events.append(dict(event))  # Add copy to ring buffer
         return event
 
 
@@ -117,7 +179,10 @@ class NullEventBus(EventBus):
     """
 
     async def emit(self, topic: str, event: dict[str, Any]) -> None:
-        pass
+        # Still dispatch to listeners even though storage is a no-op.
+        if self._listeners:
+            self._stamp(topic, event)
+            await self._dispatch_to_listeners(topic, event)
 
 
 # ---------------------------------------------------------------------------
@@ -139,22 +204,23 @@ class LogEventBus(EventBus):
     """
 
     def __init__(self, log_file: Path | None = None) -> None:
+        super().__init__()
         self._file = log_file.expanduser() if log_file else None
         self._lock = asyncio.Lock()
 
     async def emit(self, topic: str, event: dict[str, Any]) -> None:
         self._stamp(topic, event)
         log.debug("event_bus_emit", topic=topic, event_type=event.get("event"))
-        if self._file is None:
-            return
-        line = json.dumps(event, default=str) + "\n"
-        async with self._lock:
-            try:
-                self._file.parent.mkdir(parents=True, exist_ok=True)
-                with self._file.open("a", encoding="utf-8") as f:
-                    f.write(line)
-            except OSError as exc:
-                log.error("event_bus_write_failed", topic=topic, error=str(exc))
+        if self._file is not None:
+            line = json.dumps(event, default=str) + "\n"
+            async with self._lock:
+                try:
+                    self._file.parent.mkdir(parents=True, exist_ok=True)
+                    with self._file.open("a", encoding="utf-8") as f:
+                        f.write(line)
+                except OSError as exc:
+                    log.error("event_bus_write_failed", topic=topic, error=str(exc))
+        await self._dispatch_to_listeners(topic, event)
 
     def emit_sync(self, topic: str, event: dict[str, Any]) -> None:
         """Synchronous variant for use outside async contexts (e.g. module __init__)."""
@@ -192,6 +258,7 @@ class FanoutEventBus(EventBus):
     """
 
     def __init__(self, backends: list[EventBus]) -> None:
+        super().__init__()
         self._backends = backends
 
     async def emit(self, topic: str, event: dict[str, Any]) -> None:
@@ -200,3 +267,4 @@ class FanoutEventBus(EventBus):
             *(b.emit(topic, dict(event)) for b in self._backends),
             return_exceptions=True,
         )
+        await self._dispatch_to_listeners(topic, event)

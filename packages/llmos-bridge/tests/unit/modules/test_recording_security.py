@@ -22,7 +22,16 @@ class TestRecordingSecurity:
         assert meta.get("audit_level") == "detailed"
 
     def test_readonly_actions_have_no_metadata(self):
-        for action_name in ["_action_list_recordings", "_action_get_recording"]:
+        for action_name in ["_action_list_recordings"]:
             fn = getattr(self.module, action_name)
             meta = collect_security_metadata(fn)
             assert meta == {}, f"{action_name} should have no security metadata"
+
+    def test_get_recording_has_internal_data_classification(self):
+        meta = collect_security_metadata(self.module._action_get_recording)
+        assert meta.get("data_classification") == "internal"
+
+    def test_delete_recording_has_medium_risk_and_standard_audit(self):
+        meta = collect_security_metadata(self.module._action_delete_recording)
+        assert meta.get("risk_level") == "medium"
+        assert meta.get("audit_level") == "standard"
