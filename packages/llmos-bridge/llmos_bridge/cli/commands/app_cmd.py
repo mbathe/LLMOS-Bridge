@@ -13,6 +13,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -54,115 +55,6 @@ async def _init_kv_store():
     kv = KeyValueStore(kv_path)
     await kv.init()
     return kv
-
-
-def _create_runtime():
-    """Create an AppRuntime — connects to daemon if running, falls back to standalone."""
-    runtime = _try_daemon_runtime()
-    if runtime is not None:
-        return runtime
-
-    console.print("[yellow]Daemon not running — standalone mode (filesystem + os_exec + memory)[/yellow]")
-    return _create_standalone_runtime()
-
-
-def _try_daemon_runtime():
-    """Try to create a runtime backed by the running daemon. Returns None if unavailable."""
-    import httpx
-
-    daemon_url = os.environ.get("LLMOS_DAEMON_URL", "http://localhost:8000")
-    try:
-        resp = httpx.get(f"{daemon_url}/health", timeout=2.0)
-        if resp.status_code != 200:
-            return None
-    except (httpx.ConnectError, httpx.TimeoutException, Exception):
-        return None
-
-    console.print(f"[green]Connected to daemon at {daemon_url}[/green]")
-
-    # Fetch module info from daemon
-    try:
-        resp = httpx.get(f"{daemon_url}/modules", timeout=5.0)
-        raw_modules = resp.json()
-    except Exception:
-        raw_modules = []
-
-    # Convert daemon /modules response to module_info format
-    module_info: dict = {}
-    for mod in raw_modules:
-        mod_id = mod.get("module_id", mod.get("id", ""))
-        actions_raw = mod.get("actions", [])
-        actions = []
-        for a in actions_raw:
-            params = {}
-            schema = a.get("params_schema", {})
-            for pname, pdef in schema.get("properties", {}).items():
-                params[pname] = {
-                    "type": pdef.get("type", "string"),
-                    "description": pdef.get("description", ""),
-                    "required": pname in schema.get("required", []),
-                }
-                if "enum" in pdef:
-                    params[pname]["enum"] = pdef["enum"]
-            actions.append({
-                "name": a.get("name", ""),
-                "description": a.get("description", ""),
-                "params": params,
-            })
-        if mod_id:
-            module_info[mod_id] = {"actions": actions}
-
-    # Create executor that dispatches through daemon's /apps/execute-tool endpoint.
-    # This routes through the full DaemonToolExecutor pipeline (security, scanner,
-    # sanitizer, capabilities, perception, audit) instead of bypassing it via POST /plans.
-    _app_id_ref: dict[str, str] = {}  # Set later when app is loaded
-
-    async def daemon_execute(module_id: str, action: str, params: dict):
-        import httpx as _httpx
-        async with _httpx.AsyncClient(base_url=daemon_url, timeout=120.0) as client:
-            body = {
-                "module_id": module_id,
-                "action": action,
-                "params": params,
-            }
-            if _app_id_ref.get("id"):
-                body["app_id"] = _app_id_ref["id"]
-
-            resp = await client.post("/apps/execute-tool", json=body)
-            if resp.status_code != 200:
-                return {"error": f"Daemon returned {resp.status_code}: {resp.text}"}
-            data = resp.json()
-            if data.get("success"):
-                return data.get("result", data)
-            return {"error": data.get("error", "Unknown error")}
-
-    from llmos_bridge.apps.models import BrainConfig
-    from llmos_bridge.apps.runtime import AppRuntime
-
-    def llm_factory(brain: BrainConfig):
-        if brain.provider == "anthropic":
-            from llmos_bridge.apps.providers import AnthropicProvider
-            return AnthropicProvider(model=brain.model)
-        elif brain.provider == "openai":
-            from llmos_bridge.apps.providers import OpenAIProvider
-            return OpenAIProvider(model=brain.model)
-        else:
-            from llmos_bridge.apps.runtime import _StubLLMProvider
-            console.print(f"[yellow]Warning: Unknown provider '{brain.provider}', using stub[/yellow]")
-            return _StubLLMProvider()
-
-    rt = AppRuntime(
-        module_info=module_info,
-        llm_provider_factory=llm_factory,
-        execute_tool=daemon_execute,
-        input_handler=_cli_input_handler,
-        output_handler=_cli_output_handler,
-    )
-    # Attach the app_id reference so the run command can set it
-    # after loading the YAML — this lets daemon_execute pass app_id
-    # to /apps/execute-tool for per-app security enforcement.
-    rt._daemon_app_id_ref = _app_id_ref  # type: ignore[attr-defined]
-    return rt
 
 
 def _create_standalone_runtime():
@@ -272,6 +164,7 @@ class _TerminalRenderer:
         self._turn_count = 0
         self._tool_count = 0
         self._start_time = time.monotonic()
+        self._tool_call_start: float | None = None
 
     async def handle_event(self, event) -> None:
         """Handle a single stream event from the agent runtime."""
@@ -292,6 +185,7 @@ class _TerminalRenderer:
 
         elif etype == "tool_call":
             self._tool_count += 1
+            self._tool_call_start = time.monotonic()
             name = data.get("name", "?")
             args = data.get("arguments", {})
             # Format tool call like Claude Code
@@ -302,15 +196,26 @@ class _TerminalRenderer:
             )
 
         elif etype == "tool_result":
+            # Show per-tool timing
+            elapsed_ms = ""
+            if self._tool_call_start is not None:
+                dt = (time.monotonic() - self._tool_call_start) * 1000
+                if dt > 100:
+                    elapsed_ms = f" [yellow]{dt:.0f}ms[/yellow]"
+                else:
+                    elapsed_ms = f" [dim]{dt:.0f}ms[/dim]"
+                self._tool_call_start = None
             # Agent runtime emits "output" key, not "result"
             output = data.get("output", data.get("result", ""))
             is_error = data.get("is_error", False)
             if is_error:
-                self._console.print(f"  [red]Error:[/red] {output}")
+                self._console.print(f"  [red]Error:[/red] {output}{elapsed_ms}")
             else:
                 preview = self._result_preview(output)
                 if preview:
-                    self._console.print(f"  [dim]{preview}[/dim]")
+                    self._console.print(f"  [dim]{preview}[/dim]{elapsed_ms}")
+                elif elapsed_ms:
+                    self._console.print(f"  [dim]OK[/dim]{elapsed_ms}")
 
         elif etype == "text":
             text = data.get("text", "")
@@ -396,27 +301,209 @@ class _TerminalRenderer:
         return ""
 
 
+# ─── Daemon lifecycle helpers ──────────────────────────────────────────
+
+
+def _daemon_url() -> str:
+    return os.environ.get("LLMOS_DAEMON_URL", "http://localhost:8000")
+
+
+def _check_daemon() -> bool:
+    """Check if daemon is running and has App Language wired."""
+    import httpx
+
+    url = _daemon_url()
+    try:
+        resp = httpx.get(f"{url}/health", timeout=2.0)
+        if resp.status_code != 200:
+            return False
+    except Exception:
+        return False
+
+    # Probe /apps/execute-tool to verify App Language is wired
+    try:
+        probe = httpx.post(
+            f"{url}/apps/execute-tool",
+            json={"module_id": "__probe__", "action": "__probe__", "params": {}},
+            timeout=3.0,
+        )
+        if probe.status_code == 503:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+async def _daemon_register(yaml_path: Path, application_id: str | None = None) -> dict:
+    """Register app via daemon API: compile + store + link to Application."""
+    import httpx
+
+    yaml_text = yaml_path.read_text()
+    body: dict = {
+        "yaml_text": yaml_text,
+        "file_path": str(yaml_path.resolve()),
+    }
+    if application_id:
+        body["application_id"] = application_id
+
+    async with httpx.AsyncClient(base_url=_daemon_url(), timeout=30.0) as client:
+        resp = await client.post("/apps/register", json=body)
+        if resp.status_code == 201:
+            return resp.json()
+        elif resp.status_code == 403:
+            raise typer.Exit(code=1)  # Error already shown by caller
+        else:
+            raise RuntimeError(f"Registration failed ({resp.status_code}): {resp.text}")
+
+
+async def _daemon_prepare(app_id: str) -> dict:
+    """Prepare app via daemon API: pre-load modules, warm LLM, etc."""
+    import httpx
+
+    async with httpx.AsyncClient(base_url=_daemon_url(), timeout=60.0) as client:
+        resp = await client.post(f"/apps/{app_id}/prepare")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Prepare failed ({resp.status_code}): {resp.text}")
+        return resp.json()
+
+
+async def _daemon_run_stream(app_id: str, input_text: str, renderer: '_TerminalRenderer'):
+    """Run app via daemon SSE stream and render events to terminal."""
+    import httpx
+
+    body = {"input": input_text, "stream": True}
+    async with httpx.AsyncClient(base_url=_daemon_url(), timeout=600.0) as client:
+        async with client.stream(
+            "POST", f"/apps/{app_id}/run", json=body,
+            headers={"Accept": "text/event-stream"},
+        ) as resp:
+            if resp.status_code != 200:
+                text = await resp.aread()
+                console.print(f"[red]Run failed ({resp.status_code}):[/red] {text.decode()}")
+                return
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    payload = json.loads(line[6:])
+                except json.JSONDecodeError:
+                    continue
+
+                # Convert to StreamEvent-like object for the renderer
+                class _Event:
+                    def __init__(self, t, d):
+                        self.type = t
+                        self.data = d
+
+                await renderer.handle_event(_Event(payload.get("type", ""), payload.get("data", {})))
+
+                if payload.get("type") == "error":
+                    break
+
+
+async def _daemon_run_interactive(app_id: str, renderer: '_TerminalRenderer'):
+    """Run app interactively: prompt user for input, run via daemon, repeat."""
+    console.print("[dim]Type your message (Ctrl+C to exit)[/dim]\n")
+    while True:
+        try:
+            user_input = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if not user_input.strip():
+            continue
+
+        await _daemon_run_stream(app_id, user_input, renderer)
+        console.print()
+
+
 # ─── Commands ──────────────────────────────────────────────────────────
 
 @app.command("run")
 def run_app(
     file: Path = typer.Argument(..., help="Path to .app.yaml file"),
     input_text: str = typer.Option("", "--input", "-i", help="Input text (skips interactive mode)"),
+    standalone: bool = typer.Option(False, "--standalone", help="Force standalone mode (no daemon)"),
+    application_id: str = typer.Option(None, "--app-id", help="Link to dashboard Application ID"),
 ) -> None:
-    """Run an LLMOS application from a .app.yaml file."""
-    runtime = _create_runtime()
+    """Run an LLMOS application from a .app.yaml file.
+
+    The app lifecycle is managed by the daemon:
+    1. Register (compile + validate + link to dashboard Application)
+    2. Prepare (pre-load modules, warm LLM, initialize memory)
+    3. Run (execute with full security pipeline)
+
+    Use --standalone to bypass the daemon (limited to filesystem + os_exec + memory).
+    """
+    # ── Daemon mode (default) ─────────────────────────────────────
+    if not standalone and _check_daemon():
+        console.print(f"[green]Connected to daemon at {_daemon_url()}[/green]")
+
+        async def _daemon_lifecycle():
+            # Step 1: Register (compile + store)
+            t0 = time.monotonic()
+            try:
+                record = await _daemon_register(file, application_id=application_id)
+            except RuntimeError as e:
+                console.print(f"[red]Registration error:[/red] {e}")
+                raise typer.Exit(1)
+
+            app_id = record["id"]
+            app_name = record.get("name", file.stem)
+            app_version = record.get("version", "?")
+            app_desc = record.get("description", "")
+
+            console.print(f"[dim]Registered: {app_name} v{app_version} (id={app_id})[/dim]")
+
+            # Step 2: Prepare (pre-load everything)
+            try:
+                prep = await _daemon_prepare(app_id)
+            except RuntimeError as e:
+                console.print(f"[yellow]Prepare warning:[/yellow] {e}")
+                prep = {}
+
+            dt = (time.monotonic() - t0) * 1000
+            modules = prep.get("modules_checked", 0)
+            tools = prep.get("tools_resolved", 0)
+            missing = prep.get("modules_missing", [])
+            if missing:
+                console.print(f"[yellow]Missing modules: {', '.join(missing)}[/yellow]")
+
+            console.print(Panel(
+                f"[bold]{app_name}[/bold] v{app_version}\n"
+                + (f"{app_desc}\n" if app_desc else "")
+                + f"[dim]{modules} modules, {tools} tools | Ready in {dt:.0f}ms[/dim]",
+                border_style="blue",
+            ))
+
+            renderer = _TerminalRenderer(console)
+
+            # Step 3: Run
+            if input_text:
+                await _daemon_run_stream(app_id, input_text, renderer)
+            else:
+                await _daemon_run_interactive(app_id, renderer)
+
+        try:
+            asyncio.run(_daemon_lifecycle())
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted[/dim]")
+        return
+
+    # ── Standalone mode (fallback) ────────────────────────────────
+    if not standalone:
+        console.print("[yellow]Daemon not running — standalone mode (filesystem + os_exec + memory)[/yellow]")
+    else:
+        console.print("[yellow]Standalone mode (--standalone)[/yellow]")
+
+    runtime = _create_standalone_runtime()
 
     try:
         app_def = runtime.load(file)
     except Exception as e:
         console.print(f"[red]Compilation error:[/red] {e}")
         raise typer.Exit(1)
-
-    # Set app_id for daemon mode so tool calls go through per-app security
-    if hasattr(runtime, "_daemon_app_id_ref"):
-        import hashlib as _hl
-        _aid = _hl.sha256(f"{app_def.app.name}:{app_def.app.version}".encode()).hexdigest()[:16]
-        runtime._daemon_app_id_ref["id"] = _aid
 
     # Show app header
     agent_info = ""
@@ -437,13 +524,20 @@ def run_app(
 
     renderer = _TerminalRenderer(console)
 
-    async def _run_with_kv(interactive: bool, user_input: str = ""):
-        """Run with KV store initialized for persistence (todo, checkpoint, memory, etc.)."""
+    async def _run_standalone(interactive: bool, user_input: str = ""):
+        t0 = time.monotonic()
         kv = await _init_kv_store()
         try:
             runtime._kv_store = kv
-            # Initialize memory module backends now that KV store is ready
             await _init_memory_backends(runtime, kv)
+            memory_module = getattr(runtime, "_memory_module", None)
+            if memory_module is not None:
+                try:
+                    await memory_module.health_check()
+                except Exception as e:
+                    console.print(f"[yellow]Memory pre-warm warning: {e}[/yellow]")
+            dt = (time.monotonic() - t0) * 1000
+            console.print(f"[dim]Ready in {dt:.0f}ms[/dim]")
             if interactive:
                 await runtime.run_interactive(app_def, on_event=renderer.handle_event)
             else:
@@ -454,9 +548,9 @@ def run_app(
 
     try:
         if input_text:
-            asyncio.run(_run_with_kv(interactive=False, user_input=input_text))
+            asyncio.run(_run_standalone(interactive=False, user_input=input_text))
         else:
-            asyncio.run(_run_with_kv(interactive=True))
+            asyncio.run(_run_standalone(interactive=True))
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted[/dim]")
 

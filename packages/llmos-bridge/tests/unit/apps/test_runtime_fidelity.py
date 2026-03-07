@@ -593,9 +593,9 @@ class TestBrainTemperatureTopP:
         assert received_kwargs.get("top_p") == 0.9
 
     @pytest.mark.asyncio
-    async def test_default_temperature_zero(self):
-        """Default temperature=0 should still be passed."""
-        app_def = _make_app_def()  # Default temperature=0
+    async def test_default_none_omits_temperature_and_top_p(self):
+        """Default temperature=None and top_p=None should NOT be sent to LLM."""
+        app_def = _make_app_def()  # Default: temperature=None, top_p=None
 
         received_kwargs = {}
 
@@ -615,8 +615,8 @@ class TestBrainTemperatureTopP:
         )
         await agent.run("test")
 
-        assert received_kwargs.get("temperature") == 0
-        assert received_kwargs.get("top_p") == 1.0
+        assert "temperature" not in received_kwargs
+        assert "top_p" not in received_kwargs
 
 
 # ── GAP 11: memory.project.auto_inject ────────────────────────────

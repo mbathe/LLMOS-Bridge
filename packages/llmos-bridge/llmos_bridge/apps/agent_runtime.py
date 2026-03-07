@@ -540,10 +540,45 @@ class AgentRuntime:
         if messages and messages[0].get("role") == "system":
             messages = messages[1:]
 
+        # Pre-flight token budget check: estimate total and warn if too large.
+        # This prevents sending requests that will definitely be rejected.
+        tools_json = json.dumps(tools) if tools else ""
+        system_tokens = estimate_tokens(effective_system)
+        tools_tokens = estimate_tokens(tools_json)
+        messages_tokens = sum(
+            estimate_tokens(json.dumps(m) if isinstance(m, dict) else str(m))
+            for m in messages
+        )
+        total_estimated = system_tokens + tools_tokens + messages_tokens
+        model_limit = self._config.loop.context.model_context_window
+        if total_estimated > model_limit * 0.95:
+            logger.warning(
+                "Pre-flight: estimated %d tokens exceeds 95%% of model limit %d "
+                "(system=%d, tools=%d, messages=%d). Trimming messages.",
+                total_estimated, model_limit, system_tokens, tools_tokens, messages_tokens,
+            )
+            # Aggressive trim: keep only recent messages to fit budget
+            available_for_messages = int(model_limit * 0.7) - system_tokens - tools_tokens
+            if available_for_messages < 0:
+                available_for_messages = int(model_limit * 0.3)
+            trimmed = []
+            running = 0
+            for m in reversed(messages):
+                m_tokens = estimate_tokens(json.dumps(m) if isinstance(m, dict) else str(m))
+                if running + m_tokens > available_for_messages:
+                    break
+                trimmed.insert(0, m)
+                running += m_tokens
+            if len(trimmed) < len(messages):
+                logger.info(
+                    "Trimmed messages: %d → %d (saved ~%d tokens)",
+                    len(messages), len(trimmed), messages_tokens - running,
+                )
+                messages = trimmed
+
         # Update context module state and auto-compress if needed
         if self._context_module is not None:
             try:
-                tools_json = json.dumps(tools) if tools else ""
                 self._context_module.update_state(
                     system_prompt=system,
                     tools_json=tools_json,
@@ -571,13 +606,24 @@ class AgentRuntime:
                 logger.debug("Context budget management failed: %s", e)
 
         timeout = self._config.brain.timeout
+        kwargs: dict[str, Any] = {}
+        if self._config.brain.temperature is not None:
+            kwargs["temperature"] = self._config.brain.temperature
+        if self._config.brain.top_p is not None:
+            kwargs["top_p"] = self._config.brain.top_p
+
+        # Safety net: filter params against provider capabilities so
+        # misconfigurations produce a warning instead of an API crash.
+        if kwargs:
+            from .providers import filter_params_for_provider
+            kwargs = filter_params_for_provider(self._config.brain.provider, kwargs)
+
         coro = self._llm.chat(
             system=effective_system,
             messages=messages,
             tools=tools,
             max_tokens=self._config.brain.max_tokens,
-            temperature=self._config.brain.temperature,
-            top_p=self._config.brain.top_p,
+            **kwargs,
         )
         if timeout and timeout > 0:
             return await asyncio.wait_for(coro, timeout=timeout)

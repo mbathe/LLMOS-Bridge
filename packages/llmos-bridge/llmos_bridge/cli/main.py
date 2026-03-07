@@ -21,7 +21,7 @@ from __future__ import annotations
 import typer
 from rich.console import Console
 
-from llmos_bridge.cli.commands import daemon, module_cmd, modules, plans, schema
+from llmos_bridge.cli.commands import app_cmd, daemon, module_cmd, modules, plans, schema
 
 app = typer.Typer(
     name="llmos-bridge",
@@ -32,6 +32,7 @@ app = typer.Typer(
 
 console = Console()
 
+app.add_typer(app_cmd.app, name="app")
 app.add_typer(daemon.app, name="daemon")
 app.add_typer(module_cmd.app, name="module")
 app.add_typer(modules.app, name="modules")

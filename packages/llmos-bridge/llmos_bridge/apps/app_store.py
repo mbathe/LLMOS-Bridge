@@ -53,6 +53,8 @@ class AppRecord:
     run_count: int = 0
     error_message: str = ""
     config_json: str = ""  # serialized trigger/agent summary
+    application_id: str = ""  # linked dashboard Application (identity system)
+    prepared: bool = False  # True after daemon prepare() pre-loaded everything
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,29 +71,39 @@ class AppRecord:
             "last_run_at": self.last_run_at,
             "run_count": self.run_count,
             "error_message": self.error_message,
+            "application_id": self.application_id,
+            "prepared": self.prepared,
         }
 
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS apps (
-    id            TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
-    version       TEXT NOT NULL DEFAULT '1.0',
-    description   TEXT NOT NULL DEFAULT '',
-    author        TEXT NOT NULL DEFAULT '',
-    file_path     TEXT NOT NULL,
-    status        TEXT NOT NULL DEFAULT 'registered',
-    tags_json     TEXT NOT NULL DEFAULT '[]',
-    created_at    REAL NOT NULL,
-    updated_at    REAL NOT NULL,
-    last_run_at   REAL NOT NULL DEFAULT 0,
-    run_count     INTEGER NOT NULL DEFAULT 0,
-    error_message TEXT NOT NULL DEFAULT '',
-    config_json   TEXT NOT NULL DEFAULT '{}'
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    version         TEXT NOT NULL DEFAULT '1.0',
+    description     TEXT NOT NULL DEFAULT '',
+    author          TEXT NOT NULL DEFAULT '',
+    file_path       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'registered',
+    tags_json       TEXT NOT NULL DEFAULT '[]',
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL,
+    last_run_at     REAL NOT NULL DEFAULT 0,
+    run_count       INTEGER NOT NULL DEFAULT 0,
+    error_message   TEXT NOT NULL DEFAULT '',
+    config_json     TEXT NOT NULL DEFAULT '{}',
+    application_id  TEXT NOT NULL DEFAULT '',
+    prepared        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_apps_name ON apps (name);
 CREATE INDEX IF NOT EXISTS idx_apps_status ON apps (status);
+CREATE INDEX IF NOT EXISTS idx_apps_application_id ON apps (application_id);
 """
+
+_MIGRATION_SQL = [
+    "ALTER TABLE apps ADD COLUMN application_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE apps ADD COLUMN prepared INTEGER NOT NULL DEFAULT 0",
+]
 
 
 class AppStore:
@@ -110,6 +122,13 @@ class AppStore:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(_SCHEMA_SQL)
         await self._conn.commit()
+        # Run schema migrations for existing databases
+        for sql in _MIGRATION_SQL:
+            try:
+                await self._conn.execute(sql)
+                await self._conn.commit()
+            except Exception:
+                pass  # Column already exists
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -128,6 +147,7 @@ class AppStore:
         author: str = "",
         tags: list[str] | None = None,
         config_json: str = "{}",
+        application_id: str = "",
     ) -> AppRecord:
         """Register a new app or update an existing one."""
         assert self._conn is not None
@@ -137,19 +157,34 @@ class AppStore:
         async with self._write_lock:
             await self._conn.execute(
                 """INSERT INTO apps (id, name, version, description, author, file_path,
-                                     status, tags_json, created_at, updated_at, config_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     status, tags_json, created_at, updated_at, config_json,
+                                     application_id, prepared)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                    ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, version=excluded.version,
                      description=excluded.description, author=excluded.author,
                      file_path=excluded.file_path, tags_json=excluded.tags_json,
-                     updated_at=excluded.updated_at, config_json=excluded.config_json
+                     updated_at=excluded.updated_at, config_json=excluded.config_json,
+                     application_id=excluded.application_id, prepared=0
                 """,
                 (app_id, name, version, description, author, file_path,
-                 AppStatus.registered.value, tags_json, now, now, config_json),
+                 AppStatus.registered.value, tags_json, now, now, config_json,
+                 application_id),
             )
             await self._conn.commit()
         return await self.get(app_id)  # type: ignore[return-value]
+
+    async def mark_prepared(self, app_id: str) -> bool:
+        """Mark an app as prepared (all resources pre-loaded)."""
+        assert self._conn is not None
+        now = time.time()
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                "UPDATE apps SET prepared = 1, updated_at = ? WHERE id = ?",
+                (now, app_id),
+            )
+            await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def get(self, app_id: str) -> AppRecord | None:
         """Get an app by ID."""
@@ -243,4 +278,6 @@ class AppStore:
             run_count=d.get("run_count", 0),
             error_message=d.get("error_message", ""),
             config_json=d.get("config_json", "{}"),
+            application_id=d.get("application_id", ""),
+            prepared=bool(d.get("prepared", 0)),
         )

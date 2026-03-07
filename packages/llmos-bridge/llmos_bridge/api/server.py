@@ -717,6 +717,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.load_tracker = executor._load_tracker  # None if standalone
         app.state.quarantine = executor._quarantine  # None if standalone
 
+        # ── App Language Integration ─────────────────────────────────
+        # Wire DaemonToolExecutor + AppStore + AppRuntime so that:
+        # - /apps/* API endpoints work (no more 503)
+        # - CLI `llmos app run` routes tool calls through daemon security
+        # - All 20 modules accessible, pre-loaded, instant execution
+        try:
+            from llmos_bridge.apps.daemon_executor import DaemonToolExecutor
+            from llmos_bridge.apps.app_store import AppStore
+            from llmos_bridge.apps.runtime import AppRuntime
+            from llmos_bridge.apps.tool_registry import AppToolRegistry
+
+            # DaemonToolExecutor routes tool calls through the full pipeline
+            daemon_tool_executor = DaemonToolExecutor(
+                module_registry=registry,
+                permission_guard=guard,
+                sanitizer=sanitizer,
+                event_bus=event_bus,
+                scanner_pipeline=scanner_pipeline,
+                rate_limiter=rate_limiter,
+                intent_verifier=intent_verifier,
+                authorization_guard=authorization_guard,
+                identity_store=identity_store,
+            )
+            daemon_tool_executor.set_approval_gate(approval_gate)
+
+            # Build module_info from real manifests (all 20 modules)
+            module_info = daemon_tool_executor.get_module_info()
+
+            # LLM provider factory for autonomous agents
+            def _app_llm_factory(brain):
+                if brain.provider == "anthropic":
+                    from llmos_bridge.apps.providers import AnthropicProvider
+                    return AnthropicProvider(model=brain.model)
+                elif brain.provider == "openai":
+                    from llmos_bridge.apps.providers import OpenAIProvider
+                    return OpenAIProvider(model=brain.model)
+                else:
+                    from llmos_bridge.apps.runtime import _StubLLMProvider
+                    return _StubLLMProvider()
+
+            # AppRuntime — top-level lifecycle for apps
+            app_runtime = AppRuntime(
+                module_info=module_info,
+                llm_provider_factory=_app_llm_factory,
+                execute_tool=daemon_tool_executor.execute,
+                kv_store=kv_store,
+                event_bus=event_bus,
+            )
+
+            # AppStore — SQLite persistence for registered apps
+            app_store_path = settings.memory.state_db_path.parent / "app_store.db"
+            app_store = AppStore(app_store_path)
+            await app_store.init()
+
+            app.state.daemon_tool_executor = daemon_tool_executor
+            app.state.app_runtime = app_runtime
+            app.state.app_store = app_store
+
+            log.info(
+                "app_language_ready",
+                modules=len(module_info),
+                app_store_path=str(app_store_path),
+            )
+        except Exception as e:
+            log.warning("app_language_init_failed", error=str(e))
+            app.state.daemon_tool_executor = None
+            app.state.app_runtime = None
+            app.state.app_store = None
+
         # Start health monitor for isolated module workers.
         app.state.health_monitor = None
         if settings.isolation.enabled:
@@ -780,6 +849,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await app.state.permission_proxy.stop()
         if hasattr(app.state, "identity_store") and app.state.identity_store is not None:
             await app.state.identity_store.close()
+        if hasattr(app.state, "app_store") and app.state.app_store is not None:
+            await app.state.app_store.close()
         if hasattr(app.state, "state_store"):
             await app.state.state_store.close()
         if hasattr(app.state, "kv_store"):

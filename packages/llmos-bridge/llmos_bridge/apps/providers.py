@@ -2,6 +2,13 @@
 
 Implements the LLMProvider protocol for real LLM backends.
 Supports: Anthropic Claude, OpenAI GPT.
+
+Also defines ``PROVIDER_CAPS`` — the single source of truth for which
+parameters each provider accepts, which params are mutually exclusive, and
+which params are required.  This registry is used by:
+  - **Compiler** (``_validate_brain_params``) for static YAML validation
+  - **Runtime** (``filter_params_for_provider``) to strip unsupported params
+    before calling the LLM, so misconfigurations cause warnings, not crashes.
 """
 
 from __future__ import annotations
@@ -9,11 +16,140 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from typing import Any
 
 from .agent_runtime import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Provider capability registry ──────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ProviderCaps:
+    """Capabilities and parameter constraints for an LLM provider."""
+
+    # Chat params this provider accepts (subset of the LLMProvider protocol)
+    supported_params: frozenset[str] = frozenset()
+
+    # Sets of params that cannot be used together (e.g. Anthropic: temperature + top_p)
+    mutually_exclusive: tuple[frozenset[str], ...] = ()
+
+    # Extra notes for compiler warnings
+    notes: str = ""
+
+
+PROVIDER_CAPS: dict[str, ProviderCaps] = {
+    "anthropic": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens"}),
+        mutually_exclusive=(frozenset({"temperature", "top_p"}),),
+        notes="Claude does not allow temperature and top_p together",
+    ),
+    "openai": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty"}),
+    ),
+    "ollama": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens"}),
+    ),
+    "bedrock": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens"}),
+        mutually_exclusive=(frozenset({"temperature", "top_p"}),),
+        notes="Bedrock Anthropic models share Claude's temperature/top_p constraint",
+    ),
+    "vertex": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens"}),
+    ),
+    "azure": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens", "frequency_penalty", "presence_penalty"}),
+    ),
+    "local": ProviderCaps(
+        supported_params=frozenset({"temperature", "top_p", "max_tokens"}),
+    ),
+}
+
+# Params that any provider might accept — union of all known supported_params.
+ALL_KNOWN_PARAMS = frozenset().union(*(c.supported_params for c in PROVIDER_CAPS.values()))
+
+
+# ─── Model context limits ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ModelLimits:
+    """Known limits for a specific model."""
+    context_window: int       # Total input+output context window (tokens)
+    max_output: int           # Maximum output tokens
+
+# Model limits — used to auto-configure context budget when the YAML
+# doesn't specify model_context_window or sets it too high.
+MODEL_LIMITS: dict[str, ModelLimits] = {
+    # Anthropic Claude
+    "claude-opus-4-6":             ModelLimits(context_window=200000, max_output=32000),
+    "claude-sonnet-4-6":           ModelLimits(context_window=200000, max_output=16000),
+    "claude-haiku-4-5-20251001":   ModelLimits(context_window=200000, max_output=8192),
+    "claude-sonnet-4-20250514":    ModelLimits(context_window=200000, max_output=16000),
+    # OpenAI
+    "gpt-4o":                      ModelLimits(context_window=128000, max_output=16384),
+    "gpt-4o-mini":                 ModelLimits(context_window=128000, max_output=16384),
+    "gpt-4-turbo":                 ModelLimits(context_window=128000, max_output=4096),
+    "o1":                          ModelLimits(context_window=200000, max_output=100000),
+    "o3":                          ModelLimits(context_window=200000, max_output=100000),
+    "o3-mini":                     ModelLimits(context_window=200000, max_output=100000),
+}
+
+
+def get_model_limits(model: str) -> ModelLimits | None:
+    """Return known limits for a model, or None if unknown."""
+    # Exact match first
+    if model in MODEL_LIMITS:
+        return MODEL_LIMITS[model]
+    # Prefix match (e.g. "claude-sonnet-4-6" matches "claude-sonnet-4-*")
+    for key, limits in MODEL_LIMITS.items():
+        if model.startswith(key.rsplit("-", 1)[0]):
+            return limits
+    return None
+
+
+def filter_params_for_provider(
+    provider: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Return *params* filtered to only those supported by *provider*.
+
+    - Unknown providers: pass through all params (don't break custom providers).
+    - Known providers: strip unsupported params with a warning, resolve mutual
+      exclusion conflicts (keep the first one specified).
+    """
+    caps = PROVIDER_CAPS.get(provider)
+    if caps is None:
+        return dict(params)  # unknown provider — don't filter
+
+    filtered: dict[str, Any] = {}
+    for key, value in params.items():
+        if key not in caps.supported_params:
+            logger.warning(
+                "Provider '%s' does not support param '%s' — ignoring (value=%r)",
+                provider, key, value,
+            )
+            continue
+        filtered[key] = value
+
+    # Resolve mutual exclusion: if both sides are present, keep the first.
+    for excl_set in caps.mutually_exclusive:
+        present = [k for k in filtered if k in excl_set]
+        if len(present) > 1:
+            keep = present[0]
+            for drop in present[1:]:
+                logger.warning(
+                    "Provider '%s': params %s are mutually exclusive — "
+                    "keeping '%s', dropping '%s'",
+                    provider, sorted(excl_set), keep, drop,
+                )
+                del filtered[drop]
+
+    return filtered
 
 
 class AnthropicProvider(LLMProvider):
@@ -70,9 +206,35 @@ class AnthropicProvider(LLMProvider):
         if top_p is not None:
             kwargs["top_p"] = top_p
 
-        response = await self._client.messages.create(**kwargs)
+        import asyncio
+        import anthropic
 
-        return self._parse_response(response)
+        last_error = None
+        for attempt in range(4):  # 1 initial + 3 retries
+            try:
+                response = await self._client.messages.create(**kwargs)
+                return self._parse_response(response)
+            except anthropic.RateLimitError as e:
+                last_error = e
+                # Parse retry-after header if available, else exponential backoff
+                retry_after = getattr(e, "response", None)
+                wait = None
+                if retry_after and hasattr(retry_after, "headers"):
+                    ra = retry_after.headers.get("retry-after")
+                    if ra:
+                        try:
+                            wait = float(ra)
+                        except ValueError:
+                            pass
+                if wait is None:
+                    wait = min(2 ** attempt * 2, 60)  # 2s, 4s, 8s, capped at 60s
+                logger.warning(
+                    "Rate limited (attempt %d/4) — waiting %.1fs before retry",
+                    attempt + 1, wait,
+                )
+                await asyncio.sleep(wait)
+
+        raise last_error  # type: ignore[misc]
 
     async def close(self) -> None:
         await self._client.close()
@@ -255,8 +417,27 @@ class OpenAIProvider(LLMProvider):
         if top_p is not None:
             kwargs["top_p"] = top_p
 
-        response = await self._client.chat.completions.create(**kwargs)
-        return self._parse_response(response)
+        import asyncio
+
+        last_error = None
+        for attempt in range(4):  # 1 initial + 3 retries
+            try:
+                response = await self._client.chat.completions.create(**kwargs)
+                return self._parse_response(response)
+            except Exception as e:
+                # Check for rate limit (OpenAI raises openai.RateLimitError)
+                if "rate_limit" in type(e).__name__.lower() or "429" in str(e):
+                    last_error = e
+                    wait = min(2 ** attempt * 2, 60)
+                    logger.warning(
+                        "Rate limited (attempt %d/4) — waiting %.1fs before retry",
+                        attempt + 1, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                raise
+
+        raise last_error  # type: ignore[misc]
 
     async def close(self) -> None:
         await self._client.close()

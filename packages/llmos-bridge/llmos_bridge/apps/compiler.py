@@ -154,6 +154,9 @@ class AppCompiler:
         # Step 12: Validate brain provider
         self._validate_brain_providers(app_def, source)
 
+        # Step 12b: Validate brain params against provider capabilities
+        self._validate_brain_params(app_def, source)
+
         # Step 13: Validate security profile consistency with tools
         self._validate_security_profile(app_def, source)
 
@@ -988,18 +991,25 @@ class AppCompiler:
     ) -> None:
         """Deep trigger validation — checks transform syntax, HTTP paths, schedule quality."""
         http_paths: set[str] = set()
-        has_cli = False
+        cli_modes_seen: set[str] = set()
 
         for i, trigger in enumerate(triggers):
             label = f"trigger[{i}] (type={trigger.type.value})"
 
-            # Check for multiple CLI triggers (only one makes sense)
+            # Check for duplicate CLI triggers with the same mode
             if trigger.type.value == "cli":
-                if has_cli:
+                cli_mode = getattr(trigger, "mode", None) or "conversation"
+                if isinstance(cli_mode, str):
+                    cli_key = cli_mode
+                else:
+                    cli_key = cli_mode.value if hasattr(cli_mode, "value") else str(cli_mode)
+                if cli_key in cli_modes_seen:
                     logger.warning(
-                        "Multiple CLI triggers defined — only the first will be used"
+                        "Multiple CLI triggers with mode '%s' defined — "
+                        "only the first will be used",
+                        cli_key,
                     )
-                has_cli = True
+                cli_modes_seen.add(cli_key)
 
             # HTTP/webhook: check for duplicate paths
             if trigger.type.value in ("http", "webhook") and trigger.path:
@@ -1332,6 +1342,8 @@ class AppCompiler:
         "result", "trigger", "memory", "secret", "env", "agent",
         "run", "app", "loop", "context", "macro", "params",
         "workspace", "data_dir", "now",
+        # Runtime-injected variables
+        "input", "payload",
         # Event-triggered context
         "event",
         # Default iteration variables (map: item/index, reduce: item)
@@ -1559,6 +1571,81 @@ class AppCompiler:
             for a in app_def.agents.agents:
                 if a.brain:
                     _check_brain(a.brain, f"agents[{a.id}].brain")
+
+    # ── Brain param validation against provider capabilities ────────
+
+    def _validate_brain_params(self, app_def: AppDefinition, source: str) -> None:
+        """Validate brain params against known provider constraints.
+
+        Catches at compile time:
+        - Mutually exclusive params (e.g. temperature + top_p for Anthropic)
+        - Fallback brains with no provider (logs info — they inherit at runtime)
+        """
+        from llmos_bridge.apps.providers import PROVIDER_CAPS
+
+        errors: list[str] = []
+
+        def _check_brain_config(brain: Any, context: str) -> None:
+            if not brain:
+                return
+            provider = getattr(brain, "provider", None) or ""
+            if not provider or provider.startswith("{{"):
+                return
+
+            caps = PROVIDER_CAPS.get(provider)
+            if not caps:
+                return
+
+            # Collect which LLM params are explicitly set
+            set_params: list[str] = []
+            for param_name in caps.supported_params:
+                val = getattr(brain, param_name, None)
+                if val is not None:
+                    set_params.append(param_name)
+
+            # Check mutual exclusion
+            for excl_set in caps.mutually_exclusive:
+                present = [p for p in set_params if p in excl_set]
+                if len(present) > 1:
+                    errors.append(
+                        f"{context}: provider '{provider}' does not allow "
+                        f"{' and '.join(sorted(present))} together"
+                    )
+
+        def _check_fallback_provider(
+            brain: Any, parent_provider: str, context: str,
+        ) -> None:
+            """Log info if a fallback has no provider — it will inherit at runtime."""
+            if not brain:
+                return
+            for i, fb in enumerate(getattr(brain, "fallback", []) or []):
+                fb_provider = getattr(fb, "provider", None)
+                if not fb_provider:
+                    logger.info(
+                        "%s: fallback[%d] has no provider — "
+                        "will inherit '%s' from parent at runtime",
+                        context, i, parent_provider,
+                    )
+
+        if app_def.agent and app_def.agent.brain:
+            brain = app_def.agent.brain
+            _check_brain_config(brain, f"agent.brain ({source})")
+            _check_fallback_provider(brain, brain.provider, f"agent.brain ({source})")
+
+        if app_def.agents:
+            for a in app_def.agents.agents:
+                if a.brain:
+                    _check_brain_config(a.brain, f"agents[{a.id}].brain ({source})")
+                    _check_fallback_provider(
+                        a.brain, a.brain.provider, f"agents[{a.id}].brain ({source})",
+                    )
+
+        if errors:
+            raise CompilationError(
+                f"Brain parameter validation failed in {source}:\n"
+                + "\n".join(f"  - {e}" for e in errors),
+                errors=errors,
+            )
 
     # ── Security profile consistency validation ─────────────────────
 

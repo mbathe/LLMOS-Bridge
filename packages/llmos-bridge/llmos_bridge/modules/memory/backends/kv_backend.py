@@ -36,6 +36,9 @@ class KVMemoryBackend(BaseMemoryBackend):
         return key[len(prefix):] if key.startswith(prefix) else key
 
     async def init(self) -> None:
+        if self._store is not None:
+            # Already injected via set_store() — don't create a second connection
+            return
         from llmos_bridge.memory.store import KeyValueStore
         self._store = KeyValueStore(self._db_path)
         await self._store.init()

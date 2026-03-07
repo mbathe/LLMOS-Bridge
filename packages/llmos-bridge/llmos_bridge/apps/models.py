@@ -144,9 +144,11 @@ class StreamFormat(str, Enum):
 
 class InterfaceField(BaseModel):
     """Describes an input or output field of an app."""
+    model_config = {"populate_by_name": True}
+
     type: str = "string"
     description: str = ""
-    schema: dict[str, Any] | None = None
+    json_schema: dict[str, Any] | None = Field(default=None, alias="schema")
 
 
 class ErrorDefinition(BaseModel):
@@ -188,8 +190,12 @@ class AppConfig(BaseModel):
 
 
 class FallbackBrain(BaseModel):
-    """Fallback LLM provider configuration."""
-    provider: str = ""
+    """Fallback LLM provider configuration.
+
+    When ``provider`` is omitted (None), the runtime inherits the provider
+    from the parent ``BrainConfig``.
+    """
+    provider: str | None = None
     model: str
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -198,9 +204,9 @@ class BrainConfig(BaseModel):
     """LLM provider + model configuration."""
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6"
-    temperature: float = Field(default=0, ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int = Field(default=8192, ge=1, le=200000)
-    top_p: float = Field(default=1.0, ge=0, le=1)
+    top_p: float | None = Field(default=None, ge=0, le=1)
     timeout: float = Field(default=120.0, ge=0, description="LLM call timeout in seconds (0 = no timeout)")
     config: dict[str, Any] = Field(default_factory=dict)
     fallback: list[FallbackBrain] = Field(default_factory=list)
@@ -556,9 +562,11 @@ class TriggerDefinition(BaseModel):
 
 class ApprovalOption(BaseModel):
     """Option presented to user in an approval gate."""
+    model_config = {"populate_by_name": True}
+
     label: str
     value: str
-    schema: dict[str, Any] | None = None
+    json_schema: dict[str, Any] | None = Field(default=None, alias="schema")
 
 
 class CatchHandler(BaseModel):

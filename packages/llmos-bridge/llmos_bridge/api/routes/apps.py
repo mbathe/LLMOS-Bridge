@@ -17,7 +17,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import asyncio
+import json as _json
+
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from llmos_bridge.api.dependencies import AuthDep
@@ -33,6 +37,14 @@ class RegisterAppRequest(BaseModel):
     """Register an app from YAML text or file path."""
     yaml_text: str | None = Field(None, description="Raw YAML content of the .app.yaml file")
     file_path: str | None = Field(None, description="Absolute path to the .app.yaml file on disk")
+    application_id: str | None = Field(
+        None,
+        description=(
+            "Dashboard Application ID to link this app to. "
+            "If omitted, a new Application is auto-created. "
+            "When provided, the app inherits the Application's security constraints."
+        ),
+    )
 
 
 class ExecuteToolRequest(BaseModel):
@@ -71,6 +83,8 @@ class AppResponse(BaseModel):
     last_run_at: float
     run_count: int
     error_message: str
+    application_id: str = ""
+    prepared: bool = False
 
 
 class RunAppResponse(BaseModel):
@@ -151,6 +165,53 @@ async def register_app(
         f"{app_def.app.name}:{app_def.app.version}".encode()
     ).hexdigest()[:16]
 
+    # ── Link to dashboard Application ──────────────────────────────
+    identity_store = getattr(request.app.state, "identity_store", None)
+    application_id = body.application_id or ""
+
+    if body.application_id and identity_store is not None:
+        # Validate that the referenced Application exists
+        existing_app = await identity_store.get_application(body.application_id)
+        if existing_app is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Application '{body.application_id}' not found in identity system. "
+                       f"Create it in the dashboard first.",
+            )
+        application_id = existing_app.app_id
+
+        # Validate that the app's modules are within the Application's allowed_modules
+        if existing_app.allowed_modules:
+            app_modules = app_def.get_all_module_ids()
+            denied = app_modules - set(existing_app.allowed_modules)
+            if denied:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Modules {sorted(denied)} are not allowed by Application "
+                           f"'{existing_app.name}'. Allowed: {existing_app.allowed_modules}",
+                )
+    elif identity_store is not None:
+        # Auto-create a matching Application identity so dashboard security
+        # settings (allowed_modules, allowed_actions, sessions) apply to this app.
+        try:
+            module_ids = sorted(app_def.get_all_module_ids())
+            allowed_actions: dict[str, list[str]] = {}
+            for grant in app_def.capabilities.grant:
+                if grant.actions:
+                    allowed_actions[grant.module] = list(grant.actions)
+
+            new_identity_app = await identity_store.create_application(
+                name=app_def.app.name,
+                description=app_def.app.description or f"YAML App: {app_def.app.name} v{app_def.app.version}",
+                app_id=app_id,
+                allowed_modules=module_ids,
+                allowed_actions=allowed_actions,
+                tags={"yaml_app": "true", "version": app_def.app.version},
+            )
+            application_id = new_identity_app.app_id
+        except Exception:
+            pass  # Identity system may be disabled — don't block registration
+
     record = await store.register(
         app_id=app_id,
         name=app_def.app.name,
@@ -160,31 +221,8 @@ async def register_app(
         author=app_def.app.author,
         tags=app_def.app.tags,
         config_json=body.yaml_text or "",
+        application_id=application_id,
     )
-
-    # Auto-create a matching Application identity so dashboard security
-    # settings (allowed_modules, allowed_actions, sessions) apply to this app.
-    identity_store = getattr(request.app.state, "identity_store", None)
-    if identity_store is not None:
-        try:
-            # Extract module IDs from the YAML app definition
-            module_ids = sorted(app_def.get_all_module_ids())
-            # Extract per-module action whitelist from capabilities.grant
-            allowed_actions: dict[str, list[str]] = {}
-            for grant in app_def.capabilities.grant:
-                if grant.actions:
-                    allowed_actions[grant.module] = list(grant.actions)
-
-            await identity_store.create_application(
-                name=app_def.app.name,
-                description=app_def.app.description or f"YAML App: {app_def.app.name} v{app_def.app.version}",
-                app_id=app_id,
-                allowed_modules=module_ids,
-                allowed_actions=allowed_actions,
-                tags={"yaml_app": "true", "version": app_def.app.version},
-            )
-        except Exception:
-            pass  # Identity system may be disabled — don't block registration
 
     # Start background triggers (schedule, watch, event) if any
     _start_app_triggers(request, app_id, app_def)
@@ -318,7 +356,30 @@ async def run_app(
         resolved_identity.session_id = body.session_id
     scope_token = _current_scope.set(_ExecutionScope(identity=resolved_identity))
 
-    # Run the app
+    # ── SSE streaming mode ──────────────────────────────────────────
+    if body.stream:
+        async def _event_stream():
+            try:
+                async for event in runtime.stream(app_def, body.input, variables=body.variables):
+                    payload = _json.dumps({"type": event.type, "data": event.data})
+                    yield f"data: {payload}\n\n"
+                await store.record_run(app_id)
+                yield f"data: {_json.dumps({'type': 'done', 'data': {}})}\n\n"
+            except Exception as exc:
+                error_payload = _json.dumps({"type": "error", "data": {"error": str(exc)}})
+                yield f"data: {error_payload}\n\n"
+                from llmos_bridge.apps.app_store import AppStatus
+                await store.update_status(app_id, AppStatus.error, str(exc))
+            finally:
+                _current_scope.reset(scope_token)
+
+        return StreamingResponse(
+            _event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ── Synchronous mode ──────────────────────────────────────────
     try:
         if app_def.is_multi_agent():
             result = await runtime.run_multi_agent(app_def, body.input, variables=body.variables)
@@ -348,6 +409,81 @@ async def run_app(
         )
     finally:
         _current_scope.reset(scope_token)
+
+
+class PrepareAppResponse(BaseModel):
+    """Result of preparing an app for execution."""
+    app_name: str
+    modules_checked: int
+    modules_missing: list[str] = Field(default_factory=list)
+    tools_resolved: int
+    llm_warmed: bool
+    memory_ready: bool
+    capabilities_applied: bool
+    duration_ms: float
+    ready: bool
+
+
+@router.post("/{app_id}/prepare", response_model=PrepareAppResponse)
+async def prepare_app(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Prepare an app for execution — pre-load all resources.
+
+    Must be called after registration and before the first run.
+    The daemon pre-loads:
+    - All required modules (validates availability)
+    - LLM provider connections (pre-warms connection pool)
+    - Memory backends (health check)
+    - Security capabilities and constraints
+
+    This ensures the app runs at maximum speed when launched.
+    """
+    store = _get_app_store(request)
+    runtime = _get_app_runtime(request)
+
+    record = await store.get(app_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    # Load the app definition
+    try:
+        if record.file_path:
+            app_def = runtime.load(record.file_path)
+        elif record.config_json and record.config_json != "{}":
+            app_def = runtime.load_string(record.config_json)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="App has no file path and no stored YAML.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to load app: {e}",
+        )
+
+    # Run prepare (pre-load all resources)
+    try:
+        result = await runtime.prepare(app_def)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Prepare failed: {e}",
+        )
+
+    ready = len(result.get("modules_missing", [])) == 0
+    if ready:
+        await store.mark_prepared(app_id)
+
+    return PrepareAppResponse(
+        **result,
+        ready=ready,
+    )
 
 
 @router.post("/{app_id}/validate", response_model=ValidateAppResponse)

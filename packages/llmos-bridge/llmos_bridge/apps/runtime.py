@@ -98,6 +98,97 @@ class AppRuntime:
         """Set the context manager module for budget-aware context management."""
         self._context_manager_module = context_module
 
+    async def prepare(self, app_def: AppDefinition) -> dict[str, Any]:
+        """Pre-load all resources needed for fast app execution.
+
+        This is the daemon's "prepare" step — called after registration,
+        before the first run. It ensures that:
+        - All required modules are available and healthy
+        - LLM providers are pre-warmed (connection pool established)
+        - Memory backends are initialized
+        - Tools are resolved and validated
+        - Security settings (capabilities, constraints) are applied
+
+        Returns a dict with preparation status and timing info.
+        """
+        t0 = time.time()
+        results: dict[str, Any] = {
+            "app_name": app_def.app.name,
+            "modules_checked": 0,
+            "modules_missing": [],
+            "tools_resolved": 0,
+            "llm_warmed": False,
+            "memory_ready": False,
+            "capabilities_applied": False,
+            "duration_ms": 0,
+        }
+
+        # 1. Check all required modules are available
+        required_modules = app_def.get_all_module_ids()
+        available_modules = set(self._module_info.keys())
+        missing = required_modules - available_modules
+        results["modules_checked"] = len(required_modules)
+        results["modules_missing"] = sorted(missing)
+        if missing:
+            logger.warning("App %s requires missing modules: %s", app_def.app.name, missing)
+
+        # 2. Resolve all tools (validates they exist in module_info)
+        tool_registry = AppToolRegistry(self._module_info)
+        all_tools = app_def.get_all_tools()
+        if not all_tools and app_def.agent and app_def.agent.tools:
+            all_tools = app_def.agent.tools
+        if all_tools:
+            resolved = tool_registry.resolve_tools(all_tools)
+            results["tools_resolved"] = len(resolved)
+
+        # 3. Pre-warm LLM provider (establish connection pool)
+        agents_to_warm = []
+        if app_def.agent:
+            agents_to_warm.append(app_def.agent)
+        if app_def.agents and app_def.agents.agents:
+            agents_to_warm.extend(app_def.agents.agents)
+
+        for agent_config in agents_to_warm:
+            try:
+                llm = await self._create_llm(agent_config.brain, pooled=True)
+                results["llm_warmed"] = True
+                logger.info(
+                    "Pre-warmed LLM: %s/%s",
+                    agent_config.brain.provider,
+                    agent_config.brain.model,
+                )
+            except Exception as e:
+                logger.warning("LLM pre-warm failed for %s: %s", agent_config.brain.model, e)
+
+        # 4. Initialize memory backends
+        if self._memory_module is not None:
+            try:
+                await self._memory_module.health_check()
+                results["memory_ready"] = True
+            except Exception as e:
+                logger.warning("Memory health check failed: %s", e)
+        elif self._kv_store is not None:
+            results["memory_ready"] = True
+
+        # 5. Apply capabilities and security settings
+        try:
+            self._apply_capabilities(app_def)
+            results["capabilities_applied"] = True
+        except Exception as e:
+            logger.warning("Capabilities apply failed: %s", e)
+
+        results["duration_ms"] = (time.time() - t0) * 1000
+        logger.info(
+            "App '%s' prepared in %.0fms — %d modules, %d tools, LLM=%s, memory=%s",
+            app_def.app.name,
+            results["duration_ms"],
+            results["modules_checked"],
+            results["tools_resolved"],
+            results["llm_warmed"],
+            results["memory_ready"],
+        )
+        return results
+
     def load(self, path: str | Path) -> AppDefinition:
         """Load and compile a .app.yaml file."""
         return self._compiler.compile_file(path)
@@ -289,6 +380,9 @@ class AppRuntime:
                 agent_config = app_def.agents.agents[0]
             else:
                 raise AppRuntimeError("No agent configuration found in app definition")
+
+        # Auto-cap context config to model limits
+        self._cap_context_to_model(agent_config)
 
         # Build memory manager and inject memory into context
         memory_mgr = AppMemoryManager(
@@ -1037,18 +1131,24 @@ class AppRuntime:
                     span.status = "error"
                 await metrics.record_action(module_id, action, params, result, duration_ms)
 
-                # Auto-learn procedural memory from tool execution
+                # Auto-learn procedural memory from tool execution (fire-and-forget,
+                # never blocks tool result delivery — SQLite writes happen in background)
                 if memory_mgr is not None:
-                    try:
-                        await memory_mgr.learn_procedure(
-                            procedure_id=f"{module_id}.{action}.{uuid.uuid4().hex[:8]}",
-                            pattern=f"{module_id}.{action}({', '.join(f'{k}={v!r}' for k, v in list(params.items())[:3])})",
-                            outcome=str(result.get("error", ""))[:200] if is_error else "success",
-                            success=not is_error,
-                            context={"duration_ms": duration_ms, "module": module_id, "action": action},
-                        )
-                    except Exception:
-                        logger.debug("Failed to auto-learn procedure", exc_info=True)
+                    async def _learn(
+                        _mgr=memory_mgr, _mod=module_id, _act=action,
+                        _params=params, _result=result, _err=is_error, _dur=duration_ms,
+                    ):
+                        try:
+                            await _mgr.learn_procedure(
+                                procedure_id=f"{_mod}.{_act}.{uuid.uuid4().hex[:8]}",
+                                pattern=f"{_mod}.{_act}({', '.join(f'{k}={v!r}' for k, v in list(_params.items())[:3])})",
+                                outcome=str(_result.get("error", ""))[:200] if _err else "success",
+                                success=not _err,
+                                context={"duration_ms": _dur, "module": _mod, "action": _act},
+                            )
+                        except Exception:
+                            logger.debug("Failed to auto-learn procedure", exc_info=True)
+                    asyncio.get_event_loop().create_task(_learn())
 
                 return result
 
@@ -1073,6 +1173,41 @@ class AppRuntime:
         except Exception:
             pass
 
+    @staticmethod
+    def _cap_context_to_model(agent_config: Any) -> None:
+        """Cap context config values to actual model limits.
+
+        Ensures both ContextConfig.max_tokens (basic ContextManager) and
+        model_context_window (ContextManagerModule budget) don't exceed
+        the real model's context window.
+        """
+        from llmos_bridge.apps.providers import get_model_limits
+
+        model_name = agent_config.brain.model
+        limits = get_model_limits(model_name)
+        if not limits:
+            return
+
+        ctx = agent_config.loop.context
+        if ctx.max_tokens > limits.context_window:
+            logger.info(
+                "Capping context.max_tokens %d → %d (model %s)",
+                ctx.max_tokens, limits.context_window, model_name,
+            )
+            ctx.max_tokens = limits.context_window
+        if ctx.model_context_window > limits.context_window:
+            logger.info(
+                "Capping context.model_context_window %d → %d (model %s)",
+                ctx.model_context_window, limits.context_window, model_name,
+            )
+            ctx.model_context_window = limits.context_window
+        if ctx.output_reserved > limits.max_output:
+            logger.info(
+                "Capping context.output_reserved %d → %d (model %s)",
+                ctx.output_reserved, limits.max_output, model_name,
+            )
+            ctx.output_reserved = limits.max_output
+
     def _wire_context_module(self, agent: AgentRuntime, app_def: AppDefinition) -> None:
         """Wire context manager module into the agent runtime.
 
@@ -1086,6 +1221,7 @@ class AppRuntime:
             from llmos_bridge.modules.context_manager.module import ContextBudgetConfig
 
             loop_ctx = agent._config.loop.context
+            # Values already capped by _cap_context_to_model()
 
             budget_config = ContextBudgetConfig(
                 model_context_window=loop_ctx.model_context_window,
@@ -1211,7 +1347,10 @@ class AppRuntime:
             if pooled and pool_key in self._llm_pool:
                 provider = self._llm_pool[pool_key]
                 if brain.fallback:
-                    return _FallbackLLMProvider(provider, brain.fallback, self._llm_factory)
+                    return _FallbackLLMProvider(
+                        provider, brain.fallback, self._llm_factory,
+                        primary_provider=brain.provider,
+                    )
                 return provider
 
             primary = self._llm_factory(brain)
@@ -1227,7 +1366,10 @@ class AppRuntime:
                 self._llm_pool[pool_key] = primary
 
             if brain.fallback:
-                return _FallbackLLMProvider(primary, brain.fallback, self._llm_factory)
+                return _FallbackLLMProvider(
+                    primary, brain.fallback, self._llm_factory,
+                    primary_provider=brain.provider,
+                )
             return primary
 
         # Default: stub provider for testing
@@ -1268,10 +1410,12 @@ class _FallbackLLMProvider(LLMProvider):
         primary: LLMProvider,
         fallbacks: list,  # list[FallbackBrain]
         factory: Any,
+        primary_provider: str = "anthropic",
     ):
         self._primary = primary
         self._fallbacks = fallbacks
         self._factory = factory
+        self._primary_provider = primary_provider
         self._fallback_providers: list[LLMProvider] = []
 
     async def chat(
@@ -1294,6 +1438,9 @@ class _FallbackLLMProvider(LLMProvider):
 
         # Try each fallback
         for fb in self._fallbacks:
+            # Inherit provider from primary brain when not explicitly set
+            if not fb.provider:
+                fb = fb.model_copy(update={"provider": self._primary_provider})
             provider = None
             try:
                 provider = self._factory(fb)
