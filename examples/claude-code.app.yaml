@@ -1,0 +1,755 @@
+# claude-code.app.yaml — Production AI coding assistant
+#
+# This app replicates and extends Claude Code's capabilities inside LLMOS.
+# It is NOT a demo — it is designed to be MORE powerful than standalone Claude Code
+# by leveraging the full daemon infrastructure:
+#
+#   22 modules (260+ actions) vs Claude Code's ~10 built-in tools
+#   Full security pipeline (profiles, permissions, scanners, audit)
+#   5-level persistent memory (working, conversation, project, episodic, procedural)
+#   Sub-agent spawning for parallel work
+#   6 trigger types (CLI, HTTP, webhook, schedule, watch, event)
+#   Context auto-compression with summarization
+#   Full observability (streaming, tracing, metrics)
+#
+# Usage:
+#   llmos app run claude-code.app.yaml                              # Interactive
+#   llmos app run claude-code.app.yaml "Fix the bug in auth.py"     # One-shot
+#   llmos app run claude-code.app.yaml --mode one-shot "Explain X"  # Explicit one-shot
+#
+# With daemon running, triggers auto-register:
+#   - File watcher: auto-lint on save
+#   - Schedule: daily code review at 09:00 UTC
+#   - Event: react to module installs, deployments
+#   - HTTP: POST /code for CI/CD integration
+
+app:
+  name: claude-code
+  version: "6.0"
+  description: "Production AI coding assistant — full LLMOS daemon power"
+  author: llmos
+  tags: [coding, assistant, developer-tools, production]
+  license: MIT
+
+  max_concurrent_runs: 3
+  max_turns_per_run: 200
+  max_actions_per_turn: 30
+  timeout: "3600s"
+  checkpoint: true
+
+  interface:
+    input:
+      type: string
+      description: "Coding task, question, or instruction"
+    output:
+      type: string
+      description: "Result, explanation, or confirmation of changes made"
+    errors:
+      - code: FILE_NOT_FOUND
+        description: "Requested file does not exist"
+      - code: PERMISSION_DENIED
+        description: "Action blocked by security policy"
+      - code: TIMEOUT
+        description: "Operation exceeded time limit"
+      - code: COMPILATION_ERROR
+        description: "Code failed to compile or parse"
+
+# ─── Variables ──────────────────────────────────────────────────────
+
+variables:
+  workspace: "{{env.PWD}}"
+  shell_timeout: "30s"
+  test_timeout: "120s"
+  test_command: "pytest"
+  lint_command: "ruff check"
+
+# ─── Agent ──────────────────────────────────────────────────────────
+
+agent:
+  id: coder
+  role: specialist
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    temperature: 0.2
+    max_tokens: 16384
+    timeout: 120.0
+    fallback:
+      - model: claude-haiku-4-5-20251001
+        config:
+          max_tokens: 8192
+
+  system_prompt: |
+    You are Claude Code, a production AI coding assistant running inside LLMOS Bridge.
+    You have access to the full daemon infrastructure — 22 modules, 260+ actions,
+    persistent memory, sub-agents, and security-audited execution.
+
+    ## Workspace
+    Current directory: {{workspace}}
+    All filesystem operations are sandboxed to this workspace.
+
+    ## How You Work
+    1. ALWAYS read files before editing them
+    2. Make minimal, focused changes — never rewrite entire files unnecessarily
+    3. Run tests after code modifications
+    4. Use sub-agents for parallel work on independent tasks
+    5. Store important findings in memory for future sessions
+    6. Ask the user when instructions are ambiguous
+
+    ## Core Tools
+
+    ### Filesystem (14 actions)
+    Read, write, search, copy, move, delete files and directories.
+    - filesystem.read_file(path) — read file contents
+    - filesystem.write_file(path, content) — create or overwrite file
+    - filesystem.append_file(path, content) — append to file
+    - filesystem.list_directory(path, pattern?) — list contents
+    - filesystem.search_files(path, pattern?, content_pattern?) — find files by name/content
+    - filesystem.copy_file(source, destination) — copy file/dir
+    - filesystem.move_file(source, destination) — move/rename
+    - filesystem.delete_file(path) — delete (requires approval)
+    - filesystem.create_directory(path) — create dirs
+    - filesystem.get_file_info(path) — metadata (size, mtime)
+    - filesystem.create_archive / extract_archive — zip/tar
+    - filesystem.compute_checksum(path, algorithm?) — hash file
+    - filesystem.watch_path(path, timeout?) — poll for changes
+
+    ### Shell Execution (9 actions, rate-limited)
+    Execute commands in the workspace. Rate-limited to 30/min.
+    Destructive commands (git push, rm -rf) require approval.
+    - os_exec.run_command(command, cwd?, timeout?) — run shell command (list format)
+    - os_exec.get_env_var(name) / set_env_var(name, value)
+    - os_exec.list_processes(name?) / kill_process(pid) / get_process_info(pid)
+    - os_exec.open_application(name) / close_application(name)
+    - os_exec.get_system_info(category?) — CPU, memory, disk, OS
+
+    ### Sub-Agent Spawning (7 actions)
+    Spawn autonomous workers for parallel tasks. Each gets its own LLM loop.
+    - agent_spawn.spawn_agent(name, objective, tools?) — create worker
+    - agent_spawn.wait_agent(agent_id) — block until done
+    - agent_spawn.get_result(agent_id) — get completed output
+    - agent_spawn.check_agent(agent_id) — check status
+    - agent_spawn.list_agents() — list all spawned agents
+    - agent_spawn.cancel_agent(agent_id) — kill worker
+    - agent_spawn.send_message(agent_id, message) — communicate
+
+    ### Memory (11 actions)
+    5-level persistent memory. Project memory auto-injected at start.
+    - memory.store(key, value) / recall(key) / search(query)
+    - memory.delete(key) / list_keys(prefix?) / clear()
+    - memory.set_objective(objective) — set cognitive goal
+    - memory.get_context() — current cognitive state
+    - memory.update_progress(progress) — track completion
+    - memory.observe() — full snapshot of ALL memory levels
+    - memory.list_backends() — available backends
+
+    ### Context Management (5 actions)
+    Auto-compresses context when approaching limits.
+    - context_manager.get_budget() — remaining token budget
+    - context_manager.compress_history() — summarize old messages
+    - context_manager.fetch_context(query?) — retrieve compressed context
+    - context_manager.get_tools_summary() — tools filtered by permissions
+    - context_manager.get_state() — full context window state
+
+    ### HTTP & API (18 actions, rate-limited)
+    Make HTTP requests. Domain-restricted for security.
+    - api_http.http_get/http_post/http_put/http_patch/http_delete(url, ...)
+    - api_http.http_head(url) — HEAD request
+    - api_http.download_file(url, path) / upload_file(url, path)
+    - api_http.graphql_query(url, query, variables?)
+    - api_http.parse_html(url_or_html, selector?)
+    - api_http.check_url_availability(url)
+    - api_http.webhook_trigger(url, payload, secret?)
+    - api_http.set_session(name, headers?) / close_session(name)
+
+    ### Browser (13 actions, domain-restricted)
+    Full browser automation via Playwright.
+    - browser.open_browser(browser_type?) / close_browser()
+    - browser.navigate_to(url) / get_page_content(format?)
+    - browser.click_element(selector) / fill_input(selector, value)
+    - browser.submit_form(selector?) / select_option(selector, value)
+    - browser.get_element_text(selector) / wait_for_element(selector)
+    - browser.take_screenshot(path?) / download_file(url)
+    - browser.execute_script(script)
+
+    ### Database (13 actions, read-only default)
+    Direct database access. Write operations need explicit grants.
+    - database.connect(connection_string) / disconnect()
+    - database.execute_query(sql) / fetch_results(sql, limit?)
+    - database.list_tables() / get_table_schema(table)
+    - database.create_table(name, columns)
+    - database.insert_record / update_record / delete_record
+    - database.begin_transaction / commit_transaction / rollback_transaction
+
+    ### Security (6 actions)
+    Inspect security state and audit logs.
+    - security.list_permissions() / check_permission(permission)
+    - security.request_permission(permission, reason)
+    - security.get_security_status() / list_audit_events(limit?)
+
+    ### Triggers (6 actions)
+    Register and manage triggers at runtime.
+    - triggers.register_trigger(type, condition, ...) / delete_trigger(id)
+    - triggers.activate_trigger(id) / deactivate_trigger(id)
+    - triggers.list_triggers() / get_trigger(id)
+
+    ### Recording (6 actions)
+    Record workflows for replay.
+    - recording.start_recording(name?) / stop_recording()
+    - recording.list_recordings() / get_recording(id)
+    - recording.generate_replay_plan(id) / delete_recording(id)
+
+    ### Module Management (22 actions)
+    Inspect and manage installed modules.
+    - module_manager.list_modules() / get_module_info(module_id)
+    - module_manager.enable_module / disable_module / restart_module
+    - module_manager.install_module(path_or_url) / uninstall_module(id)
+    - module_manager.search_hub(query) / get_module_health(id)
+    - module_manager.get_system_status() — full system overview
+
+    ## Built-in Tools
+    - ask_user(question) — ask human for clarification
+    - todo(action="add"|"complete"|"list", text?) — task tracking
+    - delegate(agent_id, task) — delegate to sub-agent
+    - emit(topic, data) — publish event to EventBus
+
+    ## Strategy for Complex Tasks
+    1. memory.observe() — check existing objectives and context
+    2. memory.set_objective(goal) — set cognitive goal
+    3. todo(action="add") — break into subtasks
+    4. For each subtask:
+       a. Read relevant files FIRST
+       b. Plan minimal changes
+       c. Apply changes
+       d. Run tests: os_exec.run_command(["{{test_command}}"])
+    5. Large tasks → spawn sub-agents in parallel
+    6. memory.store(key, findings) — persist important findings
+    7. memory.update_progress(status) — track completion
+
+    ## Rules
+    - NEVER modify files outside {{workspace}}
+    - ALWAYS read before editing
+    - Ask before destructive operations (delete, force-push, reset)
+    - Run tests after code changes
+    - Use memory.store() for findings you'll need later
+
+  loop:
+    type: reactive
+    max_turns: 200
+    stop_conditions:
+      - "{{agent.no_tool_calls}}"
+    on_tool_error: show_to_agent
+    on_llm_error: retry
+    retry:
+      max_attempts: 3
+      backoff: exponential
+    context:
+      max_tokens: 200000
+      strategy: summarize
+      keep_system_prompt: true
+      keep_last_n_messages: 40
+      summarize_older: true
+      model_context_window: 200000
+      output_reserved: 16384
+      cognitive_max_tokens: 2000
+      memory_max_tokens: 3000
+      compression_trigger_ratio: 0.75
+      min_recent_messages: 15
+    planning:
+      enabled: true
+      batch_actions: true
+      max_actions_per_batch: 20
+      replan_on_failure: true
+
+  tools:
+    # ── Filesystem (full, workspace-sandboxed) ──
+    - module: filesystem
+      constraints:
+        paths: ["{{workspace}}"]
+        max_file_size: "50MB"
+
+    # ── Shell (rate-limited, dangerous commands blocked) ──
+    - module: os_exec
+      exclude: [kill_process, open_application, close_application]
+      constraints:
+        timeout: "{{shell_timeout}}"
+        working_directory: "{{workspace}}"
+        forbidden_commands: ["rm -rf /", "dd if=/dev/zero", "mkfs", ":(){:|:&};:"]
+        forbidden_patterns: ["sudo rm -rf *", "curl * | bash", "wget * | sh"]
+        rate_limit_per_minute: 30
+
+    # ── Sub-agents ──
+    - module: agent_spawn
+
+    # ── Memory ──
+    - module: memory
+
+    # ── Context management ──
+    - module: context_manager
+
+    # ── Browser (domain-restricted) ──
+    - module: browser
+      actions: [open_browser, close_browser, navigate_to, get_page_content,
+                take_screenshot, click_element, fill_input, execute_script,
+                wait_for_element, get_element_text]
+      constraints:
+        allowed_domains: ["github.com", "stackoverflow.com", "docs.python.org",
+                          "pypi.org", "npmjs.com", "developer.mozilla.org",
+                          "crates.io", "pkg.go.dev"]
+        timeout: "30s"
+        rate_limit_per_minute: 20
+
+    # ── HTTP API (domain-restricted) ──
+    - module: api_http
+      actions: [http_get, http_post, http_put, http_delete, http_head,
+                graphql_query, download_file, upload_file, parse_html,
+                check_url_availability]
+      constraints:
+        allowed_domains: ["api.github.com", "pypi.org", "registry.npmjs.org",
+                          "httpbin.org", "raw.githubusercontent.com"]
+        max_response_size: "10MB"
+        timeout: "30s"
+        rate_limit_per_minute: 20
+
+    # ── Database (read-only by default) ──
+    - module: database
+      actions: [connect, disconnect, execute_query, fetch_results,
+                list_tables, get_table_schema]
+      constraints:
+        read_only: true
+        timeout: "15s"
+
+    # ── Security introspection ──
+    - module: security
+
+    # ── Triggers (manage triggers at runtime) ──
+    - module: triggers
+
+    # ── Recording (capture workflows for replay) ──
+    - module: recording
+
+    # ── Module management (inspect system) ──
+    - module: module_manager
+      actions: [list_modules, get_module_info, get_module_health,
+                get_system_status, search_hub, describe_module]
+
+# ─── Memory (5-level) ──────────────────────────────────────────────
+
+memory:
+  working:
+    max_size: "100MB"
+  conversation:
+    max_history: 500
+    auto_summarize: true
+    summarize_after: 50
+  project:
+    path: "{{workspace}}/.llmos/MEMORY.md"
+    auto_inject: true
+    agent_writable: true
+    max_lines: 200
+  episodic:
+    auto_record: true
+    record_fields: [input, actions_taken, outcome, lessons]
+    auto_recall:
+      on_start: true
+      query: "{{trigger.input}}"
+      limit: 5
+      min_similarity: 0.6
+  procedural:
+    learn_from_failures: true
+    learn_from_successes: true
+    auto_suggest: true
+
+# ─── Perception ────────────────────────────────────────────────────
+
+perception:
+  enabled: false
+  capture_after: true
+  ocr_enabled: false
+  timeout_seconds: 10
+  actions:
+    "browser.take_screenshot":
+      capture_after: true
+      ocr_enabled: true
+
+# ─── Capabilities (fine-grained security) ──────────────────────────
+
+capabilities:
+  grant:
+    - module: filesystem
+      constraints:
+        paths: ["{{workspace}}"]
+    - module: os_exec
+      actions: [run_command, get_env_var, set_env_var, list_processes,
+                get_process_info, get_system_info]
+    - module: memory
+    - module: context_manager
+    - module: agent_spawn
+    - module: browser
+      actions: [open_browser, close_browser, navigate_to, get_page_content,
+                take_screenshot, click_element, fill_input, execute_script,
+                wait_for_element, get_element_text]
+    - module: api_http
+      actions: [http_get, http_post, http_put, http_delete, graphql_query,
+                download_file, parse_html, check_url_availability]
+    - module: database
+      actions: [connect, disconnect, execute_query, fetch_results,
+                list_tables, get_table_schema]
+    - module: security
+    - module: triggers
+    - module: recording
+    - module: module_manager
+      actions: [list_modules, get_module_info, get_module_health,
+                get_system_status, search_hub, describe_module]
+
+  deny:
+    - module: filesystem
+      action: delete_file
+      when: "{{params.path.endswith('.env') or params.path.endswith('.key') or params.path.endswith('.pem')}}"
+      reason: "Cannot delete sensitive configuration or key files"
+    - module: os_exec
+      action: kill_process
+      reason: "Process killing disabled for safety"
+    - module: os_exec
+      action: open_application
+      reason: "Application launching disabled"
+    - module: database
+      action: insert_record
+      reason: "Database is read-only"
+    - module: database
+      action: update_record
+      reason: "Database is read-only"
+    - module: database
+      action: delete_record
+      reason: "Database is read-only"
+
+  approval_required:
+    # Git push/reset operations
+    - module: os_exec
+      action: run_command
+      when: "{{params.command | join(' ') | startswith('git push') or params.command | join(' ') | startswith('git reset')}}"
+      message: "Approve git push/reset: {{params.command | join(' ')}}?"
+      timeout: "120s"
+      on_timeout: reject
+      channel: cli
+    # File deletion
+    - module: filesystem
+      action: delete_file
+      message: "Approve file deletion: {{params.path}}?"
+      timeout: "60s"
+      on_timeout: reject
+      channel: cli
+    # Safety checkpoint after 100 actions
+    - trigger: action_count
+      threshold: 100
+      message: "100 actions executed. Continue working?"
+      timeout: "60s"
+      on_timeout: approve
+
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+    notify_on:
+      - event: permission_denied
+        channel: log
+      - event: approval_timeout
+        channel: log
+
+# ─── Security ──────────────────────────────────────────────────────
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+      - "/tmp/llmos-claude-code"
+    blocked_commands:
+      - "rm -rf /"
+      - "dd if=/dev/zero"
+      - "mkfs"
+      - ":(){:|:&};:"
+
+# ─── Macros ────────────────────────────────────────────────────────
+
+macros:
+  - name: read_and_lint
+    description: "Read a file, run linter, report or auto-fix issues"
+    params:
+      path:
+        type: string
+        required: true
+    body:
+      - id: read_src
+        action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+      - id: lint
+        action: os_exec.run_command
+        params:
+          command: ["{{lint_command}}", "{{macro.path}}"]
+        on_error: continue
+      - id: check_lint
+        branch:
+          "on": "{{result.lint.exit_code}}"
+          cases:
+            "0":
+              - id: lint_clean
+                emit:
+                  topic: "app.lint"
+                  event:
+                    path: "{{macro.path}}"
+                    status: "clean"
+          default:
+            - id: fix_lint
+              agent: coder
+              input: |
+                Lint errors in {{macro.path}}:
+                {{result.lint.stderr}}
+
+                File content:
+                {{result.read_src}}
+
+                Fix the lint issues with minimal changes.
+
+  - name: run_tests
+    description: "Execute test suite and analyze failures"
+    params:
+      test_path:
+        type: string
+        default: ""
+      verbose:
+        type: bool
+        default: true
+    body:
+      - id: exec_tests
+        action: os_exec.run_command
+        params:
+          command: ["{{test_command}}", "{{macro.test_path}}", "-v", "--tb=short"]
+        timeout: "{{test_timeout}}"
+        on_error: continue
+      - id: check_tests
+        branch:
+          "on": "{{result.exec_tests.exit_code}}"
+          cases:
+            "0":
+              - id: tests_ok
+                action: memory.store
+                params:
+                  key: "last_test_result"
+                  value: "all_passed"
+          default:
+            - id: analyze
+              agent: coder
+              input: |
+                Tests failed (exit code {{result.exec_tests.exit_code}}).
+
+                Output:
+                {{result.exec_tests.stdout}}
+
+                Errors:
+                {{result.exec_tests.stderr}}
+
+                Analyze the failures. Identify root cause and suggest fixes.
+            - id: store_failure
+              action: memory.store
+              params:
+                key: "last_test_result"
+                value: "failed:{{result.exec_tests.exit_code}}"
+
+  - name: safe_shell
+    description: "Run a shell command with retry and error diagnosis"
+    params:
+      cmd:
+        type: string
+        required: true
+    body:
+      - id: exec
+        action: os_exec.run_command
+        params:
+          command: ["sh", "-c", "{{macro.cmd}}"]
+        timeout: "{{shell_timeout}}"
+        retry:
+          max_attempts: 2
+          backoff: fixed
+        on_error: continue
+      - id: check
+        branch:
+          "on": "{{result.exec.exit_code}}"
+          cases:
+            "0":
+              - id: ok
+                emit:
+                  topic: "app.shell"
+                  event:
+                    command: "{{macro.cmd}}"
+                    status: "success"
+          default:
+            - id: diagnose
+              agent: coder
+              input: |
+                Command failed: {{macro.cmd}}
+                Exit code: {{result.exec.exit_code}}
+                Stdout: {{result.exec.stdout}}
+                Stderr: {{result.exec.stderr}}
+
+                Diagnose the issue and suggest a fix.
+
+  - name: git_status
+    description: "Get full git status including branch, diff, and recent commits"
+    params: {}
+    body:
+      - id: status
+        action: os_exec.run_command
+        params:
+          command: ["git", "status", "--short"]
+        on_error: continue
+      - id: branch
+        action: os_exec.run_command
+        params:
+          command: ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+        on_error: continue
+      - id: log
+        action: os_exec.run_command
+        params:
+          command: ["git", "log", "--oneline", "-10"]
+        on_error: continue
+
+# ─── Triggers ──────────────────────────────────────────────────────
+
+triggers:
+  # ── Entry-point triggers (handled by CLI/API server) ──
+
+  # Interactive conversation mode (default)
+  - id: cli_conversation
+    type: cli
+    mode: conversation
+    multiline: true
+    history: true
+    greeting: |
+      Claude Code v6.0 — LLMOS Bridge
+      Workspace: {{workspace}}
+
+      Modules: filesystem, shell, sub-agents, memory, browser, API, database,
+               triggers, recording, security, module_manager
+      Memory: 5-level persistent (project + conversation + episodic + procedural)
+      Security: power_user profile, workspace-sandboxed, audit logging
+
+      Type a coding task or question.
+
+  # One-shot mode for scripts/CI
+  - id: cli_oneshot
+    type: cli
+    mode: one_shot
+
+  # HTTP API for CI/CD integrations
+  - id: http_api
+    type: http
+    path: /code
+    method: POST
+    auth:
+      type: bearer
+    response:
+      format: streaming_json
+
+  # Webhook for GitHub events
+  - id: github_webhook
+    type: webhook
+    path: /webhook/github
+    method: POST
+    auth:
+      type: hmac
+      secret: "{{env.GITHUB_WEBHOOK_SECRET}}"
+    events: [push, pull_request]
+    transform: "GitHub {{trigger.event}}: {{payload.repository.full_name}} — {{payload.head_commit.message}}"
+    filters: ["{{payload.ref == 'refs/heads/main'}}"]
+
+  # ── Background triggers (delegated to TriggerDaemon via AppTriggerBridge) ──
+
+  # File watcher — auto-lint on save
+  - id: file_watcher
+    type: watch
+    paths:
+      - "{{workspace}}/src/**/*.py"
+      - "{{workspace}}/lib/**/*.py"
+    debounce: "3s"
+    transform: "Files changed: {{input}}. Run linter and check for issues."
+    filters: ["*.py"]
+
+  # Scheduled daily code review
+  - id: daily_review
+    type: schedule
+    cron: "0 9 * * 1-5"
+    input: |
+      Daily code review:
+      1. Run: git log --oneline --since="yesterday"
+      2. Review recent changes for issues
+      3. Run the test suite
+      4. Store findings in memory
+
+  # Periodic health check
+  - id: health_check
+    type: schedule
+    when: "every 30m"
+    input: |
+      Quick health check:
+      1. module_manager.get_system_status()
+      2. Check disk usage with os_exec.get_system_info("disk")
+      3. Store status in memory
+
+  # React to module installations
+  - id: on_module_install
+    type: event
+    topic: "llmos.modules"
+    transform: "Module event: {{payload}}"
+
+  # React to security events
+  - id: on_security_event
+    type: event
+    topic: "llmos.security"
+    filters: ["{{payload.event_type == 'permission_denied'}}"]
+    transform: "Security alert: {{payload.event_type}} — {{payload.details}}"
+
+# ─── Observability ─────────────────────────────────────────────────
+
+observability:
+  streaming:
+    enabled: true
+    channels: [cli, sse]
+    include_thoughts: true
+    include_tool_calls: true
+    include_results: false
+  logging:
+    level: info
+    format: structured
+    file: "{{workspace}}/.llmos/claude-code.log"
+  tracing:
+    enabled: true
+    backend: opentelemetry
+    sample_rate: 1.0
+  metrics:
+    - name: action_count
+      type: counter
+      track: "action.count"
+    - name: action_duration
+      type: histogram
+      track: "action.duration_ms"
+    - name: action_errors
+      type: counter
+      track: "action.error"
+    - name: action_success
+      type: counter
+      track: "action.success"
+    - name: tokens_used
+      type: counter
+      track: "action.tokens"
+
+# ─── Module Configuration ──────────────────────────────────────────
+
+module_config:
+  database:
+    connection_string: "sqlite:///{{workspace}}/.llmos/local.db"
+    read_only: true
+  browser:
+    headless: true
+    timeout: 30000

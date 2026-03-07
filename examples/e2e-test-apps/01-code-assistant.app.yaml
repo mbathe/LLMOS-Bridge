@@ -1,0 +1,67 @@
+app:
+  name: code-assistant-e2e
+  version: "2.0"
+  description: "Full-stack code assistant"
+  tags: [coding, testing]
+
+variables:
+  workspace: "{{env.PWD}}"
+
+agent:
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0.2
+    max_tokens: 8192
+    fallback:
+      - model: claude-haiku-4-5-20251001
+  system_prompt: |
+    You are a code assistant. Current workspace: {{workspace}}
+  loop:
+    type: reactive
+    max_turns: 50
+    context:
+      max_tokens: 200000
+      strategy: summarize
+      keep_last_n_messages: 30
+      model_context_window: 200000
+      output_reserved: 8192
+      compression_trigger_ratio: 0.75
+      min_recent_messages: 10
+  tools:
+    - module: filesystem
+    - module: os_exec
+      exclude: [kill_process]
+    - module: agent_spawn
+    - module: context_manager
+    - module: memory
+      actions: [store, recall, search, observe, set_objective, get_context, update_progress]
+
+memory:
+  working:
+    max_size: "50MB"
+  conversation:
+    max_history: 200
+  project:
+    path: "{{workspace}}/.llmos/MEMORY.md"
+    auto_inject: true
+    agent_writable: true
+  episodic:
+    auto_record: true
+    auto_recall:
+      on_start: true
+      limit: 5
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+    blocked_commands:
+      - "rm -rf /"
+      - "dd if=/dev/zero"
+
+triggers:
+  - type: cli
+    mode: conversation
+    greeting: "Code Assistant v2.0"

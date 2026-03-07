@@ -1,0 +1,93 @@
+app:
+  name: office-pipeline-e2e
+  version: "1.0"
+  description: "Office document pipeline"
+
+variables:
+  data_source: "sqlite:///data.db"
+  output_dir: "/tmp/reports"
+
+flow:
+  - id: setup
+    action: filesystem.create_directory
+    params:
+      path: "{{output_dir}}"
+
+  - id: query_data
+    action: database.query
+    params:
+      sql: "SELECT * FROM sales ORDER BY date DESC LIMIT 100"
+
+  - id: create_excel
+    sequence:
+      - id: open_wb
+        action: excel.open_workbook
+        params:
+          path: "{{output_dir}}/sales_report.xlsx"
+      - id: write_data
+        action: excel.write_cell
+        params:
+          cell: "A1"
+          value: "Sales Report"
+      - id: save_wb
+        action: excel.save_workbook
+        params: {}
+
+  - id: create_word_report
+    sequence:
+      - id: create_doc
+        action: word.create_document
+        params: {}
+      - id: add_title
+        action: word.add_heading
+        params:
+          text: "Monthly Sales Report"
+          level: 1
+      - id: add_content
+        action: word.add_paragraph
+        params:
+          text: "This report contains sales data analysis."
+      - id: save_doc
+        action: word.save_document
+        params:
+          path: "{{output_dir}}/report.docx"
+
+  - id: create_pptx
+    sequence:
+      - id: create_pres
+        action: powerpoint.create_presentation
+        params: {}
+      - id: add_title_slide
+        action: powerpoint.add_slide
+        params: {}
+      - id: add_title_text
+        action: powerpoint.add_text
+        params:
+          text: "Sales Overview"
+      - id: save_pres
+        action: powerpoint.save_presentation
+        params:
+          path: "{{output_dir}}/presentation.pptx"
+
+agents:
+  - id: analyst
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    tools:
+      - module: database
+        actions: [query, list_tables, describe_table]
+      - module: excel
+      - module: word
+      - module: powerpoint
+      - module: filesystem
+        actions: [write_file, read_file, create_directory]
+
+module_config:
+  database:
+    connection_string: "sqlite:///data.db"
+    read_only: false
+
+security:
+  profile: local_worker

@@ -1,0 +1,73 @@
+[module]
+module_id = "agent_spawn"
+version = "1.0.0"
+description = "Dynamic sub-agent creation and management. Spawn autonomous AI agents that run in parallel with their own LLM loops, tools, and objectives."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.agent_spawn.module:AgentSpawnModule"
+platforms = ["all"]
+requirements = []
+tags = ["agent", "orchestration", "parallel", "multi-agent"]
+sandbox_level = "standard"
+module_type = "daemon"
+
+[[module.actions]]
+name = "spawn_agent"
+description = "Create and launch an autonomous sub-agent with its own LLM loop and tools."
+risk_level = "medium"
+permission = "agent.spawn"
+
+[[module.actions]]
+name = "check_agent"
+description = "Check the current status of a spawned agent."
+risk_level = "low"
+permission = "agent.monitor"
+
+[[module.actions]]
+name = "get_result"
+description = "Get the final result of a completed agent."
+risk_level = "low"
+permission = "agent.monitor"
+
+[[module.actions]]
+name = "list_agents"
+description = "List all spawned agents and their statuses."
+risk_level = "low"
+permission = "agent.monitor"
+
+[[module.actions]]
+name = "cancel_agent"
+description = "Cancel a running agent."
+risk_level = "medium"
+permission = "agent.control"
+
+[[module.actions]]
+name = "wait_agent"
+description = "Wait for a spawned agent to complete (blocks until done or timeout)."
+risk_level = "low"
+permission = "agent.monitor"
+
+[[module.actions]]
+name = "send_message"
+description = "Send a message to a running agent for inter-agent communication."
+risk_level = "low"
+permission = "agent.control"
+
+[module.capabilities]
+permissions = [
+    "agent.spawn",
+    "agent.monitor",
+    "agent.control",
+]
+side_effects = [
+    "Creates autonomous asyncio tasks with their own LLM loops",
+    "Makes LLM API calls for each spawned agent",
+    "Agents may use tools with their own side effects (filesystem, os_exec, etc.)",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

@@ -1,0 +1,74 @@
+app:
+  name: secure-reader-e2e
+  version: "1.0"
+  description: "Security-hardened read-only file browser"
+
+agent:
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0
+  tools:
+    - module: filesystem
+      actions: [read_file, list_directory, search_files, get_file_info]
+      constraints:
+        paths: ["/home/user/docs", "/home/user/public"]
+        read_only: true
+        max_file_size: "10MB"
+    - module: os_exec
+      action: run_command
+      constraints:
+        timeout: "10s"
+        forbidden_commands: ["rm", "dd", "mkfs", "chmod", "chown", "sudo"]
+        forbidden_patterns: ["sudo *", "rm -rf *", "curl *", "wget *"]
+
+capabilities:
+  grant:
+    - module: filesystem
+      actions: [read_file, list_directory, search_files, get_file_info]
+    - module: os_exec
+      actions: [run_command]
+      constraints:
+        forbidden_commands: ["rm", "sudo"]
+  deny:
+    - module: filesystem
+      action: write_file
+      reason: "This is a read-only app"
+    - module: filesystem
+      action: delete_file
+      reason: "Deletion not allowed"
+    - module: os_exec
+      action: kill_process
+      reason: "Process management not allowed"
+  approval_required:
+    - module: os_exec
+      action: run_command
+      when: "true"
+      message: "Approve shell command execution?"
+      timeout: "60s"
+      on_timeout: reject
+    - module: filesystem
+      action: search_files
+      trigger: action_count
+      threshold: 10
+      message: "Many searches performed. Continue?"
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+
+security:
+  profile: readonly
+  sandbox:
+    allowed_paths:
+      - "/home/user/docs"
+      - "/home/user/public"
+    blocked_commands:
+      - "rm"
+      - "sudo"
+      - "chmod"
+
+triggers:
+  - type: cli
+    mode: conversation
+    greeting: "Secure file browser (read-only mode)"

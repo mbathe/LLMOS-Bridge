@@ -680,6 +680,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.plan_executor = executor
         app.state.approval_gate = approval_gate
         app.state.trigger_daemon = trigger_daemon  # None if triggers.enabled=False
+
+        # Initialise AppTriggerBridge (connects YAML app triggers to TriggerDaemon).
+        app_trigger_bridge = None
+        if trigger_daemon is not None:
+            from llmos_bridge.apps.trigger_bridge import AppTriggerBridge
+            app_trigger_bridge = AppTriggerBridge(
+                trigger_daemon=trigger_daemon,
+                event_bus=event_bus,
+            )
+        app.state.app_trigger_bridge = app_trigger_bridge
+        app.state.trigger_managers = {}  # Standalone fallback: app_id → TriggerManager
         app.state.workflow_recorder = workflow_recorder  # None if recording.enabled=False
         app.state.security_manager = security_manager
         app.state.permission_store = permission_store

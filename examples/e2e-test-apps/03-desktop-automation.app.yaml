@@ -1,0 +1,34 @@
+app:
+  name: desktop-auto-e2e
+  version: "1.0"
+  description: "Desktop automation with vision"
+
+agent:
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+  tools:
+    - module: computer_control
+    - module: gui
+      actions: [click_position, type_text, key_press, take_screenshot, focus_window]
+    - module: perception_vision
+      actions: [capture_and_parse, detect_elements]
+    - module: window_tracker
+      actions: [get_active_window, list_windows, wait_for_window]
+
+perception:
+  enabled: true
+  capture_before: false
+  capture_after: true
+  ocr_enabled: true
+  timeout_seconds: 15
+  actions:
+    "computer_control.click_element":
+      capture_before: true
+      capture_after: true
+      ocr_enabled: true
+    "gui.type_text":
+      capture_after: true
+
+security:
+  profile: power_user

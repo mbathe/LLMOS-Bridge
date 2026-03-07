@@ -107,6 +107,13 @@ class TriggerDaemon:
         # trigger_id → TriggerDefinition (in-memory cache)
         self._triggers: dict[str, TriggerDefinition] = {}
 
+        # Custom fire callbacks (e.g. app triggers that bypass IML plan submission)
+        # trigger_id → async callable(trigger, fire_event) -> None
+        self._fire_callbacks: dict[str, Any] = {}
+
+        # EventBus listener references for APPLICATION triggers (for cleanup)
+        self._event_listeners: dict[str, Any] = {}
+
         self._conflict = ConflictResolver()
         self._scheduler: PriorityFireScheduler | None = None
         self._health_task: asyncio.Task[None] | None = None
@@ -214,6 +221,7 @@ class TriggerDaemon:
         """Disarm and permanently delete a trigger."""
         await self._disarm(trigger_id)
         self._triggers.pop(trigger_id, None)
+        self._fire_callbacks.pop(trigger_id, None)
         deleted = await self._store.delete(trigger_id)
         if deleted:
             log.info("trigger_deleted", trigger_id=trigger_id)
@@ -229,6 +237,27 @@ class TriggerDaemon:
         return [t for t in self._triggers.values() if t.state in (TriggerState.ACTIVE, TriggerState.WATCHING)]
 
     # ---------------------------------------------------------------------------
+    # Custom fire callbacks (for app triggers that bypass IML plan submission)
+    # ---------------------------------------------------------------------------
+
+    def set_fire_callback(
+        self,
+        trigger_id: str,
+        callback: Any,
+    ) -> None:
+        """Register a custom fire callback for a trigger.
+
+        When set, ``_submit_plan`` will invoke this callback instead of
+        submitting an IML plan via the executor.  Used by AppTriggerBridge
+        to route app trigger fires back to AppRuntime.run().
+        """
+        self._fire_callbacks[trigger_id] = callback
+
+    def remove_fire_callback(self, trigger_id: str) -> None:
+        """Remove a custom fire callback."""
+        self._fire_callbacks.pop(trigger_id, None)
+
+    # ---------------------------------------------------------------------------
     # Watcher management
     # ---------------------------------------------------------------------------
 
@@ -237,13 +266,18 @@ class TriggerDaemon:
         if trigger.trigger_id in self._watchers:
             await self._disarm(trigger.trigger_id)
         try:
-            watcher = WatcherFactory.create(
-                trigger_id=trigger.trigger_id,
-                condition=trigger.condition,
-                fire_callback=self._on_watcher_fire,
-            )
-            self._watchers[trigger.trigger_id] = watcher
-            await watcher.start()
+            if trigger.condition.type == TriggerType.APPLICATION:
+                # APPLICATION triggers subscribe to EventBus topics directly
+                # rather than using a watcher (no background polling needed).
+                await self._arm_application(trigger)
+            else:
+                watcher = WatcherFactory.create(
+                    trigger_id=trigger.trigger_id,
+                    condition=trigger.condition,
+                    fire_callback=self._on_watcher_fire,
+                )
+                self._watchers[trigger.trigger_id] = watcher
+                await watcher.start()
             log.debug("trigger_armed", trigger_id=trigger.trigger_id, type=trigger.condition.type.value)
         except Exception as exc:
             log.error("trigger_arm_failed", trigger_id=trigger.trigger_id, error=str(exc))
@@ -251,11 +285,31 @@ class TriggerDaemon:
             trigger.health.record_fail(str(exc))
             await self._store.save(trigger)
 
+    async def _arm_application(self, trigger: TriggerDefinition) -> None:
+        """Arm an APPLICATION trigger by subscribing to EventBus topics."""
+        topic = trigger.condition.params.get("topic")
+        if not topic:
+            raise ValueError("APPLICATION trigger must have 'topic' in params")
+
+        trigger_id = trigger.trigger_id
+
+        async def _on_event(event_topic: str, event_data: dict[str, Any]) -> None:
+            payload = event_data if isinstance(event_data, dict) else {"data": event_data}
+            await self._on_watcher_fire(trigger_id, f"event.{topic}", payload)
+
+        self._bus.register_listener(topic, _on_event)
+        self._event_listeners[trigger_id] = (topic, _on_event)
+
     async def _disarm(self, trigger_id: str) -> None:
         """Stop and remove the watcher for *trigger_id*."""
         watcher = self._watchers.pop(trigger_id, None)
         if watcher is not None:
             await watcher.stop()
+        # Clean up APPLICATION event listener if present
+        listener_info = self._event_listeners.pop(trigger_id, None)
+        if listener_info is not None:
+            topic, callback = listener_info
+            self._bus.unregister_listener(topic, callback)
 
     # ---------------------------------------------------------------------------
     # Fire callback (called by watchers)
@@ -307,7 +361,17 @@ class TriggerDaemon:
     async def _submit_plan(
         self, trigger: TriggerDefinition, fire_event: TriggerFireEvent
     ) -> str | None:
-        """Build and submit the IML plan for a trigger fire."""
+        """Build and submit the IML plan for a trigger fire.
+
+        If a custom fire callback is registered for this trigger (e.g. app
+        triggers via AppTriggerBridge), the callback is invoked instead of
+        submitting an IML plan through the executor.
+        """
+        # Check for custom fire callback (app triggers)
+        fire_cb = self._fire_callbacks.get(trigger.trigger_id)
+        if fire_cb is not None:
+            return await self._submit_via_callback(trigger, fire_event, fire_cb)
+
         if self._executor is None:
             log.warning("trigger_no_executor", trigger_id=trigger.trigger_id)
             return None
@@ -360,6 +424,41 @@ class TriggerDaemon:
             if trigger.resource_lock:
                 self._conflict.release(trigger.resource_lock, plan_id)
             log.error("trigger_submit_failed", trigger_id=trigger.trigger_id, error=str(exc))
+            return None
+
+    async def _submit_via_callback(
+        self,
+        trigger: TriggerDefinition,
+        fire_event: TriggerFireEvent,
+        callback: Any,
+    ) -> str | None:
+        """Invoke a custom fire callback instead of submitting an IML plan.
+
+        Used for app triggers where the fire should invoke AppRuntime.run()
+        rather than the IML PlanExecutor.
+        """
+        start = time.time()
+        plan_id = trigger.generate_plan_id()
+        fire_event.plan_id = plan_id
+
+        try:
+            await callback(trigger, fire_event)
+            trigger.health.record_fire(latency_ms=(time.time() - start) * 1000)
+            trigger.state = TriggerState.ACTIVE  # re-arm
+            await self._store.save(trigger)
+
+            await self._emit_trigger_event("trigger.callback_fired", trigger, fire_event.to_dict())
+            log.info(
+                "trigger_callback_fired",
+                trigger_id=trigger.trigger_id,
+                plan_id=plan_id,
+                latency_ms=round(trigger.health.avg_latency_ms, 1),
+            )
+            return plan_id
+        except Exception as exc:
+            trigger.health.record_fail(str(exc))
+            await self._store.save(trigger)
+            log.error("trigger_callback_failed", trigger_id=trigger.trigger_id, error=str(exc))
             return None
 
     async def _cancel_plan(self, plan_id: str) -> None:

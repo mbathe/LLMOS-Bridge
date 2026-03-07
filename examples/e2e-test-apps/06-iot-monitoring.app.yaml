@@ -1,0 +1,103 @@
+app:
+  name: iot-monitor-e2e
+  version: "1.0"
+  description: "IoT monitoring with triggers and recording"
+
+variables:
+  broker_url: "mqtt://localhost:1883"
+  alert_threshold: 50
+
+flow:
+  - id: connect_broker
+    action: iot.connect
+    params:
+      broker: "{{broker_url}}"
+    on_error: fail
+
+  - id: subscribe_topics
+    parallel:
+      max_concurrent: 5
+      steps:
+        - id: sub_temp
+          action: iot.subscribe
+          params:
+            topic: "sensors/temperature"
+        - id: sub_humidity
+          action: iot.subscribe
+          params:
+            topic: "sensors/humidity"
+        - id: sub_pressure
+          action: iot.subscribe
+          params:
+            topic: "sensors/pressure"
+
+  - id: start_recording
+    action: recording.start_recording
+    params: {}
+
+  - id: check_devices
+    action: iot.list_devices
+    params: {}
+
+  - id: monitor_loop
+    loop:
+      max_iterations: 5
+      until: "{{result.check_sensor.alert}}"
+      body:
+        - id: check_sensor
+          action: iot.get_sensor_data
+          params:
+            sensor_id: "temp-001"
+        - id: log_reading
+          action: memory.store
+          params:
+            key: "last_reading"
+            value: "{{result.check_sensor}}"
+        - id: check_alert
+          branch:
+            "on": "{{result.check_sensor.value > alert_threshold}}"
+            cases:
+              "true":
+                - id: send_alert
+                  action: api_http.post
+                  params:
+                    url: "https://alerts.example.com/webhook"
+              "false":
+                - id: log_ok
+                  action: memory.store
+                  params:
+                    key: "status"
+                    value: "normal"
+
+  - id: stop_recording
+    action: recording.stop_recording
+    params: {}
+
+  - id: create_trigger
+    action: triggers.create_trigger
+    params:
+      type: "schedule"
+
+agents:
+  - id: monitor
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    tools:
+      - module: iot
+      - module: recording
+      - module: triggers
+      - module: api_http
+        actions: [post, get]
+      - module: memory
+        actions: [store, recall, search]
+
+memory:
+  working:
+    max_size: "100MB"
+  conversation:
+    max_history: 500
+
+security:
+  profile: power_user

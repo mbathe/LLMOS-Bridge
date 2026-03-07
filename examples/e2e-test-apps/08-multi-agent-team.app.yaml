@@ -1,0 +1,75 @@
+app:
+  name: multi-agent-team-e2e
+  version: "1.0"
+  description: "Multi-agent research team"
+
+agents:
+  - id: coordinator
+    role: coordinator
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.3
+    system_prompt: |
+      You are the coordinator. Break down tasks and delegate to specialists.
+      Use agent_spawn to create sub-agents for parallel work.
+      Use memory to track progress across agents.
+    tools:
+      - module: agent_spawn
+      - module: memory
+        actions: [store, recall, search, set_objective, update_progress]
+      - module: context_manager
+      - builtin: delegate
+
+  - id: researcher
+    role: specialist
+    expertise: [web, analysis]
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.2
+    system_prompt: |
+      You are a research specialist. Gather information using HTTP APIs.
+    tools:
+      - module: api_http
+        actions: [get, post]
+        constraints:
+          allowed_domains: ["api.github.com", "pypi.org", "httpbin.org"]
+      - module: filesystem
+        actions: [write_file, read_file]
+      - module: memory
+        actions: [store, recall]
+
+  - id: analyst
+    role: specialist
+    expertise: [data, code]
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    system_prompt: |
+      You are a data analyst. Analyze gathered data and produce insights.
+    tools:
+      - module: filesystem
+      - module: os_exec
+        actions: [run_command]
+      - module: memory
+        actions: [store, recall, search]
+
+communication:
+  mode: orchestrated
+
+strategy: hierarchical
+
+memory:
+  working:
+    max_size: "100MB"
+  conversation:
+    max_history: 500
+  episodic:
+    auto_record: true
+    auto_recall:
+      on_start: true
+      limit: 10
+
+security:
+  profile: power_user

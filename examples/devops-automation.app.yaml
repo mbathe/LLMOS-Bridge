@@ -1,0 +1,583 @@
+# devops-automation.app.yaml — CI/CD pipeline with approval gates
+#
+# Demonstrates:
+#   Flow engine:  sequence, parallel, branch, try/catch, approval, emit/wait, loop
+#   Modules:      filesystem, os_exec, api_http, database, memory, agent_spawn
+#   Security:     Approval gates for deployments, audit logging, rate limiting
+#   Multi-agent:  coordinator + deployer + monitor agents
+#   Macros:       Reusable deploy, rollback, health-check flows
+#   Triggers:     Webhook (GitHub), schedule, event-driven
+#
+# Usage:
+#   llmos app run devops-automation.app.yaml "Deploy staging"
+#   curl -X POST http://localhost:8000/apps/devops/webhook -d '{"ref":"main"}'
+
+app:
+  name: devops-automation
+  version: "2.0"
+  description: "CI/CD pipeline with approval gates, rollback, and multi-environment deployment"
+  author: llmos
+  tags: [devops, ci-cd, deployment, automation]
+  max_concurrent_runs: 3
+  max_turns_per_run: 100
+  timeout: "1800s"
+  checkpoint: true
+  interface:
+    input:
+      type: string
+      description: "Deployment instruction or pipeline trigger"
+    output:
+      type: string
+      description: "Deployment result with status and logs"
+    errors:
+      - code: BUILD_FAILED
+        description: "Build step failed"
+      - code: TESTS_FAILED
+        description: "Test suite did not pass"
+      - code: DEPLOY_REJECTED
+        description: "Deployment rejected by approver"
+      - code: ROLLBACK_TRIGGERED
+        description: "Deployment rolled back due to health check failure"
+
+variables:
+  project_dir: "{{env.PWD}}"
+  staging_url: "https://staging.example.com"
+  production_url: "https://app.example.com"
+  docker_registry: "registry.example.com"
+  slack_webhook: "{{env.SLACK_WEBHOOK_URL}}"
+  health_check_retries: 5
+  deploy_timeout: "300s"
+
+types:
+  DeployResult:
+    environment:
+      type: string
+      enum: [staging, production, canary]
+    version:
+      type: string
+    status:
+      type: string
+      enum: [success, failed, rolled_back]
+    duration_seconds:
+      type: number
+  HealthStatus:
+    healthy:
+      type: boolean
+    response_time_ms:
+      type: number
+    error_rate:
+      type: number
+
+# ─── Macros ────────────────────────────────────────────────────────
+
+macros:
+  - name: run_build
+    description: "Build the project with Docker"
+    params:
+      tag:
+        type: string
+        required: true
+    body:
+      - id: build
+        action: os_exec.run_command
+        params:
+          command: "docker build -t {{docker_registry}}/app:{{macro.tag}} ."
+        timeout: "300s"
+        retry:
+          max_attempts: 2
+          backoff: exponential
+      - id: check_build
+        branch:
+          "on": "{{result.build.exit_code}}"
+          cases:
+            "0":
+              - id: build_ok
+                emit:
+                  topic: "devops.build"
+                  event:
+                    tag: "{{macro.tag}}"
+                    status: "success"
+          default:
+            - id: build_fail
+              emit:
+                topic: "devops.build"
+                event:
+                  tag: "{{macro.tag}}"
+                  status: "failed"
+                  error: "{{result.build.stderr}}"
+
+  - name: health_check
+    description: "Check service health with retries"
+    params:
+      url:
+        type: string
+        required: true
+      retries:
+        type: integer
+        default: 5
+    body:
+      - id: check_loop
+        loop:
+          max_iterations: "{{macro.retries}}"
+          until: "{{result.check.status_code == 200}}"
+          body:
+            - id: check
+              action: api_http.get
+              params:
+                url: "{{macro.url}}/health"
+              on_error: continue
+      - id: report
+        branch:
+          "on": "{{result.check.status_code}}"
+          cases:
+            "200":
+              - id: healthy
+                action: memory.store
+                params:
+                  key: "health_{{macro.url}}"
+                  value: "healthy"
+          default:
+            - id: unhealthy
+              emit:
+                topic: "devops.alert"
+                event:
+                  url: "{{macro.url}}"
+                  status: "unhealthy"
+
+  - name: notify_slack
+    description: "Send notification to Slack"
+    params:
+      message:
+        type: string
+        required: true
+      channel:
+        type: string
+        default: "#deployments"
+    body:
+      - id: send
+        action: api_http.post
+        params:
+          url: "{{slack_webhook}}"
+        on_error: continue
+
+  - name: rollback
+    description: "Roll back to previous version"
+    params:
+      environment:
+        type: string
+        required: true
+      previous_version:
+        type: string
+        required: true
+    body:
+      - id: rollback_deploy
+        action: os_exec.run_command
+        params:
+          command: "kubectl set image deployment/app app={{docker_registry}}/app:{{macro.previous_version}} --namespace={{macro.environment}}"
+        timeout: "120s"
+      - id: verify_rollback
+        use: health_check
+        with:
+          url: "{{staging_url}}"
+          retries: 3
+      - id: notify_rollback
+        emit:
+          topic: "devops.rollback"
+          event:
+            environment: "{{macro.environment}}"
+            version: "{{macro.previous_version}}"
+
+# ─── Flow ──────────────────────────────────────────────────────────
+
+flow:
+  # Phase 1: Setup and validation
+  - id: init
+    action: memory.observe
+    params: {}
+
+  - id: get_version
+    action: os_exec.run_command
+    params:
+      command: "git describe --tags --always"
+
+  - id: store_version
+    action: memory.store
+    params:
+      key: "deploy_version"
+      value: "{{result.get_version.stdout}}"
+
+  # Phase 2: Build and test in parallel
+  - id: build_and_test
+    parallel:
+      max_concurrent: 3
+      fail_fast: true
+      steps:
+        - id: build
+          use: run_build
+          with:
+            tag: "{{result.get_version.stdout}}"
+
+        - id: run_unit_tests
+          action: os_exec.run_command
+          params:
+            command: "pytest tests/unit -v --no-cov"
+          timeout: "180s"
+
+        - id: run_lint
+          action: os_exec.run_command
+          params:
+            command: "ruff check ."
+          on_error: continue
+
+  # Phase 3: Integration tests (sequential, depends on build)
+  - id: integration_tests
+    try:
+      - id: start_test_env
+        action: os_exec.run_command
+        params:
+          command: "docker-compose -f docker-compose.test.yml up -d"
+        timeout: "120s"
+
+      - id: wait_ready
+        use: health_check
+        with:
+          url: "http://localhost:8080"
+          retries: 10
+
+      - id: run_integration
+        action: os_exec.run_command
+        params:
+          command: "pytest tests/integration -v"
+        timeout: "300s"
+    catch:
+      - error: "*"
+        then: continue
+    finally:
+      - id: cleanup_test_env
+        action: os_exec.run_command
+        params:
+          command: "docker-compose -f docker-compose.test.yml down -v"
+        on_error: continue
+
+  # Phase 4: Deploy to staging (automatic)
+  - id: deploy_staging
+    try:
+      - id: push_image
+        action: os_exec.run_command
+        params:
+          command: "docker push {{docker_registry}}/app:{{result.get_version.stdout}}"
+        timeout: "120s"
+
+      - id: kubectl_staging
+        action: os_exec.run_command
+        params:
+          command: "kubectl set image deployment/app app={{docker_registry}}/app:{{result.get_version.stdout}} --namespace=staging"
+
+      - id: verify_staging
+        use: health_check
+        with:
+          url: "{{staging_url}}"
+          retries: "{{health_check_retries}}"
+
+      - id: staging_success
+        emit:
+          topic: "devops.deploy"
+          event:
+            environment: "staging"
+            version: "{{result.get_version.stdout}}"
+            status: "success"
+    catch:
+      - error: "*"
+        do:
+          id: staging_rollback
+          agent: deployer
+          input: "Staging deployment failed. Investigate and attempt rollback."
+
+  # Phase 5: Production approval gate
+  - id: production_gate
+    approval:
+      message: |
+        Staging deployment successful for version {{result.get_version.stdout}}.
+        Staging URL: {{staging_url}}
+
+        Approve production deployment?
+      options:
+        - label: "Deploy to production"
+          value: "approve"
+        - label: "Deploy canary (10%)"
+          value: "canary"
+        - label: "Reject"
+          value: "reject"
+      timeout: "1800s"
+      on_timeout: reject
+      channel: cli
+      on:
+        approve:
+          goto: deploy_production
+        canary:
+          goto: deploy_canary
+        reject:
+          goto: deployment_rejected
+
+  # Phase 6a: Full production deployment
+  - id: deploy_production
+    try:
+      - id: kubectl_prod
+        action: os_exec.run_command
+        params:
+          command: "kubectl set image deployment/app app={{docker_registry}}/app:{{result.get_version.stdout}} --namespace=production"
+        timeout: "{{deploy_timeout}}"
+
+      - id: verify_prod
+        use: health_check
+        with:
+          url: "{{production_url}}"
+          retries: "{{health_check_retries}}"
+
+      - id: prod_success
+        emit:
+          topic: "devops.deploy"
+          event:
+            environment: "production"
+            version: "{{result.get_version.stdout}}"
+            status: "success"
+    catch:
+      - error: "*"
+        do:
+          id: prod_auto_rollback
+          use: rollback
+          with:
+            environment: "production"
+            previous_version: "{{memory.previous_production_version}}"
+    goto: finalize
+
+  # Phase 6b: Canary deployment
+  - id: deploy_canary
+    try:
+      - id: canary_deploy
+        action: os_exec.run_command
+        params:
+          command: "kubectl set image deployment/app-canary app={{docker_registry}}/app:{{result.get_version.stdout}} --namespace=production"
+
+      - id: canary_monitor
+        loop:
+          max_iterations: 10
+          until: "{{result.canary_check.error_rate > 0.01}}"
+          body:
+            - id: canary_check
+              action: api_http.get
+              params:
+                url: "{{production_url}}/metrics"
+              on_error: continue
+            - id: canary_wait
+              action: os_exec.run_command
+              params:
+                command: "sleep 30"
+
+      - id: canary_promote
+        approval:
+          message: "Canary looks healthy. Promote to full production?"
+          timeout: "600s"
+          on_timeout: reject
+    catch:
+      - error: "*"
+        do:
+          id: canary_rollback
+          use: rollback
+          with:
+            environment: "production"
+            previous_version: "{{memory.previous_production_version}}"
+    goto: finalize
+
+  # Phase 6c: Rejected
+  - id: deployment_rejected
+    emit:
+      topic: "devops.deploy"
+      event:
+        status: "rejected"
+        version: "{{result.get_version.stdout}}"
+    goto: finalize
+
+  # Phase 7: Finalize
+  - id: finalize
+    action: memory.store
+    params:
+      key: "previous_production_version"
+      value: "{{result.get_version.stdout}}"
+
+  - id: done
+    end:
+      status: success
+      output:
+        version: "{{result.get_version.stdout}}"
+        summary: "Pipeline complete"
+
+# ─── Agents ────────────────────────────────────────────────────────
+
+agents:
+  - id: deployer
+    role: specialist
+    expertise: [deployment, kubernetes, docker]
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.1
+    system_prompt: |
+      You are a deployment specialist. You manage Kubernetes deployments,
+      Docker images, and rollback procedures.
+    tools:
+      - module: os_exec
+        actions: [run_command, get_env]
+        constraints:
+          timeout: "120s"
+          rate_limit_per_minute: 20
+      - module: api_http
+        actions: [get, post]
+      - module: memory
+        actions: [store, recall, search]
+      - module: filesystem
+        actions: [read_file, write_file]
+
+  - id: monitor
+    role: observer
+    expertise: [monitoring, alerting]
+    brain:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+    system_prompt: |
+      You monitor deployment health. Watch metrics, detect anomalies,
+      and trigger alerts when things go wrong.
+    tools:
+      - module: api_http
+        actions: [get]
+      - module: memory
+        actions: [store, recall]
+
+communication:
+  mode: orchestrated
+
+strategy: hierarchical
+
+# ─── Memory ────────────────────────────────────────────────────────
+
+memory:
+  working:
+    max_size: "50MB"
+  conversation:
+    max_history: 200
+  episodic:
+    auto_record: true
+    record_fields: [input, actions_taken, outcome, lessons]
+    auto_recall:
+      on_start: true
+      limit: 5
+
+# ─── Security ──────────────────────────────────────────────────────
+
+capabilities:
+  grant:
+    - module: os_exec
+      actions: [run_command, get_env]
+    - module: api_http
+      actions: [get, post]
+    - module: filesystem
+      actions: [read_file, write_file, list_directory]
+    - module: memory
+    - module: database
+      actions: [query, list_tables]
+  deny:
+    - module: os_exec
+      action: kill_process
+      reason: "No process management in deployment pipeline"
+    - module: filesystem
+      action: delete_file
+      when: "{{not params.path.startswith('/tmp/')}}"
+      reason: "Only temp files can be deleted"
+  approval_required:
+    - module: os_exec
+      action: run_command
+      when: "{{params.command.startswith('kubectl') and 'production' in params.command}}"
+      message: "Approve production kubectl command?"
+      timeout: "120s"
+      on_timeout: reject
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+    notify_on:
+      - event: permission_denied
+        channel: log
+      - event: approval_rejected
+        channel: log
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{project_dir}}"
+      - "/tmp"
+    blocked_commands:
+      - "rm -rf /"
+      - "kubectl delete namespace production"
+
+# ─── Triggers ──────────────────────────────────────────────────────
+
+triggers:
+  - id: cli
+    type: cli
+    mode: conversation
+    greeting: "DevOps Pipeline v2.0 — type a deployment command"
+
+  - id: github_webhook
+    type: webhook
+    path: /webhook
+    method: POST
+    auth:
+      type: hmac
+      secret: "{{env.GITHUB_WEBHOOK_SECRET}}"
+      header: X-Hub-Signature-256
+    events: [push, pull_request]
+    filters:
+      - "{{trigger.ref == 'refs/heads/main'}}"
+    transform: "Deploy from push to main: {{trigger.head_commit.message}}"
+
+  - id: nightly_deploy
+    type: schedule
+    cron: "0 2 * * *"
+    timezone: "UTC"
+    input: "Nightly staging deployment"
+
+  - id: on_build_complete
+    type: event
+    topic: "devops.build"
+    filters:
+      - "{{trigger.status == 'success'}}"
+
+# ─── Observability ─────────────────────────────────────────────────
+
+observability:
+  streaming:
+    enabled: true
+    channels: [cli, sse]
+    include_thoughts: false
+    include_tool_calls: true
+    include_results: true
+  logging:
+    level: info
+    format: structured
+  tracing:
+    enabled: true
+    sample_rate: 1.0
+  metrics:
+    - name: deployments_total
+      type: counter
+      track: "deploy"
+    - name: deploy_duration_seconds
+      type: histogram
+      track: "deploy_duration"
+    - name: rollbacks_total
+      type: counter
+      track: "rollback"
+    - name: health_check_failures
+      type: counter
+      track: "health_check_fail"

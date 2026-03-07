@@ -1,0 +1,416 @@
+# security-fortress.app.yaml — Maximum security demonstration
+#
+# Demonstrates EVERY security feature of the LLMOS App Language:
+#   - Permission profiles (readonly)
+#   - Capabilities: grant, deny (with when: conditions), approval_required
+#   - Approval gates: count-based triggers, timeout policies, multi-channel
+#   - Audit: full logging, param logging, secret redaction, notifications
+#   - Tool constraints: paths, forbidden commands/patterns, domains, rate limiting,
+#     timeouts, max file size, read-only, max retries, retry backoff
+#   - Sandbox: allowed paths, blocked commands
+#   - Per-action perception (screenshot verification)
+#   - Intent verification (via daemon's IntentVerifier)
+#   - Module-level deny with conditional expressions
+#
+# This app is a read-only security analyst that can inspect files, run safe
+# commands, scan for vulnerabilities, and produce security reports — but
+# CANNOT modify anything without multi-layer approval.
+#
+# Usage:
+#   llmos app run security-fortress.app.yaml "Audit the codebase for vulnerabilities"
+
+app:
+  name: security-fortress
+  version: "1.0"
+  description: "Maximum-security app demonstrating all LLMOS security features"
+  author: llmos
+  tags: [security, audit, compliance, hardened]
+  max_concurrent_runs: 1
+  max_turns_per_run: 50
+  max_actions_per_turn: 10
+  timeout: "600s"
+  checkpoint: false
+  interface:
+    input:
+      type: string
+      description: "Security analysis request"
+    output:
+      type: string
+      description: "Security report"
+    errors:
+      - code: ACCESS_DENIED
+        description: "Action blocked by security policy"
+      - code: RATE_LIMITED
+        description: "Too many actions in time window"
+      - code: APPROVAL_TIMEOUT
+        description: "Human approval timed out"
+
+variables:
+  workspace: "{{env.PWD}}"
+  audit_dir: "/tmp/security-audit"
+  max_scan_depth: 5
+  allowed_scan_extensions: ".py,.js,.ts,.go,.rs,.java,.rb"
+
+types:
+  SecurityFinding:
+    severity:
+      type: string
+      enum: [critical, high, medium, low, info]
+    category:
+      type: string
+    file:
+      type: string
+    line:
+      type: number
+    description:
+      type: string
+    recommendation:
+      type: string
+  AuditReport:
+    total_findings:
+      type: number
+    critical:
+      type: number
+    high:
+      type: number
+    files_scanned:
+      type: number
+
+# ─── Agent ──────────────────────────────────────────────────────────
+
+agent:
+  id: auditor
+  role: specialist
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0
+    max_tokens: 8192
+    timeout: 60.0
+  system_prompt: |
+    You are a security auditor. You analyze codebases for vulnerabilities,
+    misconfigurations, and security anti-patterns. You operate in read-only
+    mode with strict security constraints.
+
+    You CAN:
+    - Read files (within allowed paths only)
+    - List directories
+    - Search for patterns
+    - Run safe analysis commands (grep, find, wc, file — no write operations)
+    - Scan content for security issues via security.scan_content
+    - Store findings in memory
+    - Generate audit reports
+
+    You CANNOT:
+    - Write, modify, or delete any files
+    - Run commands that modify state
+    - Access network resources
+    - Kill processes
+    - Access files outside {{workspace}} and {{audit_dir}}
+
+    Every shell command requires human approval.
+    Every 10th action triggers a checkpoint approval.
+    All actions are fully audited with parameter logging.
+  loop:
+    type: reactive
+    max_turns: 50
+    on_tool_error: show_to_agent
+    on_llm_error: retry
+    retry:
+      max_attempts: 2
+      backoff: fixed
+    context:
+      max_tokens: 100000
+      strategy: summarize
+      keep_last_n_messages: 20
+      min_recent_messages: 10
+
+  tools:
+    # Filesystem: read-only, path-restricted, size-limited
+    - module: filesystem
+      actions: [read_file, list_directory, search_files, get_file_info, glob_search, read_lines]
+      constraints:
+        paths: ["{{workspace}}", "{{audit_dir}}"]
+        read_only: true
+        max_file_size: "5MB"
+        timeout: "10s"
+        rate_limit_per_minute: 60
+        rate_limit_per_hour: 500
+
+    # Shell: extremely restricted, approval-gated
+    - module: os_exec
+      action: run_command
+      constraints:
+        timeout: "10s"
+        working_directory: "{{workspace}}"
+        forbidden_commands: ["rm", "dd", "mkfs", "chmod", "chown", "sudo", "su", "curl", "wget", "nc", "ncat", "python", "node", "ruby", "perl", "php"]
+        forbidden_patterns: ["sudo *", "rm *", "mv *", "cp *", "> *", ">> *", "| sh", "| bash", "curl *", "wget *", "eval *"]
+        rate_limit_per_minute: 10
+        rate_limit_per_hour: 50
+        max_retries: 1
+        retry_backoff: fixed
+
+    # Shell: safe info commands only
+    - module: os_exec
+      actions: [get_env, get_system_info, get_cwd, get_platform_info, which]
+      constraints:
+        timeout: "5s"
+        rate_limit_per_minute: 20
+
+    # Security module: full access
+    - module: security
+      constraints:
+        timeout: "15s"
+        rate_limit_per_minute: 30
+
+    # Memory: store findings
+    - module: memory
+      actions: [store, recall, search, list_keys, observe]
+      constraints:
+        timeout: "5s"
+
+    # Database: read-only schema inspection
+    - module: database
+      actions: [list_tables, describe_table, get_schema, explain]
+      constraints:
+        read_only: true
+        timeout: "10s"
+        rate_limit_per_minute: 20
+
+# ─── Capabilities (maximum security) ──────────────────────────────
+
+capabilities:
+  # Explicit grants with constraints
+  grant:
+    - module: filesystem
+      actions: [read_file, list_directory, search_files, get_file_info, glob_search, read_lines]
+      constraints:
+        paths: ["{{workspace}}", "{{audit_dir}}"]
+        read_only: true
+    - module: os_exec
+      actions: [run_command, get_env, get_system_info, get_cwd, get_platform_info, which]
+    - module: security
+    - module: memory
+      actions: [store, recall, search, list_keys, observe]
+    - module: database
+      actions: [list_tables, describe_table, get_schema, explain]
+
+  # Explicit denials
+  deny:
+    - module: filesystem
+      action: write_file
+      reason: "Read-only security audit — no file writes"
+    - module: filesystem
+      action: delete_file
+      reason: "Read-only security audit — no file deletion"
+    - module: filesystem
+      action: create_directory
+      when: "{{not params.path.startswith('/tmp/security-audit')}}"
+      reason: "Can only create dirs in audit output"
+    - module: filesystem
+      action: move_file
+      reason: "No file modification allowed"
+    - module: filesystem
+      action: copy_file
+      reason: "No file copying allowed"
+    - module: filesystem
+      action: append_file
+      reason: "No file modification allowed"
+    - module: filesystem
+      action: find_replace
+      reason: "No file modification allowed"
+    - module: os_exec
+      action: kill_process
+      reason: "No process management"
+    - module: os_exec
+      action: set_env
+      reason: "No environment modification"
+    - module: database
+      action: execute
+      reason: "No database modifications"
+    - module: database
+      action: query
+      when: "{{params.sql.upper().startswith('INSERT') or params.sql.upper().startswith('UPDATE') or params.sql.upper().startswith('DELETE') or params.sql.upper().startswith('DROP')}}"
+      reason: "Only SELECT queries allowed"
+
+  # Approval gates
+  approval_required:
+    # Every shell command needs approval
+    - module: os_exec
+      action: run_command
+      when: "true"
+      message: "Approve shell command: {{params.command}}"
+      timeout: "60s"
+      on_timeout: reject
+      channel: cli
+
+    # Reading sensitive file patterns
+    - module: filesystem
+      action: read_file
+      when: "{{params.path.endswith('.env') or params.path.endswith('.key') or params.path.endswith('.pem') or 'secret' in params.path.lower()}}"
+      message: "Reading sensitive file: {{params.path}}. Approve?"
+      timeout: "30s"
+      on_timeout: reject
+
+    # Count-based checkpoint: every 10 actions
+    - trigger: action_count
+      threshold: 10
+      message: "10 actions executed. Review and approve continuation?"
+      timeout: "120s"
+      on_timeout: reject
+
+    # Count-based: large scan warning at 50 actions
+    - trigger: action_count
+      threshold: 50
+      message: "50 actions — this is a large audit. Continue?"
+      timeout: "60s"
+      on_timeout: approve
+
+  # Full audit logging
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+    notify_on:
+      - event: permission_denied
+        channel: log
+      - event: approval_rejected
+        channel: log
+      - event: approval_timeout
+        channel: log
+      - event: rate_limited
+        channel: log
+      - event: security_violation
+        channel: log
+
+# ─── Security profile ─────────────────────────────────────────────
+
+security:
+  profile: readonly
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+      - "{{audit_dir}}"
+    blocked_commands:
+      - "rm"
+      - "sudo"
+      - "chmod"
+      - "chown"
+      - "dd"
+      - "mkfs"
+      - "curl"
+      - "wget"
+      - "nc"
+      - "python"
+      - "node"
+
+# ─── Perception ────────────────────────────────────────────────────
+# Disabled — pure text analysis, no GUI
+
+perception:
+  enabled: false
+
+# ─── Memory ────────────────────────────────────────────────────────
+
+memory:
+  working:
+    max_size: "20MB"
+  episodic:
+    auto_record: true
+    record_fields: [input, actions_taken, outcome, lessons]
+    auto_recall:
+      on_start: true
+      limit: 3
+
+# ─── Macros ────────────────────────────────────────────────────────
+
+macros:
+  - name: scan_file
+    description: "Scan a single file for security issues"
+    params:
+      path:
+        type: string
+        required: true
+    body:
+      - id: read
+        action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+      - id: scan
+        action: security.scan_content
+        params:
+          content: "{{result.read}}"
+      - id: store_finding
+        branch:
+          "on": "{{result.scan.findings_count}}"
+          cases:
+            "0":
+              - id: clean
+                action: memory.store
+                params:
+                  key: "scan_{{macro.path}}"
+                  value: "clean"
+          default:
+            - id: found_issues
+              action: memory.store
+              params:
+                key: "scan_{{macro.path}}"
+                value: "{{result.scan}}"
+            - id: alert
+              emit:
+                topic: "security.finding"
+                event:
+                  file: "{{macro.path}}"
+                  findings: "{{result.scan.findings_count}}"
+
+# ─── Triggers ──────────────────────────────────────────────────────
+
+triggers:
+  - id: cli
+    type: cli
+    mode: conversation
+    greeting: |
+      Security Fortress v1.0 — Read-only security auditor
+      Profile: readonly | Audit: full | Approval: every command
+
+      All actions are logged. Shell commands require approval.
+      Workspace: {{workspace}}
+
+  - id: scheduled_audit
+    type: schedule
+    cron: "0 3 * * 0"
+    timezone: "UTC"
+    input: "Weekly security audit: scan all source files for vulnerabilities"
+
+# ─── Observability ─────────────────────────────────────────────────
+
+observability:
+  streaming:
+    enabled: true
+    channels: [cli]
+    include_thoughts: true
+    include_tool_calls: true
+    include_results: false
+  logging:
+    level: debug
+    format: structured
+    file: "{{audit_dir}}/security-audit.log"
+  tracing:
+    enabled: true
+    sample_rate: 1.0
+  metrics:
+    - name: files_scanned
+      type: counter
+      track: "scan"
+    - name: findings_total
+      type: counter
+      track: "finding"
+    - name: findings_critical
+      type: counter
+      track: "finding_critical"
+    - name: approval_requests
+      type: counter
+      track: "approval"
+    - name: denials
+      type: counter
+      track: "denied"

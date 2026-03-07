@@ -1,0 +1,59 @@
+[module]
+module_id = "context_manager"
+version = "1.0.0"
+description = "Intelligent LLM context window management. Computes token budgets, compresses conversation history via LLM summarization, provides on-demand context fetching. Ensures the LLM never loses awareness of objectives, tools, or state while staying within model limits."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.context_manager.module:ContextManagerModule"
+platforms = ["all"]
+requirements = []
+tags = ["context", "token-management", "summarization", "budget", "llm"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "get_budget"
+description = "Get the current context budget allocation showing how tokens are distributed across system prompt, cognitive state, memory, conversation history, and tools."
+risk_level = "low"
+permission = "context.read"
+
+[[module.actions]]
+name = "compress_history"
+description = "Compress conversation history by summarizing older messages using an LLM. Returns the compressed messages. Use this when context is getting large."
+risk_level = "low"
+permission = "context.write"
+
+[[module.actions]]
+name = "fetch_context"
+description = "Fetch detailed context on demand. When context was compressed, use this to retrieve full details about specific topics, previous tool results, or conversation segments the LLM needs to recall."
+risk_level = "low"
+permission = "context.read"
+
+[[module.actions]]
+name = "get_tools_summary"
+description = "Get a compact summary of available tools/actions, filtered by what the current application is allowed to use. More compact than full tool schemas."
+risk_level = "low"
+permission = "context.read"
+
+[[module.actions]]
+name = "get_state"
+description = "Get the current context window state: token usage, budget utilization, compression history, and what has been summarized."
+risk_level = "low"
+permission = "context.read"
+
+[module.capabilities]
+permissions = [
+    "context.read",
+    "context.write",
+]
+side_effects = [
+    "May call a fast LLM for summarization (haiku-class model)",
+    "Stores compressed summaries for later retrieval",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

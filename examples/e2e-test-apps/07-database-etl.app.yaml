@@ -1,0 +1,121 @@
+app:
+  name: database-etl-e2e
+  version: "1.0"
+  description: "Database ETL pipeline"
+
+variables:
+  source_db: "postgresql://localhost/source"
+  target_db: "sqlite:///target.db"
+
+macros:
+  - name: extract_table
+    params:
+      table:
+        type: string
+        required: true
+      connection_id:
+        type: string
+        required: true
+    body:
+      - id: query_table
+        action: database_gateway.query
+        params:
+          connection_id: "{{macro.connection_id}}"
+          sql: "SELECT * FROM {{macro.table}}"
+
+  - name: load_to_excel
+    params:
+      data:
+        type: string
+        required: true
+      filename:
+        type: string
+        required: true
+    body:
+      - id: open_wb
+        action: excel.open_workbook
+        params:
+          path: "/tmp/etl/{{macro.filename}}"
+      - id: write_data
+        action: excel.write_cell
+        params:
+          cell: "A1"
+          value: "{{macro.data}}"
+      - id: save_wb
+        action: excel.save_workbook
+        params: {}
+
+flow:
+  - id: setup_dir
+    action: filesystem.create_directory
+    params:
+      path: "/tmp/etl"
+
+  - id: connect_source
+    action: database_gateway.connect
+    params:
+      connection_string: "{{source_db}}"
+
+  - id: connect_target
+    action: database_gateway.connect
+    params:
+      connection_string: "{{target_db}}"
+
+  - id: extract_users
+    use: extract_table
+    with:
+      table: "users"
+      connection_id: "{{result.connect_source.connection_id}}"
+
+  - id: extract_orders
+    use: extract_table
+    with:
+      table: "orders"
+      connection_id: "{{result.connect_source.connection_id}}"
+
+  - id: transform
+    agent: etl_agent
+    input: |
+      Transform the extracted data. Users: {{result.extract_users}}
+      Orders: {{result.extract_orders}}
+
+  - id: load_excel
+    use: load_to_excel
+    with:
+      data: "{{result.transform}}"
+      filename: "etl_output.xlsx"
+
+  - id: cleanup
+    try:
+      - id: disconnect_source
+        action: database_gateway.disconnect
+        params:
+          connection_id: "{{result.connect_source.connection_id}}"
+      - id: disconnect_target
+        action: database_gateway.disconnect
+        params:
+          connection_id: "{{result.connect_target.connection_id}}"
+    catch:
+      - error: "*"
+        then: continue
+
+agents:
+  - id: etl_agent
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    tools:
+      - module: database_gateway
+      - module: database
+      - module: excel
+      - module: filesystem
+        actions: [write_file, read_file]
+
+module_config:
+  database_gateway:
+    max_connections: 10
+    pool_timeout: 30
+
+security:
+  profile: power_user

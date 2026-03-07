@@ -1,0 +1,269 @@
+# code-reviewer.app.yaml
+#
+# A production-grade AI code review assistant defined entirely in YAML.
+# Demonstrates: macros, flows, branching, parallel execution, memory,
+# error handling, triggers, and security — zero lines of Python needed.
+#
+# Capabilities:
+#   - Analyzes git diffs for a given branch/PR
+#   - Runs linters and type checkers in parallel
+#   - Produces structured review with severity ratings
+#   - Remembers past reviews for consistency
+#   - Supports CLI conversation and HTTP trigger
+#
+# Usage:
+#   llmos app run code-reviewer.app.yaml
+#   llmos app run code-reviewer.app.yaml --input "Review the changes in feature/auth"
+#   curl -X POST http://localhost:40000/apps/<id>/run -d '{"input":"Review HEAD~3..HEAD"}'
+
+app:
+  name: code-reviewer
+  version: "2.0"
+  description: "AI-powered code review assistant with automated checks"
+  author: llmos
+  tags: [code-review, developer-tools, quality]
+
+variables:
+  workspace: "{{env.PWD}}"
+  review_depth: thorough        # quick | thorough | deep
+  max_diff_lines: 2000
+  languages: "python,typescript,javascript"
+
+# ─── Agent Configuration ──────────────────────────────────────────────
+
+agent:
+  id: reviewer
+  role: specialist
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    temperature: 0.1
+    max_tokens: 8192
+  system_prompt: |
+    You are a senior code reviewer working inside LLMOS.
+    Your workspace is: {{workspace}}
+
+    Review methodology:
+    1. Understand the intent of each change
+    2. Check for bugs, security issues, and performance problems
+    3. Verify error handling and edge cases
+    4. Assess code style and readability
+    5. Suggest specific, actionable improvements
+
+    Severity levels:
+    - CRITICAL: Security vulnerabilities, data loss risks, crashes
+    - HIGH: Logic bugs, race conditions, resource leaks
+    - MEDIUM: Missing validation, poor error messages, code smells
+    - LOW: Style issues, naming conventions, documentation gaps
+    - INFO: Suggestions for improvement, nice-to-haves
+
+    Previous review context (if available):
+    {{memory.last_review_summary}}
+
+    Be constructive but thorough. Praise good code too.
+  loop:
+    type: reactive
+    max_turns: 15
+  tools:
+    - module: filesystem
+      action: read_file
+    - module: filesystem
+      action: list_directory
+    - module: filesystem
+      action: search_files
+    - module: os_exec
+      action: run_command
+
+# ─── Memory ─────────────────────────────────────────────────────────
+
+memory:
+  working:
+    ttl: "30m"
+  conversation:
+    max_history: 100
+  project:
+    namespace: "code-reviewer-{{workspace}}"
+  episodic:
+    enabled: true
+    auto_recall:
+      on_start: true
+      limit: 3
+
+# ─── Macros ─────────────────────────────────────────────────────────
+
+macros:
+  - name: git_diff
+    description: "Get the git diff for analysis"
+    params:
+      range:
+        type: string
+        required: false
+        default: "HEAD~1..HEAD"
+    body:
+      - id: get_diff
+        action: os_exec.run_command
+        params:
+          command: "git diff {{macro.range}} --stat && echo '---FULL_DIFF---' && git diff {{macro.range}}"
+          working_directory: "{{workspace}}"
+
+  - name: run_linter
+    description: "Run a linter/checker and capture output"
+    params:
+      tool:
+        type: string
+        required: true
+      args:
+        type: string
+        default: "."
+    body:
+      - id: lint_exec
+        action: os_exec.run_command
+        params:
+          command: "{{macro.tool}} {{macro.args}}"
+          working_directory: "{{workspace}}"
+
+  - name: check_file
+    description: "Read and analyze a specific file for issues"
+    params:
+      path:
+        type: string
+        required: true
+    body:
+      - id: read_target
+        action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+      - id: analyze
+        agent: reviewer
+        input: |
+          Analyze this file for potential issues. Focus on:
+          - Security vulnerabilities
+          - Error handling gaps
+          - Performance concerns
+          - Code quality
+
+          File: {{macro.path}}
+          Content:
+          {{result.read_target}}
+
+  - name: summarize_review
+    description: "Create a structured review summary from findings"
+    params:
+      diff_output:
+        type: string
+        required: true
+      lint_results:
+        type: string
+        default: "No lint results available"
+    body:
+      - id: final_review
+        agent: reviewer
+        input: |
+          Based on all the analysis, create a structured code review report.
+
+          Format your response as:
+
+          ## Code Review Summary
+
+          **Overall Assessment:** [APPROVE / REQUEST_CHANGES / NEEDS_DISCUSSION]
+
+          ### Critical & High Issues
+          (List each with file, line, description, and suggested fix)
+
+          ### Medium Issues
+          (List each with context)
+
+          ### Low / Info
+          (Brief list)
+
+          ### Positive Observations
+          (What was done well)
+
+          ### Statistics
+          - Files changed: X
+          - Issues found: X (C critical, H high, M medium, L low)
+
+          ---
+
+          Git diff summary:
+          {{macro.diff_output}}
+
+          Automated check results:
+          {{macro.lint_results}}
+
+# ─── Triggers ───────────────────────────────────────────────────────
+
+triggers:
+  - type: cli
+    mode: conversation
+    greeting: |
+      Code Reviewer v2.0 ready.
+      Workspace: {{workspace}}
+
+      Commands:
+        "Review HEAD~1..HEAD"     — Review latest commit
+        "Review feature/xyz"      — Review a branch
+        "Check src/main.py"       — Deep-check a specific file
+        "What did you find last?" — Recall previous review
+
+  - type: http
+    path: /review
+    method: POST
+
+# ─── Security ───────────────────────────────────────────────────────
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+    blocked_commands:
+      - "rm -rf"
+      - "git push"
+      - "git reset --hard"
+      - "dd if="
+      - "mkfs"
+
+# ─── Structured Review Flow ────────────────────────────────────────
+# This flow is used when invoked via API with structured input.
+# For interactive CLI use, the agent loop handles conversations directly.
+# Uncomment below to use the flow instead of the agent loop.
+
+# flow:
+#   # Step 1: Get the diff
+#   - id: get_changes
+#     use: git_diff
+#     with:
+#       range: "{{trigger.input}}"
+#
+#   # Step 2: Run automated checks in parallel
+#   - id: auto_checks
+#     parallel:
+#       max_concurrent: 3
+#       fail_fast: false
+#       steps:
+#         - id: check_ruff
+#           use: run_linter
+#           with:
+#             tool: "ruff check"
+#             args: "--output-format=text ."
+#         - id: check_mypy
+#           use: run_linter
+#           with:
+#             tool: "mypy"
+#             args: "--ignore-missing-imports ."
+#         - id: check_security
+#           use: run_linter
+#           with:
+#             tool: "bandit"
+#             args: "-r . -f txt"
+#
+#   # Step 3: AI review with all context
+#   - id: review
+#     use: summarize_review
+#     with:
+#       diff_output: "{{result.get_changes}}"
+#       lint_results: |
+#         Ruff: {{result.check_ruff}}
+#         Mypy: {{result.check_mypy}}
+#         Security: {{result.check_security}}

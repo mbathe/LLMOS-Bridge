@@ -1,0 +1,248 @@
+app:
+  name: full-capability-e2e
+  version: "1.0"
+  description: "Full capability test: all flow constructs + features"
+  max_concurrent_runs: 3
+  max_turns_per_run: 100
+  timeout: "1800s"
+  checkpoint: true
+  interface:
+    input:
+      type: string
+      description: "Task to perform"
+    output:
+      type: string
+      description: "Result"
+
+variables:
+  workspace: "{{env.PWD}}"
+  mode: "test"
+  retries: 3
+
+types:
+  TaskResult:
+    status:
+      type: string
+      enum: [success, failure, skipped]
+    output:
+      type: string
+    duration_ms:
+      type: number
+
+macros:
+  - name: safe_action
+    description: "Run an action with error handling"
+    params:
+      module:
+        type: string
+        required: true
+      action:
+        type: string
+        required: true
+    body:
+      - id: exec_action
+        action: "{{macro.module}}.{{macro.action}}"
+        params: {}
+        on_error: skip
+
+  - name: read_and_check
+    params:
+      path:
+        type: string
+        required: true
+    body:
+      - id: read
+        action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+      - id: check
+        branch:
+          "on": "{{result.read.error}}"
+          cases:
+            "null":
+              - id: ok
+                emit:
+                  topic: "app.file.read"
+                  event:
+                    path: "{{macro.path}}"
+                    status: "success"
+          default:
+            - id: err
+              emit:
+                topic: "app.file.error"
+                event:
+                  path: "{{macro.path}}"
+                  error: "{{result.read.error}}"
+
+flow:
+  # 1. Setup
+  - id: init
+    action: filesystem.create_directory
+    params:
+      path: "{{workspace}}/test-output"
+
+  # 2. Parallel operations
+  - id: parallel_ops
+    parallel:
+      max_concurrent: 3
+      fail_fast: false
+      steps:
+        - id: list_files
+          action: filesystem.list_directory
+          params:
+            path: "{{workspace}}"
+        - id: sys_info
+          action: os_exec.get_system_info
+          params: {}
+        - id: get_env
+          action: os_exec.get_env
+          params:
+            name: "HOME"
+
+  # 3. Branch on mode
+  - id: mode_check
+    branch:
+      "on": "{{mode}}"
+      cases:
+        "test":
+          - id: test_mode
+            action: memory.store
+            params:
+              key: "mode"
+              value: "test"
+        "production":
+          - id: prod_mode
+            action: memory.store
+            params:
+              key: "mode"
+              value: "production"
+      default:
+        - id: unknown_mode
+          action: memory.store
+          params:
+            key: "mode"
+            value: "unknown"
+
+  # 4. Loop with condition
+  - id: retry_loop
+    loop:
+      max_iterations: "{{retries}}"
+      until: "{{result.attempt.success}}"
+      body:
+        - id: attempt
+          action: filesystem.read_file
+          params:
+            path: "{{workspace}}/test-output/data.txt"
+          on_error: continue
+
+  # 5. Macro usage
+  - id: read_check
+    use: read_and_check
+    with:
+      path: "{{workspace}}/README.md"
+
+  # 6. Try/catch
+  - id: safe_ops
+    try:
+      - id: risky_op
+        action: filesystem.read_file
+        params:
+          path: "/nonexistent/file.txt"
+      - id: never_reached
+        action: memory.store
+        params:
+          key: "reached"
+          value: "yes"
+    catch:
+      - error: "*"
+        then: continue
+
+  # 7. Emit event
+  - id: progress_event
+    emit:
+      topic: "app.progress"
+      event:
+        phase: "complete"
+        percent: 100
+
+  # 8. Agent step
+  - id: analyze
+    agent: default
+    input: |
+      Based on the setup results:
+      Files: {{result.list_files}}
+      System: {{result.sys_info}}
+      Generate a brief analysis.
+
+  # 9. Race
+  - id: race_ops
+    race:
+      steps:
+        - id: fast_op
+          action: os_exec.get_cwd
+          params: {}
+        - id: slow_op
+          action: os_exec.get_platform_info
+          params: {}
+
+  # 10. End
+  - id: done
+    end:
+      status: success
+      output:
+        summary: "All tests passed"
+
+agents:
+  - id: default
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    tools:
+      - module: filesystem
+        actions: [read_file, list_directory]
+      - module: os_exec
+        actions: [run_command, get_system_info]
+      - module: memory
+        actions: [store, recall, search]
+
+memory:
+  working:
+    max_size: "50MB"
+  conversation:
+    max_history: 100
+
+capabilities:
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+
+observability:
+  streaming:
+    enabled: true
+    channels: [cli, sse]
+    include_thoughts: true
+    include_tool_calls: true
+  logging:
+    level: debug
+    format: structured
+  tracing:
+    enabled: true
+    backend: opentelemetry
+    sample_rate: 1.0
+  metrics:
+    - name: tool_calls
+      type: counter
+      track: "tool_call"
+    - name: response_time
+      type: histogram
+      track: "response_ms"
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+    blocked_commands:
+      - "rm -rf /"

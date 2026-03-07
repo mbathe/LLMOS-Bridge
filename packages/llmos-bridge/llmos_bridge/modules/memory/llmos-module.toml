@@ -1,0 +1,96 @@
+[module]
+module_id = "memory"
+version = "1.0.0"
+description = "Multi-backend memory system with cognitive persistence. Store, recall, search across pluggable backends (kv, vector, file, cognitive). Users can register custom backends."
+author = "LLMOS Team"
+license = "MIT"
+homepage = "https://github.com/llmos/llmos-bridge"
+module_class_path = "llmos_bridge.modules.memory.module:MemoryModule"
+platforms = ["all"]
+requirements = []
+tags = ["memory", "storage", "knowledge", "cognitive", "persistence"]
+sandbox_level = "basic"
+module_type = "daemon"
+
+[[module.actions]]
+name = "store"
+description = "Store a key-value pair in a memory backend."
+risk_level = "low"
+permission = "data.memory.write"
+
+[[module.actions]]
+name = "recall"
+description = "Recall a value by key from a memory backend."
+risk_level = "low"
+permission = "data.memory.read"
+
+[[module.actions]]
+name = "search"
+description = "Semantic or fuzzy search across one or all memory backends."
+risk_level = "low"
+permission = "data.memory.read"
+
+[[module.actions]]
+name = "delete"
+description = "Delete a key from a memory backend."
+risk_level = "medium"
+permission = "data.memory.write"
+
+[[module.actions]]
+name = "list_keys"
+description = "List stored keys in a backend with optional prefix filtering."
+risk_level = "low"
+permission = "data.memory.read"
+
+[[module.actions]]
+name = "clear"
+description = "Clear all entries from a backend."
+risk_level = "high"
+permission = "data.memory.write"
+
+[[module.actions]]
+name = "list_backends"
+description = "List all registered memory backends and their capabilities."
+risk_level = "low"
+permission = "data.memory.read"
+
+[[module.actions]]
+name = "set_objective"
+description = "Set a cognitive objective that stays in permanent memory and filters all actions."
+risk_level = "low"
+permission = "data.memory.write"
+
+[[module.actions]]
+name = "get_context"
+description = "Get the full cognitive context (objective + active state + recent decisions). Auto-injected into LLM prompts."
+risk_level = "low"
+permission = "data.memory.read"
+
+[[module.actions]]
+name = "update_progress"
+description = "Update progress toward the current cognitive objective."
+risk_level = "low"
+permission = "data.memory.write"
+
+[[module.actions]]
+name = "observe"
+description = "Get a real-time snapshot of all memory state across all backends. Returns a human-readable summary the LLM can consume without knowing specific keys."
+risk_level = "low"
+permission = "data.memory.read"
+
+[module.capabilities]
+permissions = [
+    "data.memory.read",
+    "data.memory.write",
+]
+side_effects = [
+    "Reads and writes to persistent memory stores (SQLite KV, ChromaDB, files)",
+    "Maintains cognitive objectives and decision history",
+    "Persists state to JSON files for cold storage",
+]
+
+[module.docs]
+readme = "README.md"
+changelog = "CHANGELOG.md"
+actions = "docs/actions.md"
+integration = "docs/integration.md"

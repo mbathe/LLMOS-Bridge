@@ -1,0 +1,561 @@
+# data-pipeline.app.yaml — Advanced ETL with map/reduce, race, dispatch
+#
+# Demonstrates:
+#   Flow engine:  map, reduce, race, dispatch, pipe, loop, branch, try/catch,
+#                 parallel, emit/wait, spawn, approval, end, goto
+#   Modules:      database, database_gateway, excel, word, filesystem, os_exec,
+#                 api_http, memory, agent_spawn
+#   Security:     Database read-only constraints, rate limiting, audit
+#   Multi-agent:  Pipeline strategy (extractor -> transformer -> loader -> reporter)
+#
+# This app exercises EVERY flow step type in the LLMOS language.
+#
+# Usage:
+#   llmos app run data-pipeline.app.yaml "Process Q4 sales data"
+
+app:
+  name: data-pipeline
+  version: "2.0"
+  description: "Advanced ETL pipeline exercising all flow step types"
+  author: llmos
+  tags: [data, etl, pipeline, analytics]
+  max_concurrent_runs: 2
+  max_turns_per_run: 500
+  timeout: "3600s"
+  checkpoint: true
+  interface:
+    input:
+      type: string
+      description: "Data processing instruction"
+    output:
+      type: object
+      description: "Pipeline results with metrics"
+      schema:
+        tables_processed:
+          type: number
+        rows_total:
+          type: number
+        report_path:
+          type: string
+
+variables:
+  source_db: "postgresql://localhost:5432/source"
+  target_db: "sqlite:///output/analytics.db"
+  output_dir: "/tmp/data-pipeline"
+  tables: "users,orders,products,reviews,inventory"
+  batch_size: 1000
+  api_base: "https://api.example.com/v2"
+
+types:
+  TableStats:
+    table:
+      type: string
+    row_count:
+      type: number
+    columns:
+      type: number
+    size_bytes:
+      type: number
+  TransformResult:
+    table:
+      type: string
+    rows_in:
+      type: number
+    rows_out:
+      type: number
+    transformations:
+      type: array
+  PipelineMetrics:
+    tables_processed:
+      type: number
+    total_rows:
+      type: number
+    duration_seconds:
+      type: number
+    errors:
+      type: number
+
+# ─── Macros ────────────────────────────────────────────────────────
+
+macros:
+  - name: extract_table
+    description: "Extract a single table from source database"
+    params:
+      table:
+        type: string
+        required: true
+      connection_id:
+        type: string
+        required: true
+    body:
+      - id: count_rows
+        action: database_gateway.query
+        params:
+          connection_id: "{{macro.connection_id}}"
+          sql: "SELECT COUNT(*) as cnt FROM {{macro.table}}"
+      - id: extract
+        action: database_gateway.query
+        params:
+          connection_id: "{{macro.connection_id}}"
+          sql: "SELECT * FROM {{macro.table}} LIMIT {{batch_size}}"
+      - id: store_stats
+        action: memory.store
+        params:
+          key: "stats_{{macro.table}}"
+          value: "{{result.count_rows}}"
+
+  - name: export_to_excel
+    description: "Export query results to an Excel workbook"
+    params:
+      data:
+        type: string
+        required: true
+      filename:
+        type: string
+        required: true
+      sheet_name:
+        type: string
+        default: "Sheet1"
+    body:
+      - id: open_wb
+        action: excel.open_workbook
+        params:
+          path: "{{output_dir}}/{{macro.filename}}"
+      - id: write_header
+        action: excel.write_cell
+        params:
+          cell: "A1"
+          value: "{{macro.sheet_name}} Export"
+      - id: write_data
+        action: excel.write_cell
+        params:
+          cell: "A2"
+          value: "{{macro.data}}"
+      - id: save
+        action: excel.save_workbook
+        params: {}
+
+  - name: generate_report
+    description: "Generate a Word document report"
+    params:
+      title:
+        type: string
+        required: true
+      content:
+        type: string
+        required: true
+    body:
+      - id: create_doc
+        action: word.create_document
+        params: {}
+      - id: add_title
+        action: word.add_heading
+        params:
+          text: "{{macro.title}}"
+          level: 1
+      - id: add_body
+        action: word.add_paragraph
+        params:
+          text: "{{macro.content}}"
+      - id: add_table
+        action: word.add_table
+        params:
+          rows: 5
+          cols: 4
+      - id: save_doc
+        action: word.save_document
+        params:
+          path: "{{output_dir}}/{{macro.title}}.docx"
+
+# ─── Flow ──────────────────────────────────────────────────────────
+# Exercises ALL flow step types: action, sequence, parallel, branch,
+# loop, map, reduce, race, pipe, spawn, approval, try_catch, dispatch,
+# emit, wait, end, use_macro, goto
+
+flow:
+  # 1. ACTION: Setup output directory
+  - id: setup
+    action: filesystem.create_directory
+    params:
+      path: "{{output_dir}}"
+
+  # 2. PARALLEL: Connect to databases simultaneously
+  - id: connect_dbs
+    parallel:
+      max_concurrent: 2
+      fail_fast: true
+      steps:
+        - id: connect_source
+          action: database_gateway.connect
+          params:
+            connection_string: "{{source_db}}"
+        - id: connect_target
+          action: database_gateway.connect
+          params:
+            connection_string: "{{target_db}}"
+
+  # 3. ACTION: Discover tables
+  - id: list_source_tables
+    action: database_gateway.list_tables
+    params:
+      connection_id: "{{result.connect_source.connection_id}}"
+
+  # 4. EMIT: Signal pipeline start
+  - id: pipeline_started
+    emit:
+      topic: "pipeline.started"
+      event:
+        tables: "{{tables}}"
+        timestamp: "{{env.NOW}}"
+
+  # 5. MAP: Extract each table in parallel
+  - id: extract_all
+    map:
+      over: "{{tables.split(',')}}"
+      as: table
+      max_concurrent: 3
+      step:
+        - id: extract_one
+          use: extract_table
+          with:
+            table: "{{table}}"
+            connection_id: "{{result.connect_source.connection_id}}"
+
+  # 6. AGENT: Transform data using LLM
+  - id: transform_data
+    agent: transformer
+    input: |
+      Transform the extracted data from these tables: {{tables}}
+      Apply these rules:
+      - Normalize email addresses to lowercase
+      - Convert dates to ISO 8601
+      - Remove duplicate entries
+      - Calculate derived fields (total_spent per user, avg_rating per product)
+      Return the transformation summary.
+
+  # 7. REDUCE: Aggregate statistics across tables
+  - id: aggregate_stats
+    reduce:
+      over: "{{tables.split(',')}}"
+      initial:
+        total_rows: 0
+        total_tables: 0
+      as: acc
+      step:
+        id: add_stats
+        action: memory.recall
+        params:
+          key: "stats_{{item}}"
+
+  # 8. BRANCH: Choose output format based on data size
+  - id: choose_format
+    branch:
+      "on": "{{result.aggregate_stats.total_rows}}"
+      cases:
+        "0":
+          - id: no_data
+            emit:
+              topic: "pipeline.warning"
+              event:
+                message: "No data found"
+          - id: skip_export
+            goto: generate_final_report
+      default:
+        - id: export_data
+          use: export_to_excel
+          with:
+            data: "{{result.transform_data}}"
+            filename: "pipeline_export.xlsx"
+            sheet_name: "ETL Results"
+
+  # 9. LOOP: Validate exported data
+  - id: validate_loop
+    loop:
+      max_iterations: 3
+      until: "{{result.validate.valid}}"
+      body:
+        - id: validate
+          action: os_exec.run_command
+          params:
+            command: "python -c \"import json; print(json.dumps({'valid': True}))\""
+          on_error: continue
+
+  # 10. RACE: Fetch enrichment data from fastest source
+  - id: enrich_race
+    race:
+      steps:
+        - id: enrich_api_1
+          action: api_http.get
+          params:
+            url: "{{api_base}}/enrichment/v1"
+        - id: enrich_api_2
+          action: api_http.get
+          params:
+            url: "{{api_base}}/enrichment/v2"
+
+  # 11. TRY/CATCH: Load into target with error handling
+  - id: load_target
+    try:
+      - id: begin_tx
+        action: database_gateway.transaction_begin
+        params:
+          connection_id: "{{result.connect_target.connection_id}}"
+
+      - id: load_data
+        action: database_gateway.execute
+        params:
+          connection_id: "{{result.connect_target.connection_id}}"
+          sql: "INSERT INTO results SELECT * FROM staging"
+
+      - id: commit_tx
+        action: database_gateway.transaction_commit
+        params:
+          connection_id: "{{result.connect_target.connection_id}}"
+    catch:
+      - error: "*"
+        do:
+          id: rollback_tx
+          action: database_gateway.transaction_rollback
+          params:
+            connection_id: "{{result.connect_target.connection_id}}"
+        then: continue
+
+  # 12. DISPATCH: Dynamic action based on runtime config
+  - id: dynamic_export
+    dispatch:
+      module: "{{memory.export_module or 'excel'}}"
+      action: "{{memory.export_action or 'save_workbook'}}"
+      params: {}
+
+  # 13. SPAWN: Background task for notifications
+  - id: notify_spawn
+    spawn:
+      app: "notify-helper"
+      input: "Pipeline {{tables}} complete"
+      timeout: "60s"
+      await: false
+
+  # 14. APPROVAL: Human sign-off on results
+  - id: review_gate
+    approval:
+      message: |
+        Pipeline complete. {{result.aggregate_stats.total_tables}} tables processed.
+        Output: {{output_dir}}/pipeline_export.xlsx
+
+        Approve final report generation?
+      options:
+        - label: "Generate report"
+          value: "approve"
+        - label: "Skip report"
+          value: "skip"
+      timeout: "600s"
+      on_timeout: approve
+      on:
+        approve:
+          goto: generate_final_report
+        skip:
+          goto: cleanup
+
+  # 15. MACRO: Generate Word report
+  - id: generate_final_report
+    use: generate_report
+    with:
+      title: "Data Pipeline Report"
+      content: "Processed {{result.aggregate_stats.total_tables}} tables with {{result.aggregate_stats.total_rows}} rows."
+
+  # 16. WAIT: Wait for external validation event
+  - id: wait_validation
+    wait:
+      topic: "pipeline.validated"
+      filter: "{{event.pipeline_id == app.run_id}}"
+      timeout: "300s"
+
+  # 17. Cleanup
+  - id: cleanup
+    try:
+      - id: disconnect_source
+        action: database_gateway.disconnect
+        params:
+          connection_id: "{{result.connect_source.connection_id}}"
+      - id: disconnect_target
+        action: database_gateway.disconnect
+        params:
+          connection_id: "{{result.connect_target.connection_id}}"
+    catch:
+      - error: "*"
+        then: continue
+
+  # 18. EMIT: Final status
+  - id: pipeline_done
+    emit:
+      topic: "pipeline.completed"
+      event:
+        status: "success"
+        tables: "{{tables}}"
+
+  # 19. END
+  - id: done
+    end:
+      status: success
+      output:
+        tables_processed: "{{result.aggregate_stats.total_tables}}"
+        rows_total: "{{result.aggregate_stats.total_rows}}"
+        report_path: "{{output_dir}}/Data Pipeline Report.docx"
+
+# ─── Multi-Agent (pipeline strategy) ──────────────────────────────
+
+agents:
+  - id: transformer
+    role: specialist
+    expertise: [data, transformation, cleaning]
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.1
+    system_prompt: |
+      You are a data transformation specialist. Clean, normalize, and
+      transform data according to business rules.
+    tools:
+      - module: database
+        actions: [query, execute, list_tables, describe_table]
+        constraints:
+          timeout: "30s"
+      - module: database_gateway
+        actions: [query, execute]
+      - module: memory
+        actions: [store, recall, search]
+      - module: filesystem
+        actions: [read_file, write_file]
+
+  - id: reporter
+    role: specialist
+    expertise: [reporting, documents, visualization]
+    brain:
+      provider: anthropic
+      model: claude-haiku-4-5-20251001
+    system_prompt: |
+      You generate reports from data. Create Excel spreadsheets,
+      Word documents, and PowerPoint presentations.
+    tools:
+      - module: excel
+      - module: word
+      - module: powerpoint
+      - module: filesystem
+        actions: [write_file, read_file, create_directory]
+
+communication:
+  mode: orchestrated
+
+strategy: pipeline
+
+# ─── Memory ────────────────────────────────────────────────────────
+
+memory:
+  working:
+    max_size: "200MB"
+  conversation:
+    max_history: 100
+  episodic:
+    auto_record: true
+    auto_recall:
+      on_start: true
+      limit: 5
+
+# ─── Security ──────────────────────────────────────────────────────
+
+capabilities:
+  grant:
+    - module: database
+    - module: database_gateway
+    - module: excel
+    - module: word
+    - module: powerpoint
+    - module: filesystem
+      actions: [read_file, write_file, create_directory, list_directory]
+      constraints:
+        paths: ["{{output_dir}}", "/tmp"]
+    - module: os_exec
+      actions: [run_command]
+    - module: api_http
+      actions: [get, post]
+    - module: memory
+    - module: agent_spawn
+  deny:
+    - module: database
+      action: execute
+      when: "{{params.sql.upper().startswith('DROP') or params.sql.upper().startswith('DELETE')}}"
+      reason: "Destructive SQL operations not allowed"
+  audit:
+    level: full
+    log_params: true
+    redact_secrets: true
+
+security:
+  profile: power_user
+  sandbox:
+    allowed_paths:
+      - "{{output_dir}}"
+      - "/tmp"
+
+# ─── Triggers ──────────────────────────────────────────────────────
+
+triggers:
+  - id: cli
+    type: cli
+    mode: one_shot
+    greeting: "Data Pipeline v2.0 — describe your data task"
+
+  - id: api
+    type: http
+    path: /pipeline
+    method: POST
+
+  - id: scheduled
+    type: schedule
+    cron: "0 1 * * *"
+    timezone: "UTC"
+    input: "Nightly ETL: process all tables"
+
+  - id: on_data_ready
+    type: event
+    topic: "data.ready"
+    transform: "New data available: {{trigger.source}}"
+
+# ─── Observability ─────────────────────────────────────────────────
+
+observability:
+  streaming:
+    enabled: true
+    channels: [sse]
+    include_tool_calls: true
+    include_results: true
+  logging:
+    level: info
+    format: structured
+  tracing:
+    enabled: true
+    sample_rate: 1.0
+  metrics:
+    - name: rows_processed
+      type: counter
+      track: "rows"
+    - name: tables_extracted
+      type: counter
+      track: "extract"
+    - name: pipeline_duration
+      type: histogram
+      track: "duration"
+    - name: transform_errors
+      type: counter
+      track: "transform_error"
+
+# ─── Module Config ─────────────────────────────────────────────────
+
+module_config:
+  database_gateway:
+    max_connections: 20
+    pool_timeout: 30
+  database:
+    connection_string: "{{target_db}}"
+  excel:
+    default_format: "xlsx"

@@ -1,0 +1,36 @@
+app:
+  name: module-manager-e2e
+  version: "1.0"
+  description: "Module management and security operations"
+
+agent:
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+  tools:
+    - module: module_manager
+      actions: [list_modules, get_module_info, install_module, uninstall_module, enable_module, disable_module]
+    - module: security
+    - module: filesystem
+      actions: [read_file, write_file, list_directory]
+
+capabilities:
+  grant:
+    - module: module_manager
+    - module: security
+    - module: filesystem
+      actions: [read_file, write_file, list_directory]
+  deny:
+    - module: module_manager
+      action: uninstall_module
+      when: "{{params.module_id == 'filesystem'}}"
+      reason: "Cannot uninstall core filesystem module"
+  approval_required:
+    - module: module_manager
+      action: install_module
+      message: "Approve module installation?"
+      timeout: "120s"
+      on_timeout: reject
+
+security:
+  profile: unrestricted

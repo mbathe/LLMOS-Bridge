@@ -1,0 +1,33 @@
+app:
+  name: web-research-e2e
+  version: "1.0"
+  description: "Web research agent"
+
+variables:
+  output_dir: "/tmp/research"
+
+agent:
+  brain:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+  tools:
+    - module: browser
+      actions: [open_browser, navigate_to, get_page_content, take_screenshot, close_browser]
+      constraints:
+        allowed_domains: ["github.com", "stackoverflow.com", "docs.python.org"]
+    - module: api_http
+      actions: [get, post]
+      constraints:
+        allowed_domains: ["api.github.com", "pypi.org"]
+        max_response_size: "5MB"
+    - module: filesystem
+      actions: [write_file, read_file, create_directory]
+      constraints:
+        paths: ["{{output_dir}}"]
+
+memory:
+  working:
+    max_size: "20MB"
+
+security:
+  profile: local_worker

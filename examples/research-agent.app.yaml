@@ -1,0 +1,236 @@
+# research-agent.app.yaml
+#
+# Multi-agent research assistant with structured workflow.
+# Demonstrates: multi-agent orchestration, flow engine, parallel execution,
+# macros, branching, memory, map/reduce, try/catch, and approval gates.
+#
+# Architecture:
+#   - Planner agent: breaks down research questions into subtasks
+#   - Researcher agent: executes individual research tasks (web search, file analysis)
+#   - Writer agent: synthesizes findings into structured reports
+#   - Flow engine: orchestrates the full pipeline
+#
+# Usage:
+#   llmos app run research-agent.app.yaml --input "What are the best practices for Python async programming?"
+
+app:
+  name: research-agent
+  version: "1.0"
+  description: "Multi-agent research assistant with structured workflow"
+  author: llmos
+  tags: [research, multi-agent, analysis]
+
+variables:
+  workspace: "{{env.PWD}}"
+  output_dir: "{{workspace}}/research-output"
+  max_sources: 5
+  report_format: markdown
+
+# ─── Macros ─────────────────────────────────────────────────────────
+
+macros:
+  - name: ensure_dir
+    description: "Create output directory if it doesn't exist"
+    params:
+      dir:
+        type: string
+        required: true
+    body:
+      - id: mkdir
+        action: os_exec.run_command
+        params:
+          command: "mkdir -p {{macro.dir}}"
+
+  - name: save_output
+    description: "Save text content to a file"
+    params:
+      filename:
+        type: string
+        required: true
+      content:
+        type: string
+        required: true
+    body:
+      - id: write_file
+        action: filesystem.write_file
+        params:
+          path: "{{output_dir}}/{{macro.filename}}"
+          content: "{{macro.content}}"
+
+  - name: search_and_summarize
+    description: "Search the web and summarize findings"
+    params:
+      query:
+        type: string
+        required: true
+      context:
+        type: string
+        default: ""
+    body:
+      - id: search
+        action: os_exec.run_command
+        params:
+          command: "echo '[Search results for: {{macro.query}}] (simulated — connect web_search module for real results)'"
+      - id: summarize
+        agent: researcher
+        input: |
+          Summarize the search results for the query: "{{macro.query}}"
+
+          Context: {{macro.context}}
+
+          Search output:
+          {{result.search}}
+
+          Provide a concise summary with key findings and source references.
+
+# ─── Flow ───────────────────────────────────────────────────────────
+
+flow:
+  # Phase 0: Setup
+  - id: setup
+    use: ensure_dir
+    with:
+      dir: "{{output_dir}}"
+
+  # Phase 1: Planning — break down the research question
+  - id: plan
+    agent: planner
+    input: |
+      Break down this research question into 3-5 specific subtasks.
+      Each subtask should be a focused search query or analysis task.
+
+      Research question: {{trigger.input}}
+
+      Respond with a JSON array of objects, each with:
+      - "query": the specific search query
+      - "aspect": what aspect of the question this covers
+      - "priority": "high" | "medium" | "low"
+
+      Example: [{"query": "...", "aspect": "...", "priority": "high"}]
+
+  # Phase 2: Research — execute subtasks in parallel
+  - id: research_phase
+    parallel:
+      max_concurrent: 3
+      fail_fast: false
+      steps:
+        - id: research_1
+          use: search_and_summarize
+          with:
+            query: "{{trigger.input}} overview best practices"
+            context: "This is the primary research query"
+        - id: research_2
+          use: search_and_summarize
+          with:
+            query: "{{trigger.input}} common pitfalls mistakes"
+            context: "Focus on what to avoid"
+        - id: research_3
+          use: search_and_summarize
+          with:
+            query: "{{trigger.input}} real world examples case studies"
+            context: "Find practical examples"
+
+  # Phase 3: Synthesis — compile findings into a report
+  - id: synthesize
+    agent: writer
+    input: |
+      You are writing a comprehensive research report.
+
+      Original question: {{trigger.input}}
+
+      Research findings:
+      1. Overview: {{result.research_1}}
+      2. Pitfalls: {{result.research_2}}
+      3. Examples: {{result.research_3}}
+
+      Write a well-structured report in {{report_format}} format with:
+      - Executive Summary (2-3 sentences)
+      - Key Findings (organized by theme)
+      - Best Practices (actionable recommendations)
+      - Common Pitfalls (what to avoid)
+      - Real-World Examples
+      - Conclusion
+
+      Be thorough but concise. Use bullet points for readability.
+
+  # Phase 4: Save the report
+  - id: save_report
+    use: save_output
+    with:
+      filename: "report.md"
+      content: "{{result.synthesize}}"
+
+  # Phase 5: Generate a quick summary for the user
+  - id: final_summary
+    agent: writer
+    input: |
+      Create a 3-sentence executive summary of this report:
+      {{result.synthesize}}
+
+# ─── Agents ─────────────────────────────────────────────────────────
+
+agents:
+  - id: planner
+    role: coordinator
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.3
+      max_tokens: 2048
+    system_prompt: |
+      You are a research planner. Break down complex questions into
+      focused, searchable subtasks. Output structured JSON.
+    tools: []
+
+  - id: researcher
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.2
+      max_tokens: 4096
+    system_prompt: |
+      You are a research analyst. Summarize search results accurately,
+      cite sources, and highlight key findings. Be objective and thorough.
+    tools:
+      - module: os_exec
+        action: run_command
+
+  - id: writer
+    role: specialist
+    brain:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+      temperature: 0.4
+      max_tokens: 8192
+    system_prompt: |
+      You are a technical writer. Create clear, well-structured reports
+      from research findings. Use markdown formatting. Be concise but complete.
+    tools:
+      - module: filesystem
+        action: write_file
+
+# ─── Triggers ───────────────────────────────────────────────────────
+
+triggers:
+  - type: cli
+    mode: one_shot
+    greeting: |
+      Research Agent v1.0
+      Enter your research question:
+
+  - type: http
+    path: /research
+    method: POST
+
+# ─── Security ───────────────────────────────────────────────────────
+
+security:
+  profile: local_worker
+  sandbox:
+    allowed_paths:
+      - "{{workspace}}"
+    blocked_commands:
+      - "rm -rf"
+      - "curl"
+      - "wget"
