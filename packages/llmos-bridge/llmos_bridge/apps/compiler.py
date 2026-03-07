@@ -115,7 +115,8 @@ class AppCompiler:
         # macros are executed at runtime by FlowExecutor._exec_use_macro)
         if app_def.macros and app_def.flow:
             macro_names = {m.name for m in app_def.macros}
-            self._validate_macro_refs(app_def.flow, macro_names, source)
+            macro_lookup = {m.name: m for m in app_def.macros}
+            self._validate_macro_refs(app_def.flow, macro_names, source, macro_lookup)
 
         # Step 5: Validate module/action existence (when module_info provided)
         if self._module_info:
@@ -137,6 +138,14 @@ class AppCompiler:
         # Step 10: Validate flow action params against module schema
         if self._module_info and app_def.flow:
             self._validate_action_params(app_def.flow, source)
+
+        # Step 10b: Validate macro body action params against module schema
+        if self._module_info and app_def.macros:
+            for macro in app_def.macros:
+                if macro.body:
+                    self._validate_action_params(
+                        macro.body, source, context=f"macro '{macro.name}'",
+                    )
 
         # Step 11: Validate approval_required module/action (with module_info)
         if self._module_info and app_def.capabilities:
@@ -362,15 +371,44 @@ class AppCompiler:
         _walk(steps)
 
     def _validate_macro_refs(
-        self, steps: list[FlowStep], macro_names: set[str], source: str
+        self,
+        steps: list[FlowStep],
+        macro_names: set[str],
+        source: str,
+        macro_lookup: dict[str, Any] | None = None,
     ) -> None:
-        """Validate that all macro references in flow steps refer to defined macros."""
+        """Validate that all macro references in flow steps refer to defined macros.
+
+        When ``macro_lookup`` is provided (name → MacroDefinition), also validates
+        that required params are supplied and no unknown params are passed.
+        """
         errors: list[str] = []
 
         def _walk(step_list: list[FlowStep]) -> None:
             for step in step_list:
+                step_label = step.id or "<anonymous>"
                 if step.use and step.use not in macro_names:
-                    errors.append(f"Unknown macro '{step.use}' referenced in flow step '{step.id or '<anonymous>'}'")
+                    errors.append(f"Unknown macro '{step.use}' referenced in flow step '{step_label}'")
+                elif step.use and macro_lookup and step.use in macro_lookup:
+                    macro_def = macro_lookup[step.use]
+                    provided = set(step.with_params.keys())
+                    # Check required params
+                    for pname, pdef in macro_def.params.items():
+                        if pdef.required and pdef.default is None and pname not in provided:
+                            # Allow if with_params has template expressions
+                            errors.append(
+                                f"Macro call '{step.use}' in step '{step_label}' "
+                                f"is missing required param '{pname}'"
+                            )
+                    # Check unknown params
+                    if macro_def.params:
+                        for pname in provided:
+                            if pname not in macro_def.params:
+                                errors.append(
+                                    f"Macro call '{step.use}' in step '{step_label}' "
+                                    f"passes unknown param '{pname}'. "
+                                    f"Valid params: {sorted(macro_def.params.keys())}"
+                                )
                 # Recurse into nested steps
                 if step.sequence:
                     _walk(step.sequence)
@@ -506,6 +544,15 @@ class AppCompiler:
         if app_def.flow:
             self._validate_flow_action_existence(app_def.flow, available, errors)
 
+        # Validate macro body step actions reference existing modules/actions
+        if app_def.macros:
+            for macro in app_def.macros:
+                if macro.body:
+                    self._validate_flow_action_existence(
+                        macro.body, available, errors,
+                        context=f"macro '{macro.name}'",
+                    )
+
         # Validate module_config keys reference existing modules
         if app_def.module_config:
             for mod_id in app_def.module_config:
@@ -548,6 +595,7 @@ class AppCompiler:
         steps: list[FlowStep],
         available: dict[str, dict],
         errors: list[str],
+        context: str = "flow",
     ) -> None:
         """Validate that flow step actions reference existing modules and actions."""
 
@@ -557,16 +605,16 @@ class AppCompiler:
                     mod_id, action_name = step.action.split(".", 1)
                     if mod_id not in available:
                         errors.append(
-                            f"Flow step '{step.id or '<anonymous>'}' references unknown "
-                            f"module '{mod_id}' in action '{step.action}'. "
+                            f"Step '{step.id or '<anonymous>'}' in {context} references "
+                            f"unknown module '{mod_id}' in action '{step.action}'. "
                             f"Available modules: {sorted(available.keys())}"
                         )
                     else:
                         mod_actions = {a["name"] for a in available[mod_id].get("actions", [])}
                         if action_name not in mod_actions:
                             errors.append(
-                                f"Flow step '{step.id or '<anonymous>'}' references unknown "
-                                f"action '{action_name}' in module '{mod_id}'. "
+                                f"Step '{step.id or '<anonymous>'}' in {context} references "
+                                f"unknown action '{action_name}' in module '{mod_id}'. "
                                 f"Available: {sorted(mod_actions)}"
                             )
                 # Recurse
@@ -1371,7 +1419,7 @@ class AppCompiler:
     # ── Flow action param validation ────────────────────────────────
 
     def _validate_action_params(
-        self, steps: list[FlowStep], source: str
+        self, steps: list[FlowStep], source: str, context: str = "flow",
     ) -> None:
         """Validate that flow step params match the module action's expected params.
 
@@ -1400,8 +1448,8 @@ class AppCompiler:
                                 continue  # internal params like _stream
                             if param_name not in schema:
                                 errors.append(
-                                    f"Flow step '{step.id or '<anonymous>'}' passes unknown "
-                                    f"param '{param_name}' to {mod_id}.{action_name}. "
+                                    f"Step '{step.id or '<anonymous>'}' in {context} passes "
+                                    f"unknown param '{param_name}' to {mod_id}.{action_name}. "
                                     f"Valid params: {sorted(schema.keys())}"
                                 )
 
@@ -1415,8 +1463,9 @@ class AppCompiler:
                                 if pdef.get("required") and pname not in step.params:
                                     if pdef.get("default") is None:
                                         errors.append(
-                                            f"Flow step '{step.id or '<anonymous>'}' is missing "
-                                            f"required param '{pname}' for {mod_id}.{action_name}"
+                                            f"Step '{step.id or '<anonymous>'}' in {context} "
+                                            f"is missing required param '{pname}' "
+                                            f"for {mod_id}.{action_name}"
                                         )
 
                 # Recurse

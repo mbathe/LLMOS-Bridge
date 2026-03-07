@@ -482,3 +482,206 @@ class TestClaudeCodeCompilation:
         # Should have no unknown filter warnings
         unknown_filters = [r for r in caplog.records if "Unknown filter" in r.message]
         assert len(unknown_filters) == 0, f"Unexpected filter warnings: {[r.message for r in unknown_filters]}"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Macro Body Action Validation
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestMacroBodyValidation:
+    """Macro body steps must reference valid modules/actions when module_info is provided."""
+
+    def test_macro_body_invalid_action_rejected(self, strict_compiler):
+        """Invalid action name in macro body must be caught at compile time."""
+        yaml_text = """
+app:
+  name: test-macro-bad-action
+agent:
+  tools:
+    - module: filesystem
+    - module: memory
+macros:
+  - name: my_macro
+    body:
+      - action: filesystem.read_file_FAKE
+        params:
+          path: /tmp/test
+"""
+        with pytest.raises(CompilationError, match="unknown action 'read_file_FAKE'.*filesystem"):
+            strict_compiler.compile_string(yaml_text)
+
+    def test_macro_body_invalid_module_rejected(self, strict_compiler):
+        """Invalid module in macro body must be caught at compile time."""
+        yaml_text = """
+app:
+  name: test-macro-bad-module
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: broken
+    body:
+      - action: nonexistent_module.do_thing
+"""
+        with pytest.raises(CompilationError, match="unknown module 'nonexistent_module'"):
+            strict_compiler.compile_string(yaml_text)
+
+    def test_macro_body_valid_actions_pass(self, strict_compiler):
+        """Valid actions in macro body should compile without error."""
+        yaml_text = """
+app:
+  name: test-macro-ok
+agent:
+  tools:
+    - module: filesystem
+    - module: memory
+macros:
+  - name: good_macro
+    body:
+      - action: filesystem.read_file
+      - action: memory.store
+"""
+        app_def = strict_compiler.compile_string(yaml_text)
+        assert len(app_def.macros) == 1
+
+    def test_macro_body_nested_steps_validated(self, strict_compiler):
+        """Actions inside nested flow constructs in macros are validated."""
+        yaml_text = """
+app:
+  name: test-macro-nested
+agent:
+  tools:
+    - module: filesystem
+    - module: os_exec
+macros:
+  - name: nested_macro
+    body:
+      - action: filesystem.read_file
+      - sequence:
+          - action: os_exec.run_command_FAKE
+"""
+        with pytest.raises(CompilationError, match="run_command_FAKE"):
+            strict_compiler.compile_string(yaml_text)
+
+    def test_no_module_info_skips_macro_body_check(self, compiler):
+        """Without module_info, macro body actions are not validated."""
+        yaml_text = """
+app:
+  name: test-macro-no-info
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: anything
+    body:
+      - action: nonexistent.fake_action
+"""
+        app_def = compiler.compile_string(yaml_text)
+        assert len(app_def.macros) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Macro Call Site Param Validation
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestMacroCallSiteValidation:
+    """Macro invocations (use:) must provide required params and not pass unknowns."""
+
+    def test_missing_required_param_rejected(self, compiler):
+        yaml_text = """
+app:
+  name: test-macro-missing-param
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: check_file
+    params:
+      path: {type: string, required: true}
+      format: {type: string, required: true}
+    body:
+      - action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+flow:
+  - use: check_file
+    with:
+      path: /tmp/test
+"""
+        with pytest.raises(CompilationError, match="missing required param 'format'"):
+            compiler.compile_string(yaml_text)
+
+    def test_unknown_param_rejected(self, compiler):
+        yaml_text = """
+app:
+  name: test-macro-unknown-param
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: check_file
+    params:
+      path: {type: string, required: true}
+    body:
+      - action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+flow:
+  - use: check_file
+    with:
+      path: /tmp/test
+      bogus_param: hello
+"""
+        with pytest.raises(CompilationError, match="unknown param 'bogus_param'"):
+            compiler.compile_string(yaml_text)
+
+    def test_all_params_provided_passes(self, compiler):
+        yaml_text = """
+app:
+  name: test-macro-all-params
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: check_file
+    params:
+      path: {type: string, required: true}
+      format: {type: string, required: false, default: json}
+    body:
+      - action: filesystem.read_file
+        params:
+          path: "{{macro.path}}"
+flow:
+  - use: check_file
+    with:
+      path: /tmp/test
+"""
+        app_def = compiler.compile_string(yaml_text)
+        assert len(app_def.macros) == 1
+
+    def test_optional_param_with_default_not_required(self, compiler):
+        """Params with default values should not trigger 'missing required' errors."""
+        yaml_text = """
+app:
+  name: test-macro-optional
+agent:
+  tools:
+    - module: filesystem
+macros:
+  - name: my_macro
+    params:
+      required_arg: {type: string, required: true}
+      optional_arg: {type: string, required: true, default: fallback}
+    body:
+      - action: filesystem.read_file
+        params:
+          path: "{{macro.required_arg}}"
+flow:
+  - use: my_macro
+    with:
+      required_arg: value
+"""
+        app_def = compiler.compile_string(yaml_text)
+        assert len(app_def.flow) == 1
