@@ -6,12 +6,21 @@ authors = ["LLMOS Bridge Contributors"]
 license = "Apache-2.0"
 readme = "README.md"
 
-# workspace root has no installable package; use Poetry for deps only
-package-mode = false
-packages = []
+# workspace root has a tiny wrapper package providing CLI scripts
+package-mode = true
+packages = [
+    { include = "root_pkg" },
+]
+
+[tool.poetry.scripts]
+llmos-bridge = "root_pkg:main"
 
 [tool.poetry.dependencies]
 python = "^3.11"
+
+# make the actual package available in the workspace env so its
+# dependencies (typer, etc.) are installed too
+llmos-bridge = { path = "packages/llmos-bridge", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.7"
