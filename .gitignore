@@ -23,6 +23,7 @@ venv/
 env/
 ENV/
 .env
+.next/
 
 # Poetry
 .poetry/
