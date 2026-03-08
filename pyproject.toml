@@ -5,6 +5,9 @@ description = "Monorepo workspace — development tooling only"
 authors = ["LLMOS Bridge Contributors"]
 license = "Apache-2.0"
 readme = "README.md"
+
+# workspace root has no installable package; use Poetry for deps only
+package-mode = false
 packages = []
 
 [tool.poetry.dependencies]
