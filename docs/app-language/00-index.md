@@ -77,18 +77,25 @@ llmos app run my-assistant.app.yaml
  AppDefinition        Pydantic model tree (typed, validated)
      |
      v
+ Register             Store in AppStore + link Application identity (RBAC)
+     |
+     v
+ Prepare              Pre-load modules, warm LLM pool, health-check memory
+     |
+     v
  AppRuntime           Wire agent, tools, memory, triggers
      |
      +--> AgentRuntime     LLM loop (reactive/single_shot/continuous)
+     |       +--> ActionSessionCache  Intra-session cache (dedup read calls, write-invalidation)
      +--> FlowExecutor     Explicit flow engine (18 step types)
      +--> MemoryManager    Multi-level memory (working/conversation/episodic/project)
      +--> ToolRegistry     Module actions + builtins resolved to LLM tool schemas
      +--> TriggerManager   CLI/HTTP/schedule/webhook/watch/event
      |
      In daemon mode:
-     +--> DaemonToolExecutor   Routes through security pipeline + all modules
+     +--> DaemonToolExecutor   Routes through 15-step security pipeline
      +--> Application Identity Auto-created RBAC entity with linked security
-     +--> TriggerManager       Background triggers auto-started on "running" status
+     +--> SSE Streaming        Real-time events to CLI/dashboard
 ```
 
 ## File Convention

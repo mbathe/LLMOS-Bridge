@@ -112,6 +112,14 @@ _LOCAL_WORKER_ALLOWED: frozenset[str] = _READONLY_ALLOWED | frozenset(
         "db_gateway.create",
         "db_gateway.create_many",
         "db_gateway.update",
+        # Agent/memory/orchestration modules
+        "memory.*",
+        "context_manager.*",
+        "agent_spawn.*",
+        "triggers.*",
+        "recording.*",
+        "security.*",
+        "module_manager.*",
     ]
 )
 

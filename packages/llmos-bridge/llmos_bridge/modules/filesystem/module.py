@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.orchestration.streaming_decorators import streams_progress
@@ -64,6 +65,7 @@ class FilesystemModule(BaseModule):
     # ------------------------------------------------------------------
 
     @requires_permission(Permission.FILESYSTEM_READ, reason="Read file contents")
+    @cacheable(ttl=60, key_params=["path", "encoding", "start_line", "end_line", "max_bytes"])
     async def _action_read_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadFileParams.model_validate(params)
         path = Path(p.path)
@@ -90,6 +92,7 @@ class FilesystemModule(BaseModule):
         return content
 
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Write file to disk")
+    @invalidates_cache("read_file", "list_directory", "get_file_info", "search_files", "compute_checksum")
     @rate_limited(calls_per_minute=60)
     @audit_trail("standard")
     async def _action_write_file(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +120,7 @@ class FilesystemModule(BaseModule):
         return {"path": str(path), "bytes_written": bytes_written}
 
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Append to file")
+    @invalidates_cache("read_file", "get_file_info", "compute_checksum")
     @rate_limited(calls_per_minute=60)
     async def _action_append_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AppendFileParams.model_validate(params)
@@ -131,6 +135,7 @@ class FilesystemModule(BaseModule):
         return {"path": str(path), "bytes_appended": len(text.encode(p.encoding))}
 
     @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Copy file")
+    @invalidates_cache("list_directory", "get_file_info")
     @rate_limited(calls_per_minute=60)
     async def _action_copy_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopyFileParams.model_validate(params)
@@ -143,6 +148,7 @@ class FilesystemModule(BaseModule):
         return {"source": str(src), "destination": str(dst)}
 
     @requires_permission(Permission.FILESYSTEM_READ, Permission.FILESYSTEM_WRITE, reason="Move file")
+    @invalidates_cache("read_file", "list_directory", "get_file_info", "search_files", "compute_checksum")
     @rate_limited(calls_per_minute=60)
     async def _action_move_file(self, params: dict[str, Any]) -> dict[str, Any]:
         p = MoveFileParams.model_validate(params)
@@ -155,6 +161,7 @@ class FilesystemModule(BaseModule):
         return {"source": str(src), "destination": str(dst)}
 
     @requires_permission(Permission.FILESYSTEM_DELETE, reason="Delete file or directory")
+    @invalidates_cache("read_file", "list_directory", "get_file_info", "search_files", "compute_checksum")
     @sensitive_action(RiskLevel.HIGH, irreversible=True)
     @rate_limited(calls_per_minute=60)
     @audit_trail("detailed")
@@ -177,6 +184,7 @@ class FilesystemModule(BaseModule):
         return {"deleted": str(path)}
 
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Create directory")
+    @invalidates_cache("list_directory", "get_file_info", "search_files")
     async def _action_create_directory(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateDirectoryParams.model_validate(params)
         path = self._resolve_path(Path(p.path))
@@ -184,6 +192,7 @@ class FilesystemModule(BaseModule):
         return {"path": str(path), "created": True}
 
     @requires_permission(Permission.FILESYSTEM_READ, reason="List directory contents")
+    @cacheable(ttl=60, key_params=["path", "recursive", "pattern", "include_hidden", "max_results"])
     async def _action_list_directory(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListDirectoryParams.model_validate(params)
         base = Path(p.path)
@@ -223,6 +232,7 @@ class FilesystemModule(BaseModule):
 
     @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, reason="Search files by pattern")
+    @cacheable(ttl=30, key_params=["directory", "pattern", "content_pattern", "case_sensitive", "max_results"])
     async def _action_search_files(self, params: dict[str, Any]) -> dict[str, Any]:
         import re
 
@@ -262,6 +272,7 @@ class FilesystemModule(BaseModule):
         return {"matches": results, "count": len(results)}
 
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads file metadata")
+    @cacheable(ttl=60, key_params=["path"])
     async def _action_get_file_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetFileInfoParams.model_validate(params)
         path = Path(p.path)
@@ -323,6 +334,7 @@ class FilesystemModule(BaseModule):
 
     @streams_progress
     @requires_permission(Permission.FILESYSTEM_READ, reason="Compute file checksum")
+    @cacheable(ttl=120, key_params=["path", "algorithm"])
     async def _action_compute_checksum(self, params: dict[str, Any]) -> dict[str, Any]:
         stream = params.pop("_stream", None)
         p = ComputeChecksumParams.model_validate(params)

@@ -1,0 +1,11 @@
+Bonjour ! Ceci est un petit fichier de test créé par Claude Code.
+
+Je suis capable de :
+- Lire des fichiers
+- Écrire des fichiers
+- Exécuter des commandes
+- Gérer des tâches
+- Et bien plus encore !
+
+Date de création : 2024-01-15
+Message : "Je vois que tu es capable !"

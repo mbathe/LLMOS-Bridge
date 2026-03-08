@@ -210,7 +210,8 @@ class AppRuntime:
             return e.errors or [str(e)]
 
     def _build_expr_context(
-        self, app_def: AppDefinition, input_text: str, variables: dict[str, Any] | None = None
+        self, app_def: AppDefinition, input_text: str, variables: dict[str, Any] | None = None,
+        *, secrets: dict[str, str] | None = None,
     ) -> ExpressionContext:
         """Build expression context for a run.
 
@@ -244,6 +245,7 @@ class AppRuntime:
 
         return ExpressionContext(
             variables=resolved_vars,
+            secrets=secrets or {},
             trigger={"input": input_text},
             app={
                 "name": app_def.app.name,
@@ -267,6 +269,7 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> AgentRunResult:
         """Run an application with given input."""
         # Enforce max_concurrent_runs via per-app semaphore
@@ -279,7 +282,7 @@ class AppRuntime:
                 error=f"Max concurrent runs ({app_def.app.max_concurrent_runs}) exceeded for '{app_def.app.name}'",
             )
         async with sem:
-            return await self._run_inner(app_def, input_text, variables=variables)
+            return await self._run_inner(app_def, input_text, variables=variables, secrets=secrets)
 
     async def _run_inner(
         self,
@@ -287,6 +290,7 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> AgentRunResult:
         """Inner run method — called within concurrency semaphore.
 
@@ -299,10 +303,10 @@ class AppRuntime:
         try:
             if app_timeout > 0:
                 return await asyncio.wait_for(
-                    self._run_core(app_def, input_text, variables=variables),
+                    self._run_core(app_def, input_text, variables=variables, secrets=secrets),
                     timeout=app_timeout,
                 )
-            return await self._run_core(app_def, input_text, variables=variables)
+            return await self._run_core(app_def, input_text, variables=variables, secrets=secrets)
         except asyncio.TimeoutError:
             return AgentRunResult(
                 success=False, output="", turns=[], total_turns=0,
@@ -317,6 +321,7 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> AgentRunResult:
         """Core run logic — agent loop, flow, or multi-agent execution."""
         # Apply observability.logging.level for this app's namespace
@@ -332,17 +337,17 @@ class AppRuntime:
         )
 
         # Build expression context early so security templates can be resolved
-        expr_ctx = self._build_expr_context(app_def, input_text, variables)
+        expr_ctx = self._build_expr_context(app_def, input_text, variables, secrets=secrets)
 
         # Inject app-level capabilities into the executor (grant/deny/approval rules)
-        self._apply_capabilities(app_def)
+        self._apply_capabilities(app_def, expr_ctx)
         self._apply_security(app_def, expr_ctx)
         # Apply per-module configuration from YAML module_config block
         await self._apply_module_config(app_def)
 
         # If app has a flow, execute it instead of the agent loop
         if app_def.flow:
-            flow_result = await self.run_flow(app_def, input_text, variables=variables)
+            flow_result = await self.run_flow(app_def, input_text, variables=variables, secrets=secrets)
             return AgentRunResult(
                 success=flow_result.success,
                 output=str(flow_result.output or ""),
@@ -407,6 +412,9 @@ class AppRuntime:
         # Inject tool constraints into executor
         self._apply_tool_constraints(app_def, resolved_tools, expr_ctx)
 
+        # Resolve template expressions in brain.config (e.g. {{secret.GOOLE_API_KEY}})
+        self._resolve_brain_config(agent_config.brain, expr_ctx)
+
         # Create LLM provider (with fallback support)
         llm = await self._create_llm(agent_config.brain)
 
@@ -456,12 +464,13 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> FlowResult:
         """Execute the flow defined in the app."""
         if not app_def.flow:
             raise AppRuntimeError("No flow defined in app definition")
 
-        expr_ctx = self._build_expr_context(app_def, input_text, variables)
+        expr_ctx = self._build_expr_context(app_def, input_text, variables, secrets=secrets)
 
         # Wire tracing + metrics for flow actions
         tracing, metrics = self._create_observability(app_def)
@@ -539,6 +548,7 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> MultiAgentResult:
         """Run a multi-agent application."""
         if not app_def.agents or not app_def.agents.agents:
@@ -552,7 +562,7 @@ class AppRuntime:
         )
         traced_execute = self._make_traced_execute(tracing, metrics)
 
-        expr_ctx = self._build_expr_context(app_def, input_text, variables)
+        expr_ctx = self._build_expr_context(app_def, input_text, variables, secrets=secrets)
         tool_registry = AppToolRegistry(self._module_info)
 
         agents: dict[str, AgentInstance] = {}
@@ -628,7 +638,7 @@ class AppRuntime:
 
         # ── Session-scoped setup (created ONCE, reused across all turns) ──
         expr_ctx = self._build_expr_context(app_def, "", variables)
-        self._apply_capabilities(app_def)
+        self._apply_capabilities(app_def, expr_ctx)
         self._apply_security(app_def, expr_ctx)
         await self._apply_module_config(app_def)
 
@@ -766,10 +776,11 @@ class AppRuntime:
         input_text: str,
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Run and stream events from an application."""
-        expr_ctx = self._build_expr_context(app_def, input_text, variables)
-        self._apply_capabilities(app_def)
+        expr_ctx = self._build_expr_context(app_def, input_text, variables, secrets=secrets)
+        self._apply_capabilities(app_def, expr_ctx)
         self._apply_security(app_def, expr_ctx)
 
         agent_config = app_def.agent
@@ -810,6 +821,7 @@ class AppRuntime:
         )
         traced_execute = self._make_traced_execute(tracing, metrics)
 
+        self._resolve_brain_config(agent_config.brain, expr_ctx)
         llm = await self._create_llm(agent_config.brain)
 
         builtins = self._create_builtins(memory_mgr)
@@ -847,14 +859,15 @@ class AppRuntime:
         conversation_history: list[dict[str, Any]],
         *,
         variables: dict[str, Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream with conversation history injected for cross-turn persistence.
 
         After the agent finishes, emits a 'conversation_update' event
         containing the full message history for the caller to persist.
         """
-        expr_ctx = self._build_expr_context(app_def, input_text, variables)
-        self._apply_capabilities(app_def)
+        expr_ctx = self._build_expr_context(app_def, input_text, variables, secrets=secrets)
+        self._apply_capabilities(app_def, expr_ctx)
         self._apply_security(app_def, expr_ctx)
 
         agent_config = app_def.agent
@@ -891,6 +904,7 @@ class AppRuntime:
         )
         traced_execute = self._make_traced_execute(tracing, metrics)
 
+        self._resolve_brain_config(agent_config.brain, expr_ctx)
         llm = await self._create_llm(agent_config.brain)
         builtins = self._create_builtins(memory_mgr)
 
@@ -931,7 +945,9 @@ class AppRuntime:
         finally:
             await llm.close()
 
-    def _apply_capabilities(self, app_def: AppDefinition) -> None:
+    def _apply_capabilities(
+        self, app_def: AppDefinition, expr_ctx: ExpressionContext | None = None
+    ) -> None:
         """Inject app-level capabilities, perception, and expression engine into executor."""
         if self._execute_tool is None:
             return
@@ -944,6 +960,16 @@ class AppRuntime:
         if hasattr(obj, "set_capabilities"):
             caps = app_def.capabilities
             if caps and (caps.grant or caps.deny or caps.approval_required or caps.audit):
+                # Resolve template expressions in grant constraint paths (e.g. {{workspace}})
+                if expr_ctx is not None and caps.grant:
+                    import copy
+                    caps = copy.deepcopy(caps)
+                    for grant in caps.grant:
+                        if grant.constraints and grant.constraints.paths:
+                            grant.constraints.paths = [
+                                str(self._expr_engine.resolve(p, expr_ctx))
+                                for p in grant.constraints.paths
+                            ]
                 obj.set_capabilities(caps)
 
         # Inject perception config
@@ -1332,6 +1358,29 @@ class AppRuntime:
 
         return resolved_tools
 
+    def _resolve_brain_config(self, brain: BrainConfig, expr_ctx: ExpressionContext) -> None:
+        """Resolve template expressions in brain.config and fallback configs."""
+        if brain.config:
+            brain.config = {
+                k: self._expr_engine.resolve(v, expr_ctx) if isinstance(v, str) else v
+                for k, v in brain.config.items()
+            }
+            for k, v in brain.config.items():
+                if v is None:
+                    brain.config[k] = ""
+        # Also resolve fallback brain configs so {{secret.X}} works there too
+        for fb in (brain.fallback or []):
+            if fb.config:
+                fb.config = {
+                    k: (self._expr_engine.resolve(v, expr_ctx) if isinstance(v, str) else v)
+                    for k, v in fb.config.items()
+                }
+                # Coerce None → "" for string config values (api_key, base_url)
+                # so SDK clients don't receive None when a secret is missing
+                for k, v in fb.config.items():
+                    if v is None:
+                        fb.config[k] = ""
+
     async def _create_llm(self, brain: BrainConfig, *, pooled: bool = False) -> LLMProvider:
         """Create an LLM provider from brain config, with fallback chain support.
 
@@ -1435,6 +1484,7 @@ class _FallbackLLMProvider(LLMProvider):
             )
         except Exception as primary_error:
             logger.warning("Primary LLM failed: %s — trying fallbacks", primary_error)
+            last_error: Exception = primary_error
 
         # Try each fallback
         for fb in self._fallbacks:
@@ -1444,8 +1494,9 @@ class _FallbackLLMProvider(LLMProvider):
             provider = None
             try:
                 provider = self._factory(fb)
+                fb_max_tokens = fb.max_tokens if fb.max_tokens else max_tokens
                 result = await provider.chat(
-                    system=system, messages=messages, tools=tools, max_tokens=max_tokens,
+                    system=system, messages=messages, tools=tools, max_tokens=fb_max_tokens,
                     **kwargs,
                 )
                 # Keep successful provider for cleanup
@@ -1453,6 +1504,7 @@ class _FallbackLLMProvider(LLMProvider):
                 logger.info("Fallback LLM succeeded: %s/%s", fb.provider, fb.model)
                 return result
             except Exception as fb_error:
+                last_error = fb_error
                 logger.warning("Fallback %s/%s failed: %s", fb.provider, fb.model, fb_error)
                 # Clean up failed provider immediately
                 if provider is not None:
@@ -1463,7 +1515,7 @@ class _FallbackLLMProvider(LLMProvider):
                 continue
 
         raise RuntimeError(
-            f"All LLM providers failed (primary + {len(self._fallbacks)} fallbacks)"
+            f"All LLM providers failed (primary + {len(self._fallbacks)} fallbacks): {last_error}"
         )
 
     async def close(self) -> None:

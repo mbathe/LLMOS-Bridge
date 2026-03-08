@@ -60,9 +60,31 @@ class PermissionManager:
     # Check
     # ------------------------------------------------------------------
 
+    async def _is_granted(self, permission: str, module_id: str, app_id: str) -> bool:
+        """Check if a permission is granted for (module_id, app_id).
+
+        Checks per-app grants first, then falls back to the global
+        ``"default"`` namespace so daemon-level grants always apply.
+        """
+        if await self._store.is_granted(permission, module_id, app_id=app_id):
+            return True
+        # Fallback: accept global grants when checking a specific app
+        if app_id != "default":
+            return await self._store.is_granted(permission, module_id, app_id="default")
+        return False
+
+    @staticmethod
+    def _current_app_id() -> str:
+        """Return the app_id for the current async execution context."""
+        try:
+            from llmos_bridge.security.context import get_security_app_id
+            return get_security_app_id()
+        except Exception:
+            return "default"
+
     async def check(self, permission: str, module_id: str) -> bool:
         """Return ``True`` if *permission* is currently granted for *module_id*."""
-        return await self._store.is_granted(permission, module_id)
+        return await self._is_granted(permission, module_id, self._current_app_id())
 
     async def check_or_raise(
         self,
@@ -72,28 +94,37 @@ class PermissionManager:
     ) -> None:
         """Check permission, auto-granting LOW risk if configured.
 
+        Checks per-app grants first, then falls back to global ``"default"``
+        grants, so daemon-level grants always apply regardless of app context.
+
         Raises :class:`PermissionNotGrantedError` when the permission is
         missing and cannot be auto-granted.
         """
-        if await self._store.is_granted(permission, module_id):
+        app_id = self._current_app_id()
+
+        if await self._is_granted(permission, module_id, app_id):
             return
 
         risk = self.get_risk_level(permission)
 
-        # Auto-grant LOW risk permissions
-        if self._auto_grant_low_risk and risk == RiskLevel.LOW:
+        # Auto-grant LOW risk permissions only in daemon-level (default) scope.
+        # In a per-app context, even LOW risk requires an explicit OS grant from
+        # the dashboard — otherwise the module allowlist is the only guard.
+        if self._auto_grant_low_risk and risk == RiskLevel.LOW and app_id == "default":
             grant = PermissionGrant(
                 permission=permission,
                 module_id=module_id,
                 scope=PermissionScope.SESSION,
                 granted_by="auto",
                 reason="Auto-granted (low risk)",
+                app_id=app_id,
             )
-            await self._store.grant(grant)
+            await self._store.grant(grant, app_id=app_id)
             await self._emit_permission_event(
                 "permission_auto_granted",
                 permission=permission,
                 module_id=module_id,
+                app_id=app_id,
                 risk_level=risk.value,
                 action=action,
             )
@@ -101,6 +132,7 @@ class PermissionManager:
                 "permission_auto_granted",
                 permission=permission,
                 module_id=module_id,
+                app_id=app_id,
                 action=action,
             )
             return
@@ -110,6 +142,7 @@ class PermissionManager:
             "permission_check_failed",
             permission=permission,
             module_id=module_id,
+            app_id=app_id,
             risk_level=risk.value,
             action=action,
         )
@@ -125,9 +158,10 @@ class PermissionManager:
         self, permissions: list[str], module_id: str
     ) -> list[str]:
         """Return list of permissions that are NOT granted for *module_id*."""
+        app_id = self._current_app_id()
         missing: list[str] = []
         for perm in permissions:
-            if not await self._store.is_granted(perm, module_id):
+            if not await self._is_granted(perm, module_id, app_id):
                 missing.append(perm)
         return missing
 

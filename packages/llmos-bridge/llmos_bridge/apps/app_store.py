@@ -242,16 +242,45 @@ class AppStore:
         return cursor.rowcount > 0
 
     async def record_run(self, app_id: str) -> bool:
-        """Increment run count and update last_run_at."""
+        """Increment run count, update last_run_at, and clear any previous error state."""
         assert self._conn is not None
         now = time.time()
         async with self._write_lock:
             cursor = await self._conn.execute(
-                "UPDATE apps SET run_count = run_count + 1, last_run_at = ?, updated_at = ? WHERE id = ?",
+                """UPDATE apps
+                   SET run_count = run_count + 1,
+                       last_run_at = ?,
+                       updated_at = ?,
+                       error_message = '',
+                       status = CASE WHEN status = 'error' THEN 'registered' ELSE status END
+                   WHERE id = ?""",
                 (now, now, app_id),
             )
             await self._conn.commit()
         return cursor.rowcount > 0
+
+    async def update_yaml(self, app_id: str, yaml_text: str) -> bool:
+        """Update the stored YAML text and reset prepared flag (capabilities may have changed)."""
+        assert self._conn is not None
+        now = time.time()
+        async with self._write_lock:
+            cursor = await self._conn.execute(
+                "UPDATE apps SET config_json = ?, updated_at = ?, prepared = 0 WHERE id = ?",
+                (yaml_text, now, app_id),
+            )
+            await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_by_application_id(self, application_id: str) -> AppRecord | None:
+        """Find the YAML app linked to a given Application identity ID."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT * FROM apps WHERE application_id = ?", (application_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_record(row)
 
     async def delete(self, app_id: str) -> bool:
         """Delete an app from the store."""

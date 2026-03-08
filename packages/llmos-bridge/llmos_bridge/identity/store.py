@@ -8,6 +8,7 @@ lock to serialise writes (SQLite WAL mode for concurrent reads).
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import secrets
@@ -76,6 +77,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     metadata             TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_app ON sessions (app_id);
+
+CREATE TABLE IF NOT EXISTS app_secrets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id     TEXT NOT NULL REFERENCES applications(app_id),
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(app_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_app_secrets_app ON app_secrets (app_id);
 """
 
 
@@ -299,7 +311,8 @@ class IdentityStore:
         assert self._db is not None
         async with self._lock:
             if hard:
-                # Cascade: delete agents, keys, sessions first.
+                # Cascade: delete agents, keys, sessions, secrets first.
+                await self._db.execute("DELETE FROM app_secrets WHERE app_id = ?", (app_id,))
                 await self._db.execute("DELETE FROM api_keys WHERE app_id = ?", (app_id,))
                 await self._db.execute("DELETE FROM sessions WHERE app_id = ?", (app_id,))
                 await self._db.execute("DELETE FROM agents WHERE app_id = ?", (app_id,))
@@ -718,3 +731,82 @@ class IdentityStore:
             "key_count": key_count,
             "session_count": session_count,
         }
+
+    # ------------------------------------------------------------------
+    # App Secrets
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encrypt_secret(value: str) -> str:
+        """Obfuscate a secret value (base64 + XOR with fixed key).
+
+        For production, replace with Fernet / KMS.
+        """
+        key = b"llmos-secret-key-v1"
+        data = value.encode()
+        xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+        return base64.b64encode(xored).decode()
+
+    @staticmethod
+    def _decrypt_secret(encrypted: str) -> str:
+        """Reverse of ``_encrypt_secret``."""
+        key = b"llmos-secret-key-v1"
+        xored = base64.b64decode(encrypted)
+        data = bytes(b ^ key[i % len(key)] for i, b in enumerate(xored))
+        return data.decode()
+
+    async def set_secret(self, app_id: str, key: str, value: str) -> None:
+        """Set (create or update) a secret for an application."""
+        assert self._db is not None
+        encrypted = self._encrypt_secret(value)
+        now = time.time()
+        async with self._lock:
+            await self._db.execute(
+                """INSERT INTO app_secrets (app_id, key, value, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(app_id, key) DO UPDATE SET value = ?, updated_at = ?""",
+                (app_id, key, encrypted, now, now, encrypted, now),
+            )
+            await self._db.commit()
+
+    async def get_secrets(self, app_id: str) -> dict[str, str]:
+        """Return all decrypted secrets for an application."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT key, value FROM app_secrets WHERE app_id = ?", (app_id,)
+        )
+        rows = await cursor.fetchall()
+        return {row["key"]: self._decrypt_secret(row["value"]) for row in rows}
+
+    async def list_secret_keys(self, app_id: str) -> list[dict[str, Any]]:
+        """Return secret metadata (keys only, no values) for an application."""
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "SELECT key, created_at, updated_at FROM app_secrets WHERE app_id = ? ORDER BY key",
+            (app_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"key": row["key"], "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            for row in rows
+        ]
+
+    async def delete_secret(self, app_id: str, key: str) -> bool:
+        """Delete a secret. Returns True if it existed."""
+        assert self._db is not None
+        async with self._lock:
+            cursor = await self._db.execute(
+                "DELETE FROM app_secrets WHERE app_id = ? AND key = ?", (app_id, key)
+            )
+            await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def delete_all_secrets(self, app_id: str) -> int:
+        """Delete all secrets for an application. Returns count deleted."""
+        assert self._db is not None
+        async with self._lock:
+            cursor = await self._db.execute(
+                "DELETE FROM app_secrets WHERE app_id = ?", (app_id,)
+            )
+            await self._db.commit()
+        return cursor.rowcount

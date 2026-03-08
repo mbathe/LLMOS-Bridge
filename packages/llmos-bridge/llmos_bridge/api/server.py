@@ -29,6 +29,7 @@ from llmos_bridge.api.routes import (
     admin_system as admin_system_router,
 )
 from llmos_bridge.api.routes import applications as applications_router
+from llmos_bridge.api.routes import apps as apps_router
 from llmos_bridge.api.routes import cluster as cluster_router
 from llmos_bridge.api.routes.websocket import WebSocketEventBus, manager as ws_manager
 from llmos_bridge.config import Settings, get_settings
@@ -54,6 +55,9 @@ from llmos_bridge.modules.computer_control import ComputerControlModule
 from llmos_bridge.modules.perception_vision import OmniParserModule
 from llmos_bridge.modules.window_tracker import WindowTrackerModule
 from llmos_bridge.modules.word import WordModule
+from llmos_bridge.modules.agent_spawn import AgentSpawnModule
+from llmos_bridge.modules.memory import MemoryModule
+from llmos_bridge.modules.context_manager import ContextManagerModule
 from llmos_bridge.orchestration.executor import PlanExecutor
 from llmos_bridge.orchestration.resource_manager import ResourceManager
 from llmos_bridge.orchestration.state import PlanStateStore
@@ -123,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_system_router.router)
     app.include_router(stream_router.router)
     app.include_router(applications_router.router)
+    app.include_router(apps_router.router)
     app.include_router(cluster_router.router)
 
     # Startup / shutdown lifecycle
@@ -310,7 +315,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Inject SecurityManager into all registered modules.
         if sec_cfg.enable_decorators:
             for mod in registry.list_available():
-                module = registry.get(mod)
+                try:
+                    module = registry.get(mod)
+                except Exception:
+                    continue  # skip modules that fail to load (missing deps)
                 if module is not None and hasattr(module, "set_security"):
                     module.set_security(security_manager)
 
@@ -326,7 +334,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from llmos_bridge.security.decorators import collect_security_metadata
 
             for mod_id in registry.list_available():
-                mod_instance = registry.get(mod_id)
+                try:
+                    mod_instance = registry.get(mod_id)
+                except Exception:
+                    continue
                 if mod_instance is None:
                     continue
                 for attr_name in dir(mod_instance):
@@ -729,6 +740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from llmos_bridge.apps.tool_registry import AppToolRegistry
 
             # DaemonToolExecutor routes tool calls through the full pipeline
+            from llmos_bridge.apps.expression import ExpressionEngine as _ExprEngine
             daemon_tool_executor = DaemonToolExecutor(
                 module_registry=registry,
                 permission_guard=guard,
@@ -739,23 +751,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 intent_verifier=intent_verifier,
                 authorization_guard=authorization_guard,
                 identity_store=identity_store,
+                expression_engine=_ExprEngine(),
             )
             daemon_tool_executor.set_approval_gate(approval_gate)
 
             # Build module_info from real manifests (all 20 modules)
             module_info = daemon_tool_executor.get_module_info()
 
+            # Default base URLs for known OpenAI-compatible providers
+            _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+                "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+                "google": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
+            }
+
             # LLM provider factory for autonomous agents
             def _app_llm_factory(brain):
                 if brain.provider == "anthropic":
                     from llmos_bridge.apps.providers import AnthropicProvider
-                    return AnthropicProvider(model=brain.model)
-                elif brain.provider == "openai":
-                    from llmos_bridge.apps.providers import OpenAIProvider
-                    return OpenAIProvider(model=brain.model)
-                else:
-                    from llmos_bridge.apps.runtime import _StubLLMProvider
-                    return _StubLLMProvider()
+                    return AnthropicProvider(
+                        model=brain.model,
+                        api_key=brain.config.get("api_key", ""),
+                    )
+                # All other providers use OpenAI-compatible API
+                from llmos_bridge.apps.providers import OpenAIProvider
+                defaults = _PROVIDER_DEFAULTS.get(brain.provider, {})
+                return OpenAIProvider(
+                    model=brain.model,
+                    api_key=brain.config.get("api_key", defaults.get("api_key", "")),
+                    base_url=brain.config.get("base_url", defaults.get("base_url", "")),
+                )
 
             # AppRuntime — top-level lifecycle for apps
             app_runtime = AppRuntime(
@@ -968,6 +992,9 @@ def _register_builtin_modules(registry: ModuleRegistry, settings: Settings) -> N
         "iot": IoTModule,
         "triggers": TriggerModule,
         "recording": RecordingModule,
+        "agent_spawn": AgentSpawnModule,
+        "memory": MemoryModule,
+        "context_manager": ContextManagerModule,
     }
 
     # Vision module — supports custom backends via settings.vision.backend.

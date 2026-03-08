@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.exceptions import ActionExecutionError
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.security.decorators import audit_trail, requires_permission, sensitive_action
@@ -227,6 +228,7 @@ class DatabaseModule(BaseModule):
 
     @audit_trail("detailed")
     @sensitive_action(RiskLevel.HIGH)
+    @invalidates_cache("list_tables", "get_table_schema")
     @requires_permission(Permission.DATABASE_WRITE, reason="Executes SQL query")
     async def _action_execute_query(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExecuteQueryParams.model_validate(params)
@@ -415,6 +417,7 @@ class DatabaseModule(BaseModule):
     # ------------------------------------------------------------------
 
     @audit_trail("standard")
+    @invalidates_cache("list_tables", "get_table_schema")
     @requires_permission(Permission.DATABASE_WRITE, reason="Creates database table")
     async def _action_create_table(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateTableParams.model_validate(params)
@@ -444,6 +447,7 @@ class DatabaseModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @cacheable(ttl=300, key_params=["connection_id"])
     @requires_permission(Permission.DATABASE_READ, reason="Lists database tables")
     async def _action_list_tables(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListTablesParams.model_validate(params)
@@ -480,6 +484,7 @@ class DatabaseModule(BaseModule):
 
         return await asyncio.to_thread(_inner)
 
+    @cacheable(ttl=300, key_params=["connection_id", "table"])
     @requires_permission(Permission.DATABASE_READ, reason="Reads table schema")
     async def _action_get_table_schema(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetTableSchemaParams.model_validate(params)

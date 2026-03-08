@@ -94,7 +94,15 @@ class SecurityConfig(BaseModel):
 
 class ModuleConfig(BaseModel):
     enabled: list[str] = Field(
-        default_factory=lambda: ["filesystem", "os_exec", "api_http", "excel", "word", "powerpoint", "database", "db_gateway", "triggers", "vision", "gui", "computer_control", "window_tracker"],
+        default_factory=lambda: [
+            "filesystem", "os_exec", "api_http",
+            "excel", "word", "powerpoint",
+            "database", "db_gateway",
+            "browser", "recording",
+            "triggers", "vision",
+            "gui", "computer_control", "window_tracker",
+            "agent_spawn", "memory", "context_manager",
+        ],
         description="List of module IDs to load at startup.",
     )
     disabled: list[str] = Field(

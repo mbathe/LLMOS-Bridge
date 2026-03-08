@@ -79,3 +79,13 @@ export interface CreateAgentRequest {
   name: string;
   role?: string;
 }
+
+export interface SecretKeyResponse {
+  key: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SetSecretRequest {
+  value: string;
+}

@@ -20,6 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Awaitable
 
+from .action_cache import ActionSessionCache
 from .builtins import BuiltinToolExecutor
 from .context_manager import ContextManager, Message, estimate_tokens
 from .expression import ExpressionContext, ExpressionEngine
@@ -50,6 +51,7 @@ class ToolCallResult:
     name: str
     output: str
     is_error: bool = False
+    from_cache: bool = False
 
 
 @dataclass
@@ -172,6 +174,7 @@ class AgentRuntime:
         self._conversation_history: list[dict[str, Any]] = []
         self._cognitive_prompt_fn: Callable[[], str] | None = None
         self._context_module: Any = None  # ContextManagerModule (optional)
+        self._action_cache = ActionSessionCache(enabled=True)
 
     def set_cognitive_prompt_fn(self, fn: Callable[[], str]) -> None:
         """Set a callback that returns cognitive context text for auto-injection.
@@ -373,7 +376,7 @@ class AgentRuntime:
                         tc = tool_calls[i]
                         await self._emit(StreamEvent(
                             type="tool_result",
-                            data={"id": tc.id, "name": tr.name, "output": tr.output[:500], "is_error": tr.is_error},
+                            data={"id": tc.id, "name": tr.name, "output": tr.output[:500], "is_error": tr.is_error, "from_cache": tr.from_cache},
                         ))
                         self._context_manager.add_tool_result(
                             tc.id, tr.name, tr.output
@@ -433,7 +436,10 @@ class AgentRuntime:
             error=error_msg,
         )
 
-        await self._emit(StreamEvent(type="done", data={"stop_reason": stop_reason}))
+        done_data: dict[str, Any] = {"stop_reason": stop_reason}
+        if error_msg:
+            done_data["error"] = error_msg
+        await self._emit(StreamEvent(type="done", data=done_data))
         return result
 
     async def stream(self, input_text: str) -> AsyncIterator[StreamEvent]:
@@ -661,9 +667,28 @@ class AgentRuntime:
             module_id, action_name = parts
 
             if self._execute_tool:
+                # Invalidate cache for write operations (before executing)
+                self._action_cache.invalidate_for_write(module_id, action_name, tc.arguments)
+
+                # Check session cache for read operations
+                cached = self._action_cache.get(module_id, action_name, tc.arguments)
+                if cached is not None:
+                    return ToolCallResult(
+                        tool_call_id=tc.id,
+                        name=original_name,
+                        output=cached,
+                        is_error=False,
+                        from_cache=True,
+                    )
+
                 result = await self._execute_tool(module_id, action_name, tc.arguments)
                 output = json.dumps(result, default=str)
                 is_error = isinstance(result, dict) and result.get("error") is not None
+
+                # Cache successful read results
+                if not is_error:
+                    self._action_cache.put(module_id, action_name, tc.arguments, output)
+
                 return ToolCallResult(
                     tool_call_id=tc.id,
                     name=original_name,

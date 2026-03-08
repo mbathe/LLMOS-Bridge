@@ -440,6 +440,18 @@ class CreateSessionRequest(BaseModel):
     )
 
 
+class SetSecretRequest(BaseModel):
+    """PUT /applications/{app_id}/secrets/{key} — Set a secret."""
+    value: str = Field(..., min_length=1, description="Secret value (stored encrypted)")
+
+
+class SecretKeyResponse(BaseModel):
+    """Secret metadata (value is never exposed via API)."""
+    key: str
+    created_at: float
+    updated_at: float
+
+
 class ClusterResponse(BaseModel):
     """GET /cluster — Cluster information."""
     cluster_id: str

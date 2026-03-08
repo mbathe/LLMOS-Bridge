@@ -60,20 +60,39 @@ class BrowserModule(BaseModule):
     SUPPORTED_PLATFORMS = [Platform.LINUX, Platform.MACOS, Platform.WINDOWS]
 
     def __init__(self) -> None:
-        # session_id -> {playwright, browser, context, page}
+        # session_id -> {browser, context, page}  (playwright instance is shared via self._pw)
         self._sessions: dict[str, dict[str, Any]] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._meta_lock = asyncio.Lock()
+        self._pw: Any = None  # shared async_playwright instance, pre-started at on_start()
         super().__init__()
 
+    async def on_start(self) -> None:
+        """Pre-start the shared Playwright instance so the first open_browser has zero cold-start."""
+        from playwright.async_api import async_playwright  # noqa: PLC0415
+        try:
+            self._pw = await async_playwright().start()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "playwright pre-start failed (will retry on first use): %s", exc
+            )
+            self._pw = None
+
     async def on_stop(self) -> None:
-        """Close all open browser sessions on module shutdown."""
+        """Close all open browser sessions then stop the shared Playwright instance."""
         for sid in list(self._sessions):
             try:
                 await self._close_session(sid)
             except Exception:
                 pass
         self._sessions.clear()
+        if self._pw is not None:
+            try:
+                await self._pw.stop()
+            except Exception:
+                pass
+            self._pw = None
 
     def _check_dependencies(self) -> None:
         global _playwright_mod
@@ -127,9 +146,12 @@ class BrowserModule(BaseModule):
             if sid in self._sessions:
                 await self._close_session(sid)
 
-            from playwright.async_api import async_playwright  # noqa: PLC0415
+            # Use pre-started shared playwright instance; fall back to a new one if on_start() failed.
+            if self._pw is None:
+                from playwright.async_api import async_playwright  # noqa: PLC0415
+                self._pw = await async_playwright().start()
 
-            pw = await async_playwright().start()
+            pw = self._pw
 
             launch_kwargs: dict[str, Any] = {"headless": p.headless}
             if p.proxy:
@@ -156,7 +178,6 @@ class BrowserModule(BaseModule):
             page = await context.new_page()
 
             self._sessions[sid] = {
-                "playwright": pw,
                 "browser": browser,
                 "context": context,
                 "page": page,
@@ -195,10 +216,7 @@ class BrowserModule(BaseModule):
             await session["browser"].close()
         except Exception:
             pass
-        try:
-            await session["playwright"].stop()
-        except Exception:
-            pass
+        # Playwright instance is shared (self._pw) — stopped only in on_stop().
 
     # ------------------------------------------------------------------
     # Actions — Navigation

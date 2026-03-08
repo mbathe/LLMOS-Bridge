@@ -33,6 +33,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 
+from llmos_bridge.cache import cacheable
 from llmos_bridge.modules.api_http._ssrf import SSRFError, validate_url
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
@@ -163,6 +164,7 @@ class ApiHttpModule(BaseModule):
     # HTTP Methods
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=30, key_params=["url", "params", "headers"])
     @requires_permission(Permission.NETWORK_READ, reason="HTTP GET request")
     async def _action_http_get(self, params: dict[str, Any]) -> dict[str, Any]:
         p = HttpGetParams.model_validate(params)
@@ -477,6 +479,7 @@ class ApiHttpModule(BaseModule):
     # HTML parsing
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=300, key_params=["html", "url", "selector", "extract"])
     @requires_permission(Permission.NETWORK_READ, reason="Parse HTML content")
     async def _action_parse_html(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ParseHtmlParams.model_validate(params)
@@ -614,6 +617,7 @@ class ApiHttpModule(BaseModule):
     # URL health
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=60, key_params=["url"])
     @requires_permission(Permission.NETWORK_READ, reason="Check URL availability")
     async def _action_check_url_availability(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CheckUrlAvailabilityParams.model_validate(params)

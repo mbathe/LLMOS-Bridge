@@ -19,8 +19,9 @@ from typing import Any
 
 import asyncio
 import json as _json
+import uuid as _uuid
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,10 @@ class RunAppRequest(BaseModel):
     variables: dict[str, Any] = Field(default_factory=dict, description="Override variables")
     stream: bool = Field(False, description="Whether to stream the response (SSE)")
     session_id: str | None = Field(None, description="Optional session ID for RBAC binding")
+    conversation_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Previous conversation messages to inject (enables multi-turn in interactive mode)",
+    )
 
 
 class UpdateStatusRequest(BaseModel):
@@ -85,6 +90,10 @@ class AppResponse(BaseModel):
     error_message: str
     application_id: str = ""
     prepared: bool = False
+    # CLI trigger fields (populated when app_def is available)
+    cli_greeting: str = ""
+    cli_prompt: str = "> "
+    cli_mode: str = "conversation"  # conversation | one_shot
 
 
 class RunAppResponse(BaseModel):
@@ -104,6 +113,18 @@ class ValidateAppResponse(BaseModel):
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
+
+
+def _extract_cli_trigger(app_def) -> dict:
+    """Extract CLI trigger fields from an AppDefinition (greeting, prompt, mode)."""
+    for trigger in (app_def.triggers or []):
+        if trigger.type.value == "cli":
+            return {
+                "cli_greeting": trigger.greeting or "",
+                "cli_prompt": trigger.prompt or "> ",
+                "cli_mode": getattr(trigger, "mode", None) and trigger.mode.value or "conversation",
+            }
+    return {"cli_greeting": "", "cli_prompt": "> ", "cli_mode": "conversation"}
 
 
 def _get_app_store(request: Request):
@@ -160,57 +181,60 @@ async def register_app(
             detail=f"Compilation error: {e}",
         )
 
-    # Generate deterministic ID from name + version
-    app_id = hashlib.sha256(
-        f"{app_def.app.name}:{app_def.app.version}".encode()
-    ).hexdigest()[:16]
+    # ── Determine app_id ─────────────────────────────────────────────
+    # If linking to an existing Application identity, use its ID so the
+    # YAML app and Identity share the same ID.  Otherwise generate one.
+    if body.application_id:
+        app_id = body.application_id
+    else:
+        app_id = hashlib.sha256(
+            f"{app_def.app.name}:{app_def.app.version}".encode()
+        ).hexdigest()[:16]
 
-    # ── Link to dashboard Application ──────────────────────────────
+    # ── Extract security info from YAML definition ─────────────────
+    yaml_module_ids = sorted(app_def.get_all_module_ids())
+    yaml_allowed_actions: dict[str, list[str]] = {}
+    for grant in app_def.capabilities.grant:
+        if grant.actions:
+            yaml_allowed_actions[grant.module] = list(grant.actions)
+    yaml_description = app_def.app.description or f"YAML App: {app_def.app.name} v{app_def.app.version}"
+    yaml_tags = {"yaml_app": "true", "version": app_def.app.version}
+
+    # ── Sync with Application identity ────────────────────────────
     identity_store = getattr(request.app.state, "identity_store", None)
-    application_id = body.application_id or ""
+    application_id = ""
 
-    if body.application_id and identity_store is not None:
-        # Validate that the referenced Application exists
-        existing_app = await identity_store.get_application(body.application_id)
-        if existing_app is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Application '{body.application_id}' not found in identity system. "
-                       f"Create it in the dashboard first.",
+    if identity_store is not None:
+        # Check if an Identity already exists (by generated ID or by app name)
+        existing_identity = await identity_store.get_application(app_id)
+        if existing_identity is None:
+            existing_identity = await identity_store.get_application_by_name(app_def.app.name)
+
+        if existing_identity is not None:
+            # UPDATE existing Identity with fresh YAML content
+            await identity_store.update_application(
+                existing_identity.app_id,
+                description=yaml_description,
+                enabled=True,
+                allowed_modules=yaml_module_ids,
+                allowed_actions=yaml_allowed_actions,
+                tags={**(getattr(existing_identity, "tags", {}) or {}), **yaml_tags},
             )
-        application_id = existing_app.app_id
-
-        # Validate that the app's modules are within the Application's allowed_modules
-        if existing_app.allowed_modules:
-            app_modules = app_def.get_all_module_ids()
-            denied = app_modules - set(existing_app.allowed_modules)
-            if denied:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Modules {sorted(denied)} are not allowed by Application "
-                           f"'{existing_app.name}'. Allowed: {existing_app.allowed_modules}",
+            application_id = existing_identity.app_id
+        else:
+            # CREATE a new Application identity from YAML content
+            try:
+                new_identity_app = await identity_store.create_application(
+                    name=app_def.app.name,
+                    description=yaml_description,
+                    app_id=app_id,
+                    allowed_modules=yaml_module_ids,
+                    allowed_actions=yaml_allowed_actions,
+                    tags=yaml_tags,
                 )
-    elif identity_store is not None:
-        # Auto-create a matching Application identity so dashboard security
-        # settings (allowed_modules, allowed_actions, sessions) apply to this app.
-        try:
-            module_ids = sorted(app_def.get_all_module_ids())
-            allowed_actions: dict[str, list[str]] = {}
-            for grant in app_def.capabilities.grant:
-                if grant.actions:
-                    allowed_actions[grant.module] = list(grant.actions)
-
-            new_identity_app = await identity_store.create_application(
-                name=app_def.app.name,
-                description=app_def.app.description or f"YAML App: {app_def.app.name} v{app_def.app.version}",
-                app_id=app_id,
-                allowed_modules=module_ids,
-                allowed_actions=allowed_actions,
-                tags={"yaml_app": "true", "version": app_def.app.version},
-            )
-            application_id = new_identity_app.app_id
-        except Exception:
-            pass  # Identity system may be disabled — don't block registration
+                application_id = new_identity_app.app_id
+            except Exception:
+                pass  # Identity system may be partially available
 
     record = await store.register(
         app_id=app_id,
@@ -227,7 +251,7 @@ async def register_app(
     # Start background triggers (schedule, watch, event) if any
     _start_app_triggers(request, app_id, app_def)
 
-    return AppResponse(**record.to_dict())
+    return AppResponse(**record.to_dict(), **_extract_cli_trigger(app_def))
 
 
 @router.get("", response_model=list[AppResponse])
@@ -266,7 +290,24 @@ async def get_app(
     record = await store.get(app_id)
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
-    return AppResponse(**record.to_dict())
+
+    # Try to extract CLI trigger info from stored YAML
+    cli_fields: dict = {}
+    runtime = getattr(request.app.state, "app_runtime", None)
+    if runtime is not None:
+        try:
+            if record.file_path:
+                app_def = runtime.load(record.file_path)
+            elif record.config_json and record.config_json not in ("{}", ""):
+                app_def = runtime.load_string(record.config_json)
+            else:
+                app_def = None
+            if app_def is not None:
+                cli_fields = _extract_cli_trigger(app_def)
+        except Exception:
+            pass
+
+    return AppResponse(**record.to_dict(), **cli_fields)
 
 
 @router.delete("/{app_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -275,11 +316,27 @@ async def delete_app(
     request: Request,
     _auth: AuthDep,
 ):
-    """Unregister an app."""
+    """Unregister an app and its linked Application identity."""
     store = _get_app_store(request)
-    deleted = await store.delete(app_id)
-    if not deleted:
+
+    # Get the record first to find the linked Application identity
+    record = await store.get(app_id)
+    if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    # Delete the YAML app
+    await store.delete(app_id)
+
+    # Cascade-delete the linked Application identity (if auto-created)
+    if record.application_id:
+        identity_store = getattr(request.app.state, "identity_store", None)
+        if identity_store is not None:
+            try:
+                linked_app = await identity_store.get_application(record.application_id)
+                if linked_app and getattr(linked_app, "tags", {}).get("yaml_app") == "true":
+                    await identity_store.delete_application(record.application_id)
+            except Exception:
+                pass  # Best-effort cleanup
 
 
 @router.post("/{app_id}/run", response_model=RunAppResponse)
@@ -296,6 +353,12 @@ async def run_app(
     record = await store.get(app_id)
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    if not record.prepared:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="App is not prepared. Call POST /apps/{app_id}/prepare first to validate modules and pre-load resources.",
+        )
 
     # Load the app definition
     try:
@@ -342,7 +405,10 @@ async def run_app(
                 detail=f"Authorization failed: {auth_err}",
             )
 
-    # Create an isolated execution scope for this request (concurrency-safe)
+    # Create an isolated execution scope for this request (concurrency-safe).
+    # run_id links approval requests to this specific run so the SSE stream
+    # can surface approval_request events without mixing up concurrent runs.
+    run_id = _uuid.uuid4().hex
     resolved_identity = None
     if identity_resolver:
         try:
@@ -352,26 +418,137 @@ async def run_app(
     if resolved_identity is None:
         from llmos_bridge.identity.models import IdentityContext
         resolved_identity = IdentityContext(app_id=app_id)
+    elif not resolved_identity.app_id or resolved_identity.app_id == "default":
+        # Generic identity (no API key auth) — bind it to this specific app
+        resolved_identity = resolved_identity.model_copy(update={"app_id": app_id})
     if body.session_id and resolved_identity:
         resolved_identity.session_id = body.session_id
-    scope_token = _current_scope.set(_ExecutionScope(identity=resolved_identity))
+    scope_token = _current_scope.set(_ExecutionScope(identity=resolved_identity, run_id=run_id))
+
+    # ── Load secrets and inject into variables + environment ──────
+    app_secrets: dict[str, str] = {}
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is not None:
+        # Try the app store ID first, then the linked identity application_id,
+        # then search by app name (handles version changes that alter the hash ID)
+        _secret_ids = [app_id]
+        if record.application_id and record.application_id != app_id:
+            _secret_ids.append(record.application_id)
+        for _sid in _secret_ids:
+            try:
+                app_secrets = await identity_store.get_secrets(_sid)
+                if app_secrets:
+                    break
+            except Exception:
+                pass
+        if not app_secrets:
+            # Fallback: find identity application by name
+            try:
+                all_apps = await identity_store.list_applications(include_disabled=True)
+                for _ia in all_apps:
+                    if _ia.name == app_def.app.name and _ia.app_id != app_id:
+                        app_secrets = await identity_store.get_secrets(_ia.app_id)
+                        if app_secrets:
+                            break
+            except Exception:
+                pass
+    if app_secrets:
+        # Inject into variables so {{secret.KEY}} resolves
+        merged_vars = dict(body.variables or {})
+        merged_vars["_secrets"] = app_secrets
+        body_variables = merged_vars
+        # Also set in os.environ for LLM SDK clients (e.g. ANTHROPIC_API_KEY)
+        import os
+        _env_backup: dict[str, str | None] = {}
+        for k, v in app_secrets.items():
+            _env_backup[k] = os.environ.get(k)
+            os.environ[k] = v
+    else:
+        body_variables = body.variables
+        _env_backup = {}
+
+    def _restore_env() -> None:
+        import os
+        for k, original in _env_backup.items():
+            if original is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = original
 
     # ── SSE streaming mode ──────────────────────────────────────────
     if body.stream:
+        gate = getattr(request.app.state, "approval_gate", None)
+
         async def _event_stream():
+            event_queue: asyncio.Queue = asyncio.Queue()
+            stop_evt = asyncio.Event()
+
+            async def _run_agent():
+                try:
+                    _stream_fn = (
+                        runtime._stream_with_history(
+                            app_def, body.input, body.conversation_history,
+                            variables=body_variables, secrets=app_secrets,
+                        )
+                        if body.conversation_history
+                        else runtime.stream(
+                            app_def, body.input, variables=body_variables, secrets=app_secrets,
+                        )
+                    )
+                    async for ev in _stream_fn:
+                        await event_queue.put({"type": ev.type, "data": ev.data})
+                    await store.record_run(app_id)
+                except Exception as exc:
+                    from llmos_bridge.apps.app_store import AppStatus
+                    await store.update_status(app_id, AppStatus.error, str(exc))
+                    await event_queue.put({"type": "error", "data": {"error": str(exc)}})
+                finally:
+                    stop_evt.set()
+                    await event_queue.put(None)  # sentinel
+
+            async def _poll_approvals():
+                """Emit approval_request events while agent is blocked waiting for user decision."""
+                if gate is None:
+                    return
+                seen: set[str] = set()
+                while not stop_evt.is_set():
+                    try:
+                        for req in gate.get_pending(plan_id=run_id):
+                            if req.action_id not in seen:
+                                seen.add(req.action_id)
+                                await event_queue.put({"type": "approval_request", "data": req.to_dict()})
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.15)
+
+            agent_task = asyncio.create_task(_run_agent())
+            approval_task = asyncio.create_task(_poll_approvals())
+
             try:
-                async for event in runtime.stream(app_def, body.input, variables=body.variables):
-                    payload = _json.dumps({"type": event.type, "data": event.data})
-                    yield f"data: {payload}\n\n"
-                await store.record_run(app_id)
-                yield f"data: {_json.dumps({'type': 'done', 'data': {}})}\n\n"
-            except Exception as exc:
-                error_payload = _json.dumps({"type": "error", "data": {"error": str(exc)}})
-                yield f"data: {error_payload}\n\n"
-                from llmos_bridge.apps.app_store import AppStatus
-                await store.update_status(app_id, AppStatus.error, str(exc))
+                # First event: run context so client can track approvals
+                yield f"data: {_json.dumps({'type': 'run_start', 'data': {'run_id': run_id}})}\n\n"
+                while True:
+                    try:
+                        event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                        if event is None:
+                            break
+                        yield f"data: {_json.dumps(event)}\n\n"
+                        if event["type"] == "error":
+                            break
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
             finally:
-                _current_scope.reset(scope_token)
+                stop_evt.set()
+                approval_task.cancel()
+                agent_task.cancel()
+                try:
+                    _restore_env()
+                except Exception:
+                    pass
+                try:
+                    _current_scope.reset(scope_token)
+                except Exception:
+                    pass
 
         return StreamingResponse(
             _event_stream(),
@@ -382,7 +559,7 @@ async def run_app(
     # ── Synchronous mode ──────────────────────────────────────────
     try:
         if app_def.is_multi_agent():
-            result = await runtime.run_multi_agent(app_def, body.input, variables=body.variables)
+            result = await runtime.run_multi_agent(app_def, body.input, variables=body_variables, secrets=app_secrets)
             await store.record_run(app_id)
             return RunAppResponse(
                 success=result.success,
@@ -390,7 +567,7 @@ async def run_app(
                 error=result.error,
             )
         else:
-            result = await runtime.run(app_def, body.input, variables=body.variables)
+            result = await runtime.run(app_def, body.input, variables=body_variables, secrets=app_secrets)
             await store.record_run(app_id)
             return RunAppResponse(
                 success=result.success,
@@ -408,6 +585,7 @@ async def run_app(
             detail=f"App execution failed: {e}",
         )
     finally:
+        _restore_env()
         _current_scope.reset(scope_token)
 
 
@@ -553,6 +731,65 @@ async def update_app_status(
     return AppResponse(**updated.to_dict())
 
 
+# ─── Secrets management ──────────────────────────────────────────────
+
+
+class SecretSetRequest(BaseModel):
+    value: str = Field(..., description="Secret value (stored encrypted)")
+
+
+@router.put("/{app_id}/secrets/{key}", status_code=status.HTTP_204_NO_CONTENT)
+async def set_app_secret(
+    app_id: str,
+    key: str,
+    body: SecretSetRequest,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Store an encrypted secret for an app (e.g. ANTHROPIC_API_KEY)."""
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Identity store not available.")
+    store = _get_app_store(request)
+    if not await store.get(app_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    await identity_store.set_secret(app_id, key, body.value)
+
+
+@router.get("/{app_id}/secrets")
+async def list_app_secrets(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """List secret keys stored for an app (values are never exposed)."""
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is None:
+        return []
+    store = _get_app_store(request)
+    if not await store.get(app_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    keys = await identity_store.list_secret_keys(app_id)
+    return [k["key"] for k in keys]
+
+
+@router.delete("/{app_id}/secrets/{key}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_app_secret(
+    app_id: str,
+    key: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Delete a secret for an app."""
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Identity store not available.")
+    store = _get_app_store(request)
+    if not await store.get(app_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+    await identity_store.delete_secret(app_id, key)
+
+
 # ─── Execute Tool (GAP 6 fix) ──────────────────────────────────────
 
 
@@ -619,6 +856,339 @@ async def execute_tool(
         return {"success": True, "result": result}
     finally:
         _current_scope.reset(scope_token)
+
+
+# ─── YAML parsed config ──────────────────────────────────────────────
+
+
+def _parse_yaml_to_structured(config_json: str) -> dict:
+    """Parse raw YAML text into structured fields for the dashboard."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(config_json) or {}
+    except Exception:
+        return {}
+
+    # capabilities
+    caps = data.get("capabilities", {}) or {}
+    grants = caps.get("grant", []) or []
+    denies = caps.get("deny", []) or []
+    approvals = caps.get("approval_required", []) or []
+
+    yaml_modules: list[str] = []
+    yaml_allowed_actions: dict[str, list[str]] = {}
+    for g in grants:
+        mid = g.get("module") if isinstance(g, dict) else None
+        if not mid:
+            continue
+        yaml_modules.append(mid)
+        actions = g.get("actions") or []
+        if actions:
+            yaml_allowed_actions[mid] = list(actions)
+
+    # security
+    security = data.get("security", {}) or {}
+    profile = security.get("profile", "")
+    sandbox = security.get("sandbox", {}) or {}
+    sandbox_paths = sandbox.get("allowed_paths", []) or [] if isinstance(sandbox, dict) else []
+
+    # agent brain
+    agent_data = data.get("agent", {}) or {}
+    brain = agent_data.get("brain", {}) or {} if agent_data else {}
+    yaml_agent = (
+        {
+            "provider": brain.get("provider", ""),
+            "model": brain.get("model", ""),
+            "temperature": brain.get("temperature"),
+            "max_tokens": brain.get("max_tokens"),
+        }
+        if brain
+        else None
+    )
+
+    # triggers
+    triggers_raw = data.get("triggers", []) or []
+    yaml_triggers = [
+        {"id": t.get("id", ""), "type": t.get("type", "")}
+        for t in triggers_raw
+        if isinstance(t, dict)
+    ]
+
+    # variables
+    variables = data.get("variables", {}) or {}
+
+    return {
+        "yaml_modules": yaml_modules,
+        "yaml_allowed_actions": yaml_allowed_actions,
+        "yaml_deny": denies,
+        "yaml_approval_required": approvals,
+        "yaml_security_profile": profile,
+        "yaml_sandbox_paths": sandbox_paths,
+        "yaml_agent": yaml_agent,
+        "yaml_triggers": yaml_triggers,
+        "yaml_variables": variables,
+    }
+
+
+def _patch_yaml_capabilities(
+    yaml_text: str,
+    allowed_modules: list[str],
+    allowed_actions: dict[str, list[str]],
+) -> str:
+    """Patch capabilities.grant in a YAML text to match new allowed_modules/actions.
+
+    Preserves all other YAML fields (deny, approval_required, security, agent, etc.).
+    Returns the patched YAML as text.
+    """
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(yaml_text) or {}
+    except Exception:
+        return yaml_text  # cannot parse, leave unchanged
+
+    if not isinstance(data, dict):
+        return yaml_text
+
+    # Build new grant list: union of allowed_modules and allowed_actions keys
+    all_module_ids = sorted(set(allowed_modules) | set(allowed_actions.keys()))
+    new_grants = []
+    for mid in all_module_ids:
+        entry: dict = {"module": mid}
+        actions = allowed_actions.get(mid) or []
+        if actions:
+            entry["actions"] = list(actions)
+        new_grants.append(entry)
+
+    if "capabilities" not in data or not isinstance(data.get("capabilities"), dict):
+        data["capabilities"] = {}
+    data["capabilities"]["grant"] = new_grants
+
+    return _yaml.dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+
+class YamlParsedResponse(BaseModel):
+    """Structured view of a registered YAML app's configuration."""
+    yaml_modules: list[str] = Field(default_factory=list)
+    yaml_allowed_actions: dict[str, list[str]] = Field(default_factory=dict)
+    yaml_deny: list[dict] = Field(default_factory=list)
+    yaml_approval_required: list[dict] = Field(default_factory=list)
+    yaml_security_profile: str = ""
+    yaml_sandbox_paths: list[str] = Field(default_factory=list)
+    yaml_agent: dict | None = None
+    yaml_triggers: list[dict] = Field(default_factory=list)
+    yaml_variables: dict = Field(default_factory=dict)
+    identity_modules: list[str] = Field(default_factory=list)
+    identity_actions: dict[str, list[str]] = Field(default_factory=dict)
+    in_sync: bool = True
+
+
+@router.get("/{app_id}/parsed", response_model=YamlParsedResponse)
+async def get_parsed_yaml(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Return the structured YAML configuration and sync status with the Identity.
+
+    Compares what the YAML declares (capabilities.grant) against what the
+    Application identity has (allowed_modules / allowed_actions) and reports
+    whether they are in sync.
+    """
+    store = _get_app_store(request)
+    record = await store.get(app_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    yaml_text = record.config_json or ""
+    parsed = _parse_yaml_to_structured(yaml_text)
+
+    # Fetch identity settings
+    identity_modules: list[str] = []
+    identity_actions: dict[str, list[str]] = {}
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store and record.application_id:
+        try:
+            identity_app = await identity_store.get_application(record.application_id)
+            if identity_app:
+                identity_modules = list(identity_app.allowed_modules or [])
+                identity_actions = dict(identity_app.allowed_actions or {})
+        except Exception:
+            pass
+
+    # Compute sync status
+    yaml_module_set = set(parsed.get("yaml_modules", []))
+    identity_module_set = set(identity_modules)
+    yaml_actions_norm = {k: sorted(v) for k, v in parsed.get("yaml_allowed_actions", {}).items()}
+    identity_actions_norm = {k: sorted(v) for k, v in identity_actions.items() if v}
+    in_sync = yaml_module_set == identity_module_set and yaml_actions_norm == identity_actions_norm
+
+    return YamlParsedResponse(
+        **parsed,
+        identity_modules=identity_modules,
+        identity_actions=identity_actions,
+        in_sync=in_sync,
+    )
+
+
+@router.post("/{app_id}/sync-from-yaml")
+async def sync_from_yaml(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Re-apply the YAML's capabilities.grant to the Identity (YAML → Identity sync).
+
+    Use this when the Identity has drifted from the YAML definition and you
+    want to restore the YAML as the source of truth.
+    """
+    store = _get_app_store(request)
+    record = await store.get(app_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    yaml_text = record.config_json or ""
+    if not yaml_text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="App has no YAML content to sync from.",
+        )
+
+    parsed = _parse_yaml_to_structured(yaml_text)
+    yaml_modules = parsed.get("yaml_modules", [])
+
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Identity system is not available. Enable identity in your configuration.",
+        )
+    if not record.application_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This app has no linked Application identity. Re-register the app to create one.",
+        )
+
+    try:
+        result = await identity_store.update_application(
+            record.application_id,
+            enabled=True,
+            allowed_modules=yaml_modules,
+            allowed_actions=parsed.get("yaml_allowed_actions", {}),
+        )
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Application identity '{record.application_id}' not found in identity store.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to sync identity: {e}",
+        )
+
+    return {
+        "synced": True,
+        "yaml_modules": yaml_modules,
+        "yaml_allowed_actions": parsed.get("yaml_allowed_actions", {}),
+    }
+
+
+@router.post("/{app_id}/sync-to-yaml")
+async def sync_to_yaml(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Write the Identity's current allowed_modules/actions back into the YAML (Identity → YAML sync).
+
+    Patches capabilities.grant in the stored YAML text while preserving all other
+    sections (deny, approval_required, security, agent, triggers, variables).
+    Called automatically after saving module access from the dashboard.
+    """
+    store = _get_app_store(request)
+    record = await store.get(app_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    yaml_text = record.config_json or ""
+    if not yaml_text or yaml_text == "{}":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="App has no YAML content to update.",
+        )
+
+    identity_store = getattr(request.app.state, "identity_store", None)
+    if identity_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Identity system is not available.",
+        )
+
+    linked_id = record.application_id
+    if not linked_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This app has no linked Application identity.",
+        )
+
+    identity_app = await identity_store.get_application(linked_id)
+    if identity_app is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Application identity '{linked_id}' not found.",
+        )
+
+    allowed_modules = list(identity_app.allowed_modules or [])
+    allowed_actions = dict(identity_app.allowed_actions or {})
+
+    patched_yaml = _patch_yaml_capabilities(yaml_text, allowed_modules, allowed_actions)
+
+    try:
+        await store.update_yaml(app_id, patched_yaml)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save patched YAML: {e}",
+        )
+
+    return {
+        "synced": True,
+        "allowed_modules": allowed_modules,
+        "allowed_actions": allowed_actions,
+    }
+
+
+@router.get("/{app_id}/yaml")
+async def download_yaml(
+    app_id: str,
+    request: Request,
+    _auth: AuthDep,
+):
+    """Return the raw YAML content of a registered app as a downloadable file."""
+    from fastapi.responses import Response as FastAPIResponse
+
+    store = _get_app_store(request)
+    record = await store.get(app_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="App not found")
+
+    yaml_text = record.config_json or ""
+    if not yaml_text:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This app has no YAML content stored.",
+        )
+
+    filename = f"{record.name.replace(' ', '_')}.app.yaml"
+    return FastAPIResponse(
+        content=yaml_text,
+        media_type="text/yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ─── Trigger management helpers ─────────────────────────────────────
@@ -711,9 +1281,9 @@ def _stop_app_triggers(request: Request, app_id: str) -> None:
 
 class ApprovalDecisionRequest(BaseModel):
     """Submit a decision for a pending approval."""
-    decision: str = Field(..., description="approve, reject, skip, modify, approve_always")
+    decision: str = Field(..., description="approve, reject, skip, modify, approve_always, message")
     modified_params: dict[str, Any] | None = Field(None, description="Modified params (for 'modify' decision)")
-    reason: str | None = Field(None, description="Optional reason for the decision")
+    reason: str | None = Field(None, description="Reason for rejection, or feedback message (for 'message' decision)")
     approved_by: str | None = Field(None, description="Who approved/rejected")
 
 
@@ -758,7 +1328,7 @@ async def decide_approval(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid decision: {body.decision}. Valid: approve, reject, skip, modify, approve_always",
+            detail=f"Invalid decision: {body.decision}. Valid: approve, reject, skip, modify, approve_always, message",
         )
 
     response = ApprovalResponse(
@@ -790,3 +1360,219 @@ async def decide_approval(
         )
 
     return {"success": True, "decision": decision.value}
+
+
+# ─── WebSocket — bidirectional app run session ────────────────────────────
+#
+# Protocol (JSON messages):
+#
+#  Client → Server:
+#    {"type": "start",  "input": "...", "variables": {}}  ← begins execution
+#    {"type": "decide", "action_id": "...", "decision": "approve|reject|skip|approve_always", "reason": ""}
+#    {"type": "stop"}                                      ← request graceful stop
+#    {"type": "ping"}
+#
+#  Server → Client:
+#    {"type": "run_start",        "data": {"run_id": "..."}}
+#    {"type": "thinking",         "data": {"text": "..."}}
+#    {"type": "tool_call",        "data": {"name": "...", "arguments": {}}}
+#    {"type": "tool_result",      "data": {"output": "...", "is_error": false}}
+#    {"type": "text",             "data": {"text": "..."}}
+#    {"type": "approval_request", "data": {approval request fields}}
+#    {"type": "done",             "data": {"stop_reason": "..."}}
+#    {"type": "error",            "data": {"error": "..."}}
+#    {"type": "pong"}
+
+
+@router.websocket("/{app_id}/ws")
+async def ws_app_run(app_id: str, websocket: WebSocket):
+    """Bidirectional WebSocket for real-time app execution.
+
+    Connect, send a ``start`` message, then receive streaming events.
+    Send ``decide`` messages to handle pending approvals.
+    Send ``stop`` to interrupt execution.
+
+    This is the primary integration point for developers building UIs
+    or CLI tools on top of the LLMOS App Language runtime.
+    """
+    await websocket.accept()
+
+    # Access app state through websocket.app (Starlette convention)
+    app_state = websocket.app.state
+    store = getattr(app_state, "app_store", None)
+    runtime = getattr(app_state, "app_runtime", None)
+    gate = getattr(app_state, "approval_gate", None)
+    identity_resolver = getattr(app_state, "identity_resolver", None)
+
+    if store is None or runtime is None:
+        await websocket.send_json({"type": "error", "data": {"error": "App runtime not available."}})
+        await websocket.close(code=1011)
+        return
+
+    record = await store.get(app_id)
+    if not record:
+        await websocket.send_json({"type": "error", "data": {"error": f"App '{app_id}' not found."}})
+        await websocket.close(code=1008)
+        return
+
+    if not record.prepared:
+        await websocket.send_json({"type": "error", "data": {"error": "App is not prepared. Call POST /apps/{app_id}/prepare first."}})
+        await websocket.close(code=1008)
+        return
+
+    # Wait for the start message
+    try:
+        init = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+    except asyncio.TimeoutError:
+        await websocket.send_json({"type": "error", "data": {"error": "Timeout waiting for start message."}})
+        await websocket.close(code=1008)
+        return
+    except WebSocketDisconnect:
+        return
+
+    if init.get("type") != "start":
+        await websocket.send_json({"type": "error", "data": {"error": "First message must be {\"type\": \"start\", \"input\": \"...\"}"}})
+        await websocket.close(code=1008)
+        return
+
+    user_input = init.get("input", "")
+    variables = init.get("variables", {})
+
+    # Load app definition
+    try:
+        if record.file_path:
+            app_def = runtime.load(record.file_path)
+        elif record.config_json and record.config_json != "{}":
+            app_def = runtime.load_string(record.config_json)
+        else:
+            await websocket.send_json({"type": "error", "data": {"error": "App has no YAML content."}})
+            await websocket.close(code=1011)
+            return
+    except Exception as exc:
+        await websocket.send_json({"type": "error", "data": {"error": f"Failed to load app: {exc}"}})
+        await websocket.close(code=1011)
+        return
+
+    # Load secrets
+    secrets: dict[str, str] = {}
+    identity_store = getattr(app_state, "identity_store", None)
+    if identity_store is not None:
+        try:
+            secrets = await identity_store.get_secrets(app_id)
+        except Exception:
+            pass
+
+    # Set up execution context
+    run_id = _uuid.uuid4().hex
+    resolved_identity = None
+    if identity_resolver:
+        try:
+            resolved_identity = await identity_resolver.resolve(
+                authorization=None, x_app=app_id
+            )
+        except Exception:
+            pass
+    if resolved_identity is None:
+        from llmos_bridge.identity.models import IdentityContext
+        resolved_identity = IdentityContext(app_id=app_id)
+
+    scope_token = _current_scope.set(_ExecutionScope(identity=resolved_identity, run_id=run_id))
+
+    event_queue: asyncio.Queue = asyncio.Queue()
+    stop_requested = asyncio.Event()
+    stop_evt = asyncio.Event()
+
+    async def _run_agent():
+        try:
+            async for ev in runtime.stream(app_def, user_input, variables=variables, secrets=secrets):
+                if stop_requested.is_set():
+                    break
+                await event_queue.put({"type": ev.type, "data": ev.data})
+            await store.record_run(app_id)
+        except Exception as exc:
+            await event_queue.put({"type": "error", "data": {"error": str(exc)}})
+        finally:
+            stop_evt.set()
+            await event_queue.put(None)
+
+    async def _poll_approvals():
+        if gate is None:
+            return
+        seen: set[str] = set()
+        while not stop_evt.is_set():
+            try:
+                for req in gate.get_pending(plan_id=run_id):
+                    if req.action_id not in seen:
+                        seen.add(req.action_id)
+                        await event_queue.put({"type": "approval_request", "data": req.to_dict()})
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
+
+    async def _receive_commands():
+        """Process incoming control messages from the client."""
+        while not stop_evt.is_set():
+            try:
+                msg = await websocket.receive_json()
+                msg_type = msg.get("type", "")
+
+                if msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+                elif msg_type == "stop":
+                    stop_requested.set()
+
+                elif msg_type == "decide" and gate is not None:
+                    from llmos_bridge.orchestration.approval import ApprovalDecision, ApprovalResponse
+                    action_id = msg.get("action_id", "")
+                    try:
+                        decision = ApprovalDecision(msg.get("decision", "reject"))
+                    except ValueError:
+                        decision = ApprovalDecision.REJECT
+                    response = ApprovalResponse(
+                        decision=decision,
+                        reason=msg.get("reason", ""),
+                        approved_by=msg.get("approved_by", "ws_client"),
+                    )
+                    gate.submit_decision(run_id, action_id, response)
+
+            except WebSocketDisconnect:
+                stop_requested.set()
+                stop_evt.set()
+                break
+            except Exception:
+                break
+
+    agent_task = asyncio.create_task(_run_agent())
+    approval_task = asyncio.create_task(_poll_approvals())
+    recv_task = asyncio.create_task(_receive_commands())
+
+    try:
+        await websocket.send_json({"type": "run_start", "data": {"run_id": run_id}})
+
+        while True:
+            try:
+                event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+                if event is None:
+                    break
+                await websocket.send_json(event)
+                if event["type"] in ("error",):
+                    break
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        stop_requested.set()
+        stop_evt.set()
+        approval_task.cancel()
+        agent_task.cancel()
+        recv_task.cancel()
+        _current_scope.reset(scope_token)
+        try:
+            await websocket.close()
+        except Exception:
+            pass

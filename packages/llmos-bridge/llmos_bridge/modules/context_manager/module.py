@@ -151,6 +151,12 @@ class ContextManagerModule(BaseModule):
         self._current_history_tokens: int = 0
         self._current_messages: list[dict[str, Any]] = []
 
+    # ─── Lifecycle ────────────────────────────────────────────────
+
+    async def on_start(self) -> None:
+        """Pre-load tiktoken encoder so the first token count has zero cold-start."""
+        count_tokens("warmup")  # triggers global _tokenizer init (tiktoken or heuristic)
+
     # ─── Configuration ────────────────────────────────────────────
 
     def configure(self, config: ContextBudgetConfig) -> None:

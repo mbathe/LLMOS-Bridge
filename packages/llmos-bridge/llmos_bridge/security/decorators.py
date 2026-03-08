@@ -61,6 +61,9 @@ _SECURITY_ATTRS = (
     "_intent_verified",
     "_intent_strict",
     "_streams_progress",
+    # Cache decorator metadata — propagated so @cacheable survives stacking
+    # with @requires_permission, @rate_limited, etc.
+    "_cache_meta",
 )
 
 

@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.security.decorators import audit_trail, requires_permission, sensitive_action
@@ -213,6 +214,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_open)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_create_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateDocumentParams.model_validate(params)
@@ -252,6 +254,7 @@ class WordModule(BaseModule):
         return await asyncio.to_thread(_create)
 
     @audit_trail("standard")
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_save_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SaveDocumentParams.model_validate(params)
@@ -264,6 +267,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_save)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_document_properties(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetDocumentPropertiesParams.model_validate(params)
@@ -293,6 +297,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_set_props)
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads document metadata")
     async def _action_get_document_meta(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetDocumentMetaParams.model_validate(params)
@@ -328,6 +333,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_get_meta)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_margins(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetMarginsParams.model_validate(params)
@@ -360,6 +366,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_set_margins)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_set_default_font(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetDefaultFontParams.model_validate(params)
@@ -382,6 +389,7 @@ class WordModule(BaseModule):
     # Read operations
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads document content")
     async def _action_read_document(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadDocumentParams.model_validate(params)
@@ -423,6 +431,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Lists document paragraphs")
     async def _action_list_paragraphs(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListParagraphsParams.model_validate(params)
@@ -449,6 +458,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Lists document tables")
     async def _action_list_tables(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListTablesParams.model_validate(params)
@@ -473,6 +483,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Extracts plain text from document")
     async def _action_extract_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExtractTextParams.model_validate(params)
@@ -499,6 +510,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_extract)
 
+    @cacheable(ttl=120, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Counts words in document")
     async def _action_count_words(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CountWordsParams.model_validate(params)
@@ -517,6 +529,7 @@ class WordModule(BaseModule):
     # Paragraph operations
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_write_paragraph(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteParagraphParams.model_validate(params)
@@ -573,6 +586,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_format_text(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatTextParams.model_validate(params)
@@ -598,6 +612,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_format)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_apply_style(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyStyleParams.model_validate(params)
@@ -617,6 +632,7 @@ class WordModule(BaseModule):
         return await asyncio.to_thread(_apply)
 
     @sensitive_action(RiskLevel.MEDIUM)
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_delete_paragraph(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteParagraphParams.model_validate(params)
@@ -636,6 +652,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_page_break(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertPageBreakParams.model_validate(params)
@@ -658,6 +675,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_section_break(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertSectionBreakParams.model_validate(params)
@@ -696,6 +714,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_list(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertListParams.model_validate(params)
@@ -748,6 +767,7 @@ class WordModule(BaseModule):
     # Table operations
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_table(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertTableParams.model_validate(params)
@@ -787,6 +807,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_modify_table_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ModifyTableCellParams.model_validate(params)
@@ -845,6 +866,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_modify)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_table_row(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTableRowParams.model_validate(params)
@@ -875,6 +897,7 @@ class WordModule(BaseModule):
     # Rich content
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertImageParams.model_validate(params)
@@ -909,6 +932,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_hyperlink(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertHyperlinkParams.model_validate(params)
@@ -976,6 +1000,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_bookmark(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddBookmarkParams.model_validate(params)
@@ -1018,6 +1043,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_add)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddCommentParams.model_validate(params)
@@ -1045,6 +1071,7 @@ class WordModule(BaseModule):
 
         return await asyncio.to_thread(_add)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_insert_toc(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertTableOfContentsParams.model_validate(params)
@@ -1106,6 +1133,7 @@ class WordModule(BaseModule):
     # Header / footer
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_add_header_footer(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddHeaderFooterParams.model_validate(params)
@@ -1166,6 +1194,7 @@ class WordModule(BaseModule):
     # Search & replace
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_find_replace(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FindReplaceParams.model_validate(params)
@@ -1239,6 +1268,7 @@ class WordModule(BaseModule):
     # Export
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Word document")
     async def _action_export_to_pdf(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ExportToPdfParams.model_validate(params)

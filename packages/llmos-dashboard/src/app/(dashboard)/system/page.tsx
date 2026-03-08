@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Card,
@@ -16,6 +16,7 @@ import {
   Badge,
   Button,
   Tooltip,
+  Modal,
 } from "antd";
 import {
   SettingOutlined,
@@ -26,6 +27,7 @@ import {
   FileTextOutlined,
   ReloadOutlined,
   WarningOutlined,
+  PoweroffOutlined,
 } from "@ant-design/icons";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api/client";
@@ -56,6 +58,37 @@ const stateColorMap: Record<string, string> = {
 
 export default function SystemPage() {
   const router = useRouter();
+  const [restarting, setRestarting] = useState(false);
+
+  const handleRestart = () => {
+    Modal.confirm({
+      title: "Restart Daemon",
+      content: "The daemon will restart. All active plans will be interrupted. Continue?",
+      okText: "Restart",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setRestarting(true);
+        try {
+          await api.post("/admin/system/restart", {});
+        } catch {
+          // expected — process exits before response completes
+        }
+        // Poll until back up
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 1000));
+          try {
+            await api.get("/health");
+            refetchHealth();
+            setRestarting(false);
+            return;
+          } catch {
+            // not up yet
+          }
+        }
+        setRestarting(false);
+      },
+    });
+  };
 
   const {
     data: health,
@@ -138,6 +171,14 @@ export default function SystemPage() {
               onClick={() => refetchHealth()}
             >
               Refresh
+            </Button>
+            <Button
+              danger
+              icon={<PoweroffOutlined />}
+              loading={restarting}
+              onClick={handleRestart}
+            >
+              Restart
             </Button>
           </Space>
         }

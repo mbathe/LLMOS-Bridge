@@ -2,8 +2,10 @@
 
 Usage:
     llmos-bridge app run <file.app.yaml> [--input "task"]
+    llmos-bridge app exec <app-id-or-name>  [--input "task"]
     llmos-bridge app validate <file.app.yaml>
     llmos-bridge app info <file.app.yaml>
+    llmos-bridge app list
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -21,14 +24,43 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+secret_app = typer.Typer(
+    name="secret",
+    help="Manage secrets for a registered app (API keys, passwords, etc.).",
+    no_args_is_help=True,
+)
+
 app = typer.Typer(
     name="app",
     help="LLMOS App Language — run, validate, and inspect .app.yaml files.",
     no_args_is_help=True,
 )
 
+app.add_typer(secret_app, name="secret")
+
 console = Console()
 
+
+def _resolve_greeting(greeting: str) -> str:
+    """Resolve simple template expressions in CLI greeting text.
+
+    Handles ``{{workspace}}``, ``{{env.VAR}}``, and other variables that
+    are available at CLI display time.  Falls back to the raw text on error.
+    """
+    if not greeting or "{{" not in greeting:
+        return greeting
+    try:
+        from llmos_bridge.apps.expression import ExpressionContext, ExpressionEngine
+        engine = ExpressionEngine()
+        ctx = ExpressionContext(
+            variables={"workspace": os.getcwd()},
+        )
+        return str(engine.resolve(greeting, ctx))
+    except Exception:
+        return greeting
+
+
+# ─── Standalone runtime helpers ────────────────────────────────────────
 
 async def _init_memory_backends(runtime: Any, kv: Any) -> None:
     """Initialize memory module backends with the live KV store."""
@@ -36,18 +68,16 @@ async def _init_memory_backends(runtime: Any, kv: Any) -> None:
         memory_module = getattr(runtime, "_memory_module", None)
         if memory_module is None:
             return
-        # Inject the live KV store into the kv backend
         kv_backend = memory_module.get_backend("kv")
         if kv_backend is not None:
             kv_backend.set_store(kv)
-        # Initialize all backends
         await memory_module.on_start()
     except Exception as e:
         console.print(f"[dim]Memory backend init: {e}[/dim]")
 
 
 async def _init_kv_store():
-    """Create and initialize a KV store for CLI mode (todo persistence, flow checkpoint, etc.)."""
+    """Create and initialize a KV store for CLI mode."""
     from llmos_bridge.memory.store import KeyValueStore
 
     kv_path = Path.home() / ".llmos" / "apps" / "cli_kv.db"
@@ -65,7 +95,6 @@ def _create_standalone_runtime():
 
     executor = StandaloneToolExecutor(working_directory=os.getcwd())
 
-    # Wire standalone memory module with all backends
     try:
         from llmos_bridge.modules.memory.module import MemoryModule
         from llmos_bridge.modules.memory.backends.kv_backend import KVMemoryBackend
@@ -78,36 +107,42 @@ def _create_standalone_runtime():
             namespace="memory",
         )
         memory_module.register_backend(kv_backend)
-
         file_backend = FileMemoryBackend(
             file_path=Path(os.getcwd()) / ".llmos" / "MEMORY.md",
         )
         memory_module.register_backend(file_backend)
-
         cognitive_backend = CognitiveMemoryBackend(
             persistence_path=Path.home() / ".llmos" / "apps" / "cognitive_state.json",
         )
         memory_module.register_backend(cognitive_backend)
-
         executor.set_memory_module(memory_module)
         _standalone_memory_module = memory_module
     except Exception as e:
         console.print(f"[yellow]Memory module init failed: {e}[/yellow]")
         _standalone_memory_module = None
 
+    # Default base URLs for known OpenAI-compatible providers
+    _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+        "ollama": {"base_url": "http://localhost:11434/v1", "api_key": "ollama"},
+        "google": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"},
+    }
+
     def llm_factory(brain: BrainConfig):
         if brain.provider == "anthropic":
             from llmos_bridge.apps.providers import AnthropicProvider
-            return AnthropicProvider(model=brain.model)
-        elif brain.provider == "openai":
-            from llmos_bridge.apps.providers import OpenAIProvider
-            return OpenAIProvider(model=brain.model)
-        else:
-            from llmos_bridge.apps.runtime import _StubLLMProvider
-            console.print(f"[yellow]Warning: Unknown provider '{brain.provider}', using stub[/yellow]")
-            return _StubLLMProvider()
+            return AnthropicProvider(
+                model=brain.model,
+                api_key=brain.config.get("api_key", ""),
+            )
+        # All other providers use OpenAI-compatible API
+        from llmos_bridge.apps.providers import OpenAIProvider
+        defaults = _PROVIDER_DEFAULTS.get(brain.provider, {})
+        return OpenAIProvider(
+            model=brain.model,
+            api_key=brain.config.get("api_key", defaults.get("api_key", "")),
+            base_url=brain.config.get("base_url", defaults.get("base_url", "")),
+        )
 
-    # Wire agent_spawn module for sub-agent support
     try:
         from llmos_bridge.modules.agent_spawn.module import AgentSpawnModule
         from llmos_bridge.modules.agent_spawn.factory import SpawnedAgentFactory
@@ -122,7 +157,6 @@ def _create_standalone_runtime():
     except Exception as e:
         console.print(f"[dim]Agent spawn init: {e}[/dim]")
 
-    # Wire context_manager module for budget-aware context management
     _context_manager_module = None
     try:
         from llmos_bridge.modules.context_manager.module import ContextManagerModule
@@ -147,7 +181,8 @@ def _create_standalone_runtime():
     return rt
 
 
-# ─── Stream Event Renderer ────────────────────────────────────────────
+# ─── Terminal Renderer ────────────────────────────────────────────────
+
 
 class _TerminalRenderer:
     """Renders streaming agent events to the terminal in real-time.
@@ -156,7 +191,7 @@ class _TerminalRenderer:
     - Tool calls shown with module.action and params
     - Tool results shown collapsed (truncated)
     - Agent text output rendered as markdown
-    - Spinner while waiting for LLM response
+    - Approval requests shown as interactive prompts
     """
 
     def __init__(self, console: Console):
@@ -166,13 +201,11 @@ class _TerminalRenderer:
         self._start_time = time.monotonic()
         self._tool_call_start: float | None = None
 
-    async def handle_event(self, event) -> None:
-        """Handle a single stream event from the agent runtime."""
+    async def handle_event(self, event: Any) -> None:
         etype = event.type
         data = event.data
 
         if etype == "thinking":
-            # Agent returned text — could be intermediate thinking or final response
             self._turn_count += 1
             text = data.get("text", "")
             if text.strip():
@@ -188,24 +221,22 @@ class _TerminalRenderer:
             self._tool_call_start = time.monotonic()
             name = data.get("name", "?")
             args = data.get("arguments", {})
-            # Format tool call like Claude Code
             display_name = name.replace("__", ".")
             args_str = self._format_args(args)
-            self._console.print(
-                f"  [dim]{display_name}[/dim]({args_str})",
-            )
+            self._console.print(f"  [dim]{display_name}[/dim]({args_str})")
 
         elif etype == "tool_result":
-            # Show per-tool timing
+            from_cache = data.get("from_cache", False)
             elapsed_ms = ""
-            if self._tool_call_start is not None:
-                dt = (time.monotonic() - self._tool_call_start) * 1000
-                if dt > 100:
-                    elapsed_ms = f" [yellow]{dt:.0f}ms[/yellow]"
-                else:
-                    elapsed_ms = f" [dim]{dt:.0f}ms[/dim]"
+            if from_cache:
+                elapsed_ms = " [cyan](cached)[/cyan]"
                 self._tool_call_start = None
-            # Agent runtime emits "output" key, not "result"
+            elif self._tool_call_start is not None:
+                dt = (time.monotonic() - self._tool_call_start) * 1000
+                elapsed_ms = (
+                    f" [yellow]{dt:.0f}ms[/yellow]" if dt > 100 else f" [dim]{dt:.0f}ms[/dim]"
+                )
+                self._tool_call_start = None
             output = data.get("output", data.get("result", ""))
             is_error = data.get("is_error", False)
             if is_error:
@@ -239,13 +270,18 @@ class _TerminalRenderer:
                 f"{self._tool_count} tool calls, "
                 f"{elapsed:.1f}s, {stop})[/dim]"
             )
-            # Reset for next interaction
+            if stop == "error" and data.get("error"):
+                self._console.print(f"\n[red]Error:[/red] {data['error']}\n")
             self._turn_count = 0
             self._tool_count = 0
             self._start_time = time.monotonic()
 
+    def reset_timer(self) -> None:
+        self._start_time = time.monotonic()
+        self._turn_count = 0
+        self._tool_count = 0
+
     def _format_args(self, args: dict) -> str:
-        """Format tool arguments for display, truncated."""
         if not args:
             return ""
         parts = []
@@ -259,10 +295,8 @@ class _TerminalRenderer:
             result = result[:197] + "..."
         return result
 
-    def _result_preview(self, result) -> str:
-        """Generate a short preview of a tool result."""
+    def _result_preview(self, result: Any) -> str:
         if isinstance(result, str):
-            # Agent runtime sends output as string (JSON-serialized or raw)
             try:
                 result = json.loads(result)
             except (json.JSONDecodeError, TypeError):
@@ -270,7 +304,6 @@ class _TerminalRenderer:
                     return f"{len(result)} chars"
                 return result[:100] if result.strip() else ""
         if isinstance(result, dict):
-            # Common patterns
             if "content" in result:
                 content = result["content"]
                 lines = content.count("\n") + 1
@@ -294,18 +327,14 @@ class _TerminalRenderer:
                 return "Deleted"
             if "success" in result:
                 return "OK" if result["success"] else "Failed"
-        elif isinstance(result, str):
-            if len(result) > 100:
-                return f"{len(result)} chars"
-            return result
         return ""
 
 
-# ─── Daemon lifecycle helpers ──────────────────────────────────────────
+# ─── Daemon helpers ────────────────────────────────────────────────────
 
 
 def _daemon_url() -> str:
-    return os.environ.get("LLMOS_DAEMON_URL", "http://localhost:8000")
+    return os.environ.get("LLMOS_DAEMON_URL", "http://localhost:40000")
 
 
 def _check_daemon() -> bool:
@@ -320,7 +349,6 @@ def _check_daemon() -> bool:
     except Exception:
         return False
 
-    # Probe /apps/execute-tool to verify App Language is wired
     try:
         probe = httpx.post(
             f"{url}/apps/execute-tool",
@@ -334,13 +362,41 @@ def _check_daemon() -> bool:
     return True
 
 
+def _compute_app_id(yaml_path: Path) -> str | None:
+    """Compute the daemon app_id from name:version in a YAML file (same logic as server)."""
+    import hashlib
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(yaml_path.read_text()) or {}
+        name = (data.get("app") or {}).get("name", "")
+        version = str((data.get("app") or {}).get("version", "1.0"))
+        if name:
+            return hashlib.sha256(f"{name}:{version}".encode()).hexdigest()[:16]
+    except Exception:
+        pass
+    return None
+
+
+async def _daemon_get_app(app_id: str) -> dict | None:
+    """Fetch an app record from the daemon, or None if not found."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(base_url=_daemon_url(), timeout=5.0) as client:
+            resp = await client.get(f"/apps/{app_id}")
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return None
+
+
 async def _daemon_register(yaml_path: Path, application_id: str | None = None) -> dict:
     """Register app via daemon API: compile + store + link to Application."""
     import httpx
 
-    yaml_text = yaml_path.read_text()
     body: dict = {
-        "yaml_text": yaml_text,
         "file_path": str(yaml_path.resolve()),
     }
     if application_id:
@@ -351,13 +407,13 @@ async def _daemon_register(yaml_path: Path, application_id: str | None = None) -
         if resp.status_code == 201:
             return resp.json()
         elif resp.status_code == 403:
-            raise typer.Exit(code=1)  # Error already shown by caller
+            raise typer.Exit(code=1)
         else:
             raise RuntimeError(f"Registration failed ({resp.status_code}): {resp.text}")
 
 
 async def _daemon_prepare(app_id: str) -> dict:
-    """Prepare app via daemon API: pre-load modules, warm LLM, etc."""
+    """Prepare app via daemon API."""
     import httpx
 
     async with httpx.AsyncClient(base_url=_daemon_url(), timeout=60.0) as client:
@@ -367,133 +423,365 @@ async def _daemon_prepare(app_id: str) -> dict:
         return resp.json()
 
 
-async def _daemon_run_stream(app_id: str, input_text: str, renderer: '_TerminalRenderer'):
-    """Run app via daemon SSE stream and render events to terminal."""
+async def _daemon_submit_decision(action_id: str, run_id: str, decision: str, reason: str = "") -> bool:
+    """Submit an approval decision to the daemon."""
     import httpx
 
-    body = {"input": input_text, "stream": True}
+    try:
+        async with httpx.AsyncClient(base_url=_daemon_url(), timeout=10.0) as client:
+            resp = await client.post(
+                f"/apps/approvals/{action_id}/decide",
+                json={"decision": decision, "reason": reason},
+                params={"run_id": run_id},
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _format_params_display(params: dict) -> str:
+    """Format params dict for human-readable display."""
+    if not params:
+        return "[dim](no params)[/dim]"
+    lines = []
+    for k, v in list(params.items())[:8]:
+        val = str(v)
+        if len(val) > 120:
+            val = val[:117] + "..."
+        lines.append(f"  [dim]{k}:[/dim] {val}")
+    if len(params) > 8:
+        lines.append(f"  [dim]... +{len(params) - 8} more[/dim]")
+    return "\n".join(lines)
+
+
+async def _handle_approval_cli(req_data: dict, run_id: str) -> None:
+    """Show an interactive approval prompt and submit the user's decision.
+
+    Blocks until the user types a decision. Uses run_in_executor so the
+    asyncio event loop is not blocked (other tasks can still run).
+    """
+    module = req_data.get("module", "?")
+    action = req_data.get("action_name", "?")
+    action_id = req_data.get("action_id", "")
+    params = req_data.get("params", {})
+    risk = req_data.get("risk_level", "")
+
+    risk_color = {"low": "green", "medium": "yellow", "high": "red", "critical": "red bold"}.get(
+        risk.lower(), "white"
+    )
+
+    params_text = _format_params_display(params)
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{module}[/bold].[cyan]{action}[/cyan]"
+            + (f"  [{risk_color}]{risk.upper()}[/{risk_color}]" if risk else "")
+            + f"\n\n{params_text}",
+            title="[yellow bold]⚠  Approval Required[/yellow bold]",
+            border_style="yellow",
+        )
+    )
+    console.print(
+        "  [dim](a)[/dim] Approve  "
+        "[dim](r)[/dim] Reject  "
+        "[dim](s)[/dim] Skip  "
+        "[dim](aa)[/dim] Approve always  "
+        "[dim](m)[/dim] Message"
+    )
+
+    loop = asyncio.get_event_loop()
+    try:
+        raw = await loop.run_in_executor(None, lambda: sys.stdin.readline().strip())
+    except (EOFError, KeyboardInterrupt):
+        raw = "r"
+
+    raw_lower = raw.lower()
+    decision_map = {
+        "": "approve", "a": "approve", "approve": "approve",
+        "r": "reject", "reject": "reject",
+        "s": "skip", "skip": "skip",
+        "aa": "approve_always", "approve_always": "approve_always",
+        "m": "message", "message": "message",
+    }
+    decision = decision_map.get(raw_lower, "reject")
+    reason = ""
+
+    # For MESSAGE: prompt user for the feedback text to send to the agent
+    if decision == "message":
+        console.print("  [cyan]Type your message to the agent:[/cyan]")
+        try:
+            reason = await loop.run_in_executor(None, lambda: sys.stdin.readline().strip())
+        except (EOFError, KeyboardInterrupt):
+            reason = ""
+        if not reason:
+            reason = "The user wants you to do something different."
+
+    ok = await _daemon_submit_decision(action_id, run_id, decision, reason=reason)
+    if ok:
+        icons = {
+            "approve": "[green]✓ Approved[/green]",
+            "reject": "[red]✗ Rejected[/red]",
+            "skip": "[yellow]→ Skipped[/yellow]",
+            "approve_always": "[green]✓ Always approved (this session)[/green]",
+            "message": f"[cyan]✉ Message sent:[/cyan] {reason}",
+        }
+        console.print(icons.get(decision, f"[dim]{decision}[/dim]"))
+    else:
+        console.print("[red]Failed to submit decision (approval may have timed out)[/red]")
+    console.print()
+
+
+# ─── SSE stream runner ────────────────────────────────────────────────
+
+
+async def _daemon_run_stream(
+    app_id: str,
+    input_text: str,
+    renderer: "_TerminalRenderer",
+    conversation_history: list | None = None,
+) -> tuple[str, list]:
+    """Run app via daemon SSE stream, render events, handle approvals.
+
+    Returns (run_id, updated_conversation_history).
+    """
+    import httpx
+
+    import os as _os
+    run_id = ""
+    new_history: list = list(conversation_history) if conversation_history else []
+    body = {
+        "input": input_text,
+        "stream": True,
+        "variables": {"workspace": _os.getcwd()},
+        "conversation_history": new_history,
+    }
+
     async with httpx.AsyncClient(base_url=_daemon_url(), timeout=600.0) as client:
         async with client.stream(
-            "POST", f"/apps/{app_id}/run", json=body,
+            "POST",
+            f"/apps/{app_id}/run",
+            json=body,
             headers={"Accept": "text/event-stream"},
         ) as resp:
             if resp.status_code != 200:
                 text = await resp.aread()
                 console.print(f"[red]Run failed ({resp.status_code}):[/red] {text.decode()}")
-                return
+                return run_id
 
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    payload = json.loads(line[6:])
-                except json.JSONDecodeError:
-                    continue
+            try:
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        payload = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
 
-                # Convert to StreamEvent-like object for the renderer
-                class _Event:
-                    def __init__(self, t, d):
-                        self.type = t
-                        self.data = d
+                    event_type = payload.get("type", "")
+                    event_data = payload.get("data", {})
 
-                await renderer.handle_event(_Event(payload.get("type", ""), payload.get("data", {})))
+                    if event_type == "run_start":
+                        run_id = event_data.get("run_id", "")
+                        continue
 
-                if payload.get("type") == "error":
-                    break
+                    if event_type == "approval_request":
+                        # Blocking approval prompt — agent is paused waiting for this
+                        await _handle_approval_cli(event_data, run_id)
+                        continue
+
+                    if event_type == "conversation_update":
+                        # Capture updated history for multi-turn interactive mode
+                        new_history = event_data.get("messages", new_history)
+                        continue
+
+                    class _Event:
+                        def __init__(self, t: str, d: dict) -> None:
+                            self.type = t
+                            self.data = d
+
+                    await renderer.handle_event(_Event(event_type, event_data))
+
+                    if event_type == "error":
+                        break
+            except httpx.RemoteProtocolError:
+                pass  # Server closed connection after stream ended — not an error
+
+    return run_id, new_history
 
 
-async def _daemon_run_interactive(app_id: str, renderer: '_TerminalRenderer'):
-    """Run app interactively: prompt user for input, run via daemon, repeat."""
-    console.print("[dim]Type your message (Ctrl+C to exit)[/dim]\n")
+# ─── Interactive session ───────────────────────────────────────────────
+
+
+async def _daemon_run_interactive(
+    app_id: str,
+    renderer: "_TerminalRenderer",
+    prompt: str = "> ",
+) -> None:
+    """Run app interactively — conversational loop with approval handling."""
+    console.print("[dim]Type your message. Ctrl+C or empty line to exit.[/dim]\n")
+
+    loop = asyncio.get_event_loop()
+    conversation_history: list = []
+
     while True:
         try:
-            user_input = input("> ")
+            user_input = await loop.run_in_executor(None, lambda: input(prompt))
         except (EOFError, KeyboardInterrupt):
             break
 
         if not user_input.strip():
+            break
+        if user_input.strip().lower() in ("/clear", "/reset"):
+            conversation_history = []
+            console.print("[dim]Conversation cleared.[/dim]\n")
             continue
 
-        await _daemon_run_stream(app_id, user_input, renderer)
+        renderer.reset_timer()
+        _, conversation_history = await _daemon_run_stream(
+            app_id, user_input, renderer, conversation_history=conversation_history
+        )
         console.print()
 
 
 # ─── Commands ──────────────────────────────────────────────────────────
+
+
+@app.command("register")
+def register_app(
+    file: Path = typer.Argument(..., help="Path to .app.yaml file"),
+    application_id: str = typer.Option(None, "--app-id", help="Link to existing dashboard Application ID"),
+) -> None:
+    """Register and prepare an app in the daemon (first-time setup).
+
+    This is the setup step — run once before using 'app run' or 'app exec'.
+    The daemon will:
+      1. Compile and validate the YAML
+      2. Create or update the Application identity (security, modules, permissions)
+      3. Prepare: validate modules, warm LLM connections, initialize memory
+
+    After this, run the app with:
+      llmos-bridge app run <file>
+      llmos-bridge app exec <name>
+    """
+    if not _check_daemon():
+        console.print("[red]Daemon is not running. Start it with: llmos-bridge daemon start[/red]")
+        raise typer.Exit(1)
+
+    async def _do_register():
+        t0 = time.monotonic()
+
+        # Register
+        try:
+            record = await _daemon_register(file, application_id=application_id)
+        except RuntimeError as e:
+            console.print(f"[red]Registration error:[/red] {e}")
+            raise typer.Exit(1)
+
+        app_id = record["id"]
+        app_name = record.get("name", file.stem)
+        app_version = record.get("version", "?")
+        console.print(f"[dim]Registered: {app_name} v{app_version} (id={app_id})[/dim]")
+
+        # Prepare
+        try:
+            prep = await _daemon_prepare(app_id)
+        except RuntimeError as e:
+            console.print(f"[red]Prepare failed:[/red] {e}")
+            raise typer.Exit(1)
+
+        dt = (time.monotonic() - t0) * 1000
+        missing = prep.get("modules_missing", [])
+        if missing:
+            console.print(f"[yellow]Missing modules: {', '.join(missing)}[/yellow]")
+            console.print("[yellow]App registered but not fully prepared.[/yellow]")
+        else:
+            console.print(
+                f"[green]✓[/green] {app_name} v{app_version} ready — "
+                f"{prep.get('modules_checked', 0)} modules, "
+                f"{prep.get('tools_resolved', 0)} tools | {dt:.0f}ms"
+            )
+            console.print(f"[dim]Run with: llmos-bridge app run {file}[/dim]")
+
+    try:
+        asyncio.run(_do_register())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted[/dim]")
+
 
 @app.command("run")
 def run_app(
     file: Path = typer.Argument(..., help="Path to .app.yaml file"),
     input_text: str = typer.Option("", "--input", "-i", help="Input text (skips interactive mode)"),
     standalone: bool = typer.Option(False, "--standalone", help="Force standalone mode (no daemon)"),
-    application_id: str = typer.Option(None, "--app-id", help="Link to dashboard Application ID"),
+    application_id: str = typer.Option(None, "--app-id", help="Application ID (used only if registering for first time)"),
 ) -> None:
-    """Run an LLMOS application from a .app.yaml file.
+    """Run a prepared app from a .app.yaml file via the daemon.
 
-    The app lifecycle is managed by the daemon:
-    1. Register (compile + validate + link to dashboard Application)
-    2. Prepare (pre-load modules, warm LLM, initialize memory)
-    3. Run (execute with full security pipeline)
+    The app must already be registered and prepared in the daemon.
+    Run 'app register <file>' first if this is the first time.
 
-    Use --standalone to bypass the daemon (limited to filesystem + os_exec + memory).
+    Approvals: when a tool requires user approval, the terminal shows a
+    prompt. Type (a)pprove / (r)eject / (s)kip / (aa)approve-always.
+
+    Use --standalone to bypass the daemon (no security pipeline, limited modules).
     """
-    # ── Daemon mode (default) ─────────────────────────────────────
     if not standalone and _check_daemon():
-        console.print(f"[green]Connected to daemon at {_daemon_url()}[/green]")
+        async def _run():
+            # Look up the app in the daemon by computing its ID from the YAML
+            lookup_id = application_id or _compute_app_id(file)
+            record: dict | None = None
+            if lookup_id:
+                record = await _daemon_get_app(lookup_id)
 
-        async def _daemon_lifecycle():
-            # Step 1: Register (compile + store)
-            t0 = time.monotonic()
-            try:
-                record = await _daemon_register(file, application_id=application_id)
-            except RuntimeError as e:
-                console.print(f"[red]Registration error:[/red] {e}")
+            if record is None:
+                console.print(
+                    f"[red]App not registered in daemon.[/red]\n"
+                    f"[dim]Register it first: llmos-bridge app register {file}[/dim]"
+                )
                 raise typer.Exit(1)
 
+            if not record.get("prepared"):
+                console.print(
+                    f"[red]App '{record.get('name')}' is not prepared.[/red]\n"
+                    f"[dim]Prepare it first: llmos-bridge app register {file}[/dim]"
+                )
+                raise typer.Exit(1)
+
+            # App is prepared — run directly
             app_id = record["id"]
             app_name = record.get("name", file.stem)
             app_version = record.get("version", "?")
             app_desc = record.get("description", "")
+            cli_greeting = _resolve_greeting(record.get("cli_greeting", ""))
+            cli_prompt = record.get("cli_prompt", "> ")
+            cli_mode = record.get("cli_mode", "conversation")
 
-            console.print(f"[dim]Registered: {app_name} v{app_version} (id={app_id})[/dim]")
-
-            # Step 2: Prepare (pre-load everything)
-            try:
-                prep = await _daemon_prepare(app_id)
-            except RuntimeError as e:
-                console.print(f"[yellow]Prepare warning:[/yellow] {e}")
-                prep = {}
-
-            dt = (time.monotonic() - t0) * 1000
-            modules = prep.get("modules_checked", 0)
-            tools = prep.get("tools_resolved", 0)
-            missing = prep.get("modules_missing", [])
-            if missing:
-                console.print(f"[yellow]Missing modules: {', '.join(missing)}[/yellow]")
-
-            console.print(Panel(
-                f"[bold]{app_name}[/bold] v{app_version}\n"
-                + (f"{app_desc}\n" if app_desc else "")
-                + f"[dim]{modules} modules, {tools} tools | Ready in {dt:.0f}ms[/dim]",
-                border_style="blue",
-            ))
+            console.print(
+                Panel(
+                    f"[bold]{app_name}[/bold] v{app_version}\n"
+                    + (f"{app_desc}\n" if app_desc else ""),
+                    border_style="blue",
+                )
+            )
+            if cli_greeting:
+                console.print(cli_greeting)
 
             renderer = _TerminalRenderer(console)
-
-            # Step 3: Run
-            if input_text:
+            if input_text or cli_mode == "one_shot":
                 await _daemon_run_stream(app_id, input_text, renderer)
             else:
-                await _daemon_run_interactive(app_id, renderer)
+                await _daemon_run_interactive(app_id, renderer, prompt=cli_prompt)
+
 
         try:
-            asyncio.run(_daemon_lifecycle())
+            asyncio.run(_run())
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted[/dim]")
         return
 
-    # ── Standalone mode (fallback) ────────────────────────────────
+    # ── Standalone fallback ──────────────────────────────────────────
     if not standalone:
-        console.print("[yellow]Daemon not running — standalone mode (filesystem + os_exec + memory)[/yellow]")
+        console.print("[yellow]Daemon not running — standalone mode[/yellow]")
     else:
         console.print("[yellow]Standalone mode (--standalone)[/yellow]")
 
@@ -505,7 +793,6 @@ def run_app(
         console.print(f"[red]Compilation error:[/red] {e}")
         raise typer.Exit(1)
 
-    # Show app header
     agent_info = ""
     if app_def.agent:
         brain = app_def.agent.brain
@@ -515,12 +802,14 @@ def run_app(
         agent_count = len(app_def.agents.agents)
         agent_info = f"{agent_count} agents"
 
-    console.print(Panel(
-        f"[bold]{app_def.app.name}[/bold] v{app_def.app.version}\n"
-        + (f"{app_def.app.description}\n" if app_def.app.description else "")
-        + (f"[dim]{agent_info}[/dim]" if agent_info else ""),
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            f"[bold]{app_def.app.name}[/bold] v{app_def.app.version}\n"
+            + (f"{app_def.app.description}\n" if app_def.app.description else "")
+            + (f"[dim]{agent_info}[/dim]" if agent_info else ""),
+            border_style="blue",
+        )
+    )
 
     renderer = _TerminalRenderer(console)
 
@@ -553,6 +842,137 @@ def run_app(
             asyncio.run(_run_standalone(interactive=True))
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted[/dim]")
+
+
+@app.command("exec")
+def exec_app(
+    app_id_or_name: str = typer.Argument(..., help="App ID or name (from registered apps)"),
+    input_text: str = typer.Option("", "--input", "-i", help="Input text (skips interactive mode)"),
+) -> None:
+    """Execute a registered app by ID or name (no file needed).
+
+    Useful for apps already registered in the daemon (via dashboard or
+    a previous ``app run``). Requires daemon to be running.
+    """
+    import httpx
+
+    if not _check_daemon():
+        console.print("[red]Daemon is not running. Start it with: llmos-bridge daemon start[/red]")
+        raise typer.Exit(1)
+
+    async def _find_and_run():
+        async with httpx.AsyncClient(base_url=_daemon_url(), timeout=10.0) as client:
+            resp = await client.get("/apps")
+            if resp.status_code != 200:
+                console.print(f"[red]Failed to list apps: {resp.text}[/red]")
+                raise typer.Exit(1)
+            apps = resp.json()
+
+        # Find by exact ID, then by name (case-insensitive)
+        target = None
+        for a in apps:
+            if a["id"] == app_id_or_name:
+                target = a
+                break
+        if target is None:
+            for a in apps:
+                if a["name"].lower() == app_id_or_name.lower():
+                    target = a
+                    break
+
+        if target is None:
+            console.print(f"[red]App '{app_id_or_name}' not found.[/red]")
+            console.print("[dim]Use 'llmos-bridge app list' to see registered apps.[/dim]")
+            raise typer.Exit(1)
+
+        if not target.get("prepared"):
+            console.print(
+                f"[red]App '{target['name']}' is not prepared.[/red]\n"
+                f"[dim]Prepare it first: llmos-bridge app register <file.app.yaml>[/dim]"
+            )
+            raise typer.Exit(1)
+
+        # Fetch full app details to get CLI trigger info (greeting, prompt, mode)
+        async with httpx.AsyncClient(base_url=_daemon_url(), timeout=10.0) as client:
+            detail_resp = await client.get(f"/apps/{target['id']}")
+            if detail_resp.status_code == 200:
+                target = detail_resp.json()
+
+        cli_greeting = _resolve_greeting(target.get("cli_greeting", ""))
+        cli_prompt = target.get("cli_prompt", "> ")
+        cli_mode = target.get("cli_mode", "conversation")
+
+        console.print(
+            Panel(
+                f"[bold]{target['name']}[/bold] v{target['version']}\n"
+                + (f"{target.get('description', '')}\n" if target.get("description") else "")
+                + f"[dim]id={target['id']}[/dim]",
+                border_style="blue",
+            )
+        )
+
+        if cli_greeting:
+            console.print(cli_greeting)
+
+        renderer = _TerminalRenderer(console)
+        if input_text or cli_mode == "one_shot":
+            await _daemon_run_stream(target["id"], input_text, renderer)
+        else:
+            await _daemon_run_interactive(target["id"], renderer, prompt=cli_prompt)
+
+
+    try:
+        asyncio.run(_find_and_run())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Interrupted[/dim]")
+
+
+@app.command("list")
+def list_apps() -> None:
+    """List all registered apps in the daemon."""
+    import httpx
+
+    if not _check_daemon():
+        console.print("[red]Daemon is not running.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        resp = httpx.get(f"{_daemon_url()}/apps", timeout=5.0)
+        resp.raise_for_status()
+        apps = resp.json()
+    except Exception as e:
+        console.print(f"[red]Failed to list apps: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not apps:
+        console.print("[dim]No apps registered.[/dim]")
+        return
+
+    table = Table(title="Registered Apps")
+    table.add_column("Name", style="bold")
+    table.add_column("Version")
+    table.add_column("Status")
+    table.add_column("Prepared")
+    table.add_column("Runs")
+    table.add_column("ID", style="dim")
+
+    status_colors = {
+        "registered": "blue", "running": "green", "stopped": "dim",
+        "error": "red", "idle": "white",
+    }
+    for a in apps:
+        st = a.get("status", "")
+        color = status_colors.get(st, "white")
+        table.add_row(
+            a.get("name", ""),
+            a.get("version", ""),
+            f"[{color}]{st}[/{color}]",
+            "[green]✓[/green]" if a.get("prepared") else "[dim]no[/dim]",
+            str(a.get("run_count", 0)),
+            a.get("id", "")[:16],
+        )
+
+    console.print(table)
 
 
 @app.command("validate")
@@ -588,7 +1008,6 @@ def info_app(
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
 
-    # App info panel
     info_lines = [
         f"[bold]{app_def.app.name}[/bold] v{app_def.app.version}",
         f"{app_def.app.description}" if app_def.app.description else "",
@@ -597,7 +1016,6 @@ def info_app(
     ]
     console.print(Panel("\n".join(line for line in info_lines if line), title="Application"))
 
-    # Agent info
     if app_def.agent:
         brain = app_def.agent.brain
         console.print(f"\n[bold]Agent:[/bold] {brain.provider}/{brain.model}")
@@ -612,7 +1030,6 @@ def info_app(
         for a in app_def.agents.agents:
             console.print(f"  - {a.id} ({a.role.value}): {a.brain.provider}/{a.brain.model}")
 
-    # Tools
     all_tools = app_def.get_all_tools()
     if all_tools:
         table = Table(title="Tools")
@@ -626,37 +1043,143 @@ def info_app(
                 table.add_row(tool.builtin, "builtin")
         console.print(table)
 
-    # Triggers
     if app_def.triggers:
         console.print(f"\n[bold]Triggers:[/bold] {len(app_def.triggers)}")
         for t in app_def.triggers:
             console.print(f"  - {t.id or t.type.value}: {t.type.value}")
 
-    # Macros
     if app_def.macros:
         console.print(f"\n[bold]Macros:[/bold] {len(app_def.macros)}")
         for m in app_def.macros:
             params = ", ".join(f"{k}: {v.type}" for k, v in m.params.items())
             console.print(f"  - {m.name}({params})")
 
-    # Flow
     if app_def.flow:
         console.print(f"\n[bold]Flow:[/bold] {len(app_def.flow)} steps")
         for step in app_def.flow:
             step_type = step.infer_type().value
             console.print(f"  - {step.id or '(anonymous)'}: {step_type}")
 
-    # Capabilities
     if app_def.capabilities.grant:
-        console.print(f"\n[bold]Capabilities:[/bold] {len(app_def.capabilities.grant)} grants, "
-                      f"{len(app_def.capabilities.deny)} denials, "
-                      f"{len(app_def.capabilities.approval_required)} approval rules")
+        console.print(
+            f"\n[bold]Capabilities:[/bold] {len(app_def.capabilities.grant)} grants, "
+            f"{len(app_def.capabilities.deny)} denials, "
+            f"{len(app_def.capabilities.approval_required)} approval rules"
+        )
 
 
 async def _cli_input_handler(question: str) -> str:
     """Handle ask_user builtin in CLI mode."""
     console.print(f"\n[yellow]{question}[/yellow]")
     return input("> ")
+
+
+# ─── Secret management commands ──────────────────────────────────────
+
+
+def _resolve_app_id_for_secret(name_or_file: str) -> str:
+    """Resolve app_id from a name or YAML file path."""
+    import hashlib
+    import yaml as _yaml
+    p = Path(name_or_file)
+    if p.exists() and p.suffix in (".yaml", ".yml"):
+        try:
+            data = _yaml.safe_load(p.read_text()) or {}
+            name = (data.get("app") or {}).get("name", "")
+            version = str((data.get("app") or {}).get("version", "1.0"))
+            if name:
+                return hashlib.sha256(f"{name}:{version}".encode()).hexdigest()[:16]
+        except Exception:
+            pass
+    # Treat as name — look up from daemon
+    return name_or_file
+
+
+@secret_app.command("set")
+def secret_set(
+    app_name: str = typer.Argument(..., help="App name or path to .app.yaml"),
+    key: str = typer.Argument(..., help="Secret key (e.g. ANTHROPIC_API_KEY)"),
+    value: str = typer.Option(..., "--value", "-v", help="Secret value", prompt="Secret value", hide_input=True),
+) -> None:
+    """Store an encrypted secret for an app in the daemon."""
+    import httpx
+
+    app_id = _resolve_app_id_for_secret(app_name)
+
+    # If name was given, try to find the real app_id from daemon
+    if not app_id or len(app_id) != 16:
+        try:
+            r = httpx.get(f"{_daemon_url()}/apps", timeout=5.0)
+            if r.status_code == 200:
+                for a in r.json():
+                    if a["name"] == app_name:
+                        app_id = a["id"]
+                        break
+        except Exception:
+            pass
+
+    try:
+        r = httpx.put(
+            f"{_daemon_url()}/apps/{app_id}/secrets/{key}",
+            json={"value": value},
+            timeout=5.0,
+        )
+        if r.status_code in (200, 204):
+            console.print(f"[green]✓[/green] Secret [bold]{key}[/bold] stored for app [bold]{app_name}[/bold]")
+        else:
+            console.print(f"[red]Failed ({r.status_code}):[/red] {r.text}")
+            raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Daemon not running.[/red] Start with: llmos-bridge daemon start")
+        raise typer.Exit(1)
+
+
+@secret_app.command("list")
+def secret_list(
+    app_name: str = typer.Argument(..., help="App name or path to .app.yaml"),
+) -> None:
+    """List secret keys stored for an app (values are never shown)."""
+    import httpx
+
+    app_id = _resolve_app_id_for_secret(app_name)
+
+    try:
+        r = httpx.get(f"{_daemon_url()}/apps/{app_id}/secrets", timeout=5.0)
+        if r.status_code == 200:
+            keys = r.json()
+            if keys:
+                for k in keys:
+                    console.print(f"  {k}")
+            else:
+                console.print("[dim]No secrets stored.[/dim]")
+        else:
+            console.print(f"[red]Failed ({r.status_code}):[/red] {r.text}")
+            raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Daemon not running.[/red] Start with: llmos-bridge daemon start")
+        raise typer.Exit(1)
+
+
+@secret_app.command("delete")
+def secret_delete(
+    app_name: str = typer.Argument(..., help="App name or path to .app.yaml"),
+    key: str = typer.Argument(..., help="Secret key to delete"),
+) -> None:
+    """Delete a secret for an app."""
+    import httpx
+
+    app_id = _resolve_app_id_for_secret(app_name)
+
+    try:
+        r = httpx.delete(f"{_daemon_url()}/apps/{app_id}/secrets/{key}", timeout=5.0)
+        if r.status_code in (200, 204):
+            console.print(f"[green]✓[/green] Secret [bold]{key}[/bold] deleted")
+        else:
+            console.print(f"[red]Failed ({r.status_code}):[/red] {r.text}")
+            raise typer.Exit(1)
+    except httpx.ConnectError:
+        console.print("[red]Daemon not running.[/red] Start with: llmos-bridge daemon start")
+        raise typer.Exit(1)
 
 
 async def _cli_output_handler(text: str) -> None:

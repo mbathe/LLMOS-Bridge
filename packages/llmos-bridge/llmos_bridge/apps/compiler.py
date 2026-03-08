@@ -1543,7 +1543,7 @@ class AppCompiler:
     # ── Brain provider validation ───────────────────────────────────
 
     _KNOWN_PROVIDERS = {
-        "anthropic", "openai", "ollama", "bedrock", "vertex", "azure",
+        "anthropic", "openai", "ollama", "google", "bedrock", "vertex", "azure",
         "local", "test",
     }
 

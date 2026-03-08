@@ -328,6 +328,58 @@ _GUIDELINES_SECTION = """\
 - One plan per user request unless the task naturally splits into independent operations.
 - Use **perception** only for visual/GUI operations, not for data-only tasks.
 - Use **memory** to persist data across plans; use **depends_on + templates** within a plan.
+- After writing data (file, database row, document), add `"_no_cache": true` to the \
+subsequent read action's params to bypass the result cache and verify the actual \
+on-disk state instead of a potentially stale cached value.
+"""
+
+_CACHE_SECTION = """\
+## Action Result Cache
+
+Many read actions (file reads, database schema queries, HTTP GET, document reads) \
+cache their results for a short period (5–300 s) to avoid redundant I/O. \
+This is transparent in normal use — the LLM receives the correct up-to-date value.
+
+### When the cache can mislead you
+
+If you **write** data and immediately **read** it back to verify the change, \
+the write action automatically invalidates the relevant cache entries. \
+However, in edge cases (e.g. you read a file that was modified externally, \
+or the write went to a different path than expected), the cached value from \
+before the write may still be returned.
+
+### How to force a fresh read
+
+Add `"_no_cache": true` to any read action's `params`:
+
+```json
+{
+  "id": "verify_write",
+  "module": "filesystem",
+  "action": "read_file",
+  "params": {
+    "path": "/home/user/config.yaml",
+    "_no_cache": true
+  }
+}
+```
+
+This forces the action to execute against the real source (disk, database, API) \
+and refreshes the cache with the new result. Use it whenever you need to verify \
+that a previous write was applied correctly.
+
+### When to use `_no_cache`
+
+- Immediately after writing a file, to confirm its new content.
+- After executing a database write, to check the updated row.
+- After modifying a document (Word, Excel, PPTX), to read the updated version.
+- When the user explicitly asks for "fresh" or "current" data.
+
+### When NOT to use `_no_cache`
+
+- Routine reads where no write has occurred — the cache saves time and I/O.
+- When reading the same file multiple times in the same plan — use `depends_on` \
+and templates (`{{result.<id>.content}}`) instead of re-reading.
 """
 
 _DB_GATEWAY_GUIDELINES = """\
@@ -459,6 +511,7 @@ class SystemPromptGenerator:
             self._build_intent_verifier_section(),
             _PERCEPTION_SECTION,
             _MEMORY_SECTION,
+            self._build_cache_section(),
             _GUIDELINES_SECTION,
         ])
 
@@ -652,6 +705,17 @@ class SystemPromptGenerator:
             "`security.request_permission` to request the missing permission, "
             "then retry the original action.\n"
         )
+
+    def _build_cache_section(self) -> str:
+        """Include the cache section if any cache-aware module is loaded."""
+        _CACHED_MODULES = {
+            "filesystem", "os_exec", "database", "api_http",
+            "word", "excel", "powerpoint",
+        }
+        loaded_ids = {m.module_id for m in self._manifests}
+        if loaded_ids & _CACHED_MODULES:
+            return _CACHE_SECTION
+        return ""
 
     def _build_scanner_pipeline_section(self) -> str:
         """Include the scanner pipeline section if active."""

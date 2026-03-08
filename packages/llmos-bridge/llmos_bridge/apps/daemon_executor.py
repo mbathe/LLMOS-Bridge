@@ -9,14 +9,16 @@ Full pipeline:
     3. Authorization guard (identity-based RBAC — app/session allowlists)
     4. Tool constraints check (YAML-level paths, forbidden commands, etc.)
     5. Capabilities check (app-level grant/deny with when: expressions)
-    6. Approval rules (with when: expressions + count-based triggers)
-    7. Scanner pipeline (HeuristicScanner, LLMGuard, PromptGuard)
-    8. Permission guard (profile-based allowlist + sandbox)
-    9. Module execution with ExecutionContext, per-tool timeout + retry
-    10. Perception capture (screenshot/OCR before/after tool calls)
-    11. Output sanitization (prompt injection defense)
-    12. Audit enforcement (level, redaction, notifications)
-    13. EventBus audit trail
+    6. Auto-grant OS permissions for YAML apps
+    7. Risk-based approval (MEDIUM+ risk → automatic approval gate)
+    7b. YAML approval rules (with when: expressions + count-based triggers)
+    8. Scanner pipeline (HeuristicScanner, LLMGuard, PromptGuard)
+    9. Permission guard (profile-based allowlist + sandbox)
+    10. Module execution with ExecutionContext, per-tool timeout + retry
+    11. Perception capture (screenshot/OCR before/after tool calls)
+    12. Output sanitization (prompt injection defense)
+    13. Audit enforcement (level, redaction, notifications)
+    14. EventBus audit trail
 """
 
 from __future__ import annotations
@@ -248,6 +250,14 @@ class DaemonToolExecutor:
         error_msg = ""
         action_key = f"{module_id}.{action}"
 
+        # ── Security context: propagate the current app_id so that
+        # @requires_permission checks per-app OS grants, not just global ones.
+        _sec_token = None
+        _scope = _current_scope.get()
+        if _scope and _scope.identity and _scope.identity.app_id:
+            from llmos_bridge.security.context import set_security_app_id
+            _sec_token = set_security_app_id(_scope.identity.app_id)
+
         try:
             # 1. Check module exists
             try:
@@ -271,7 +281,7 @@ class DaemonToolExecutor:
                 return {"error": intent_error}
 
             # 4. Authorization guard (IML identity-based RBAC)
-            auth_error = self._check_authorization(module_id, action)
+            auth_error = await self._check_authorization(module_id, action)
             if auth_error:
                 return {"error": auth_error}
 
@@ -290,8 +300,24 @@ class DaemonToolExecutor:
             if cap_error:
                 return {"error": cap_error}
 
-            # 7. App-level approval rules check (with when: expressions)
-            approval_msg = self._check_approval_required(module_id, action, params)
+            # 6b. Auto-grant OS-level permissions for YAML apps whose
+            #     capabilities have already authorized this action.
+            #     The @requires_permission decorator on module methods checks
+            #     PermissionManager which only auto-grants for app_id=="default".
+            #     For YAML apps (non-default app_id), pre-grant here so the
+            #     decorator doesn't block actions already authorized by capabilities.
+            await self._auto_grant_permissions_for_app(module, action)
+
+            # 7. Risk-based automatic approval (checks action risk vs threshold)
+            #    Default threshold is MEDIUM: LOW actions pass, MEDIUM+ need approval.
+            #    Developer can override via capabilities.auto_approve_risk in YAML.
+            risk_approval_msg = self._check_risk_approval(module_id, action, params)
+
+            # 7b. App-level YAML approval rules (with when: expressions)
+            yaml_approval_msg = self._check_approval_required(module_id, action, params)
+
+            # Merge: YAML rules take priority (more specific message), but either triggers approval.
+            approval_msg = yaml_approval_msg or risk_approval_msg
             if approval_msg:
                 approval_result = await self._handle_approval(
                     module_id, action, params, approval_msg
@@ -304,16 +330,44 @@ class DaemonToolExecutor:
             if scan_error:
                 return {"error": scan_error}
 
-            # 9. Permission guard (daemon-level security profile)
+            # 9. Permission guard (daemon-level security profile, overridable per-app)
             if self._guard is not None:
-                if not self._guard.is_allowed(module_id, action):
+                scope = _current_scope.get()
+                app_profile = scope.security_profile if scope else None
+                if app_profile and app_profile != self._guard._profile.profile.value:
+                    # Use the per-app profile, but NEVER allow escalation beyond daemon's profile.
+                    from llmos_bridge.security.profiles import get_profile_config, PermissionProfile
+                    from llmos_bridge.security.guard import PermissionGuard
+                    _PROFILE_RANK = {
+                        PermissionProfile.READONLY: 0,
+                        PermissionProfile.LOCAL_WORKER: 1,
+                        PermissionProfile.POWER_USER: 2,
+                        PermissionProfile.UNRESTRICTED: 3,
+                    }
+                    try:
+                        requested = PermissionProfile(app_profile)
+                    except ValueError:
+                        requested = self._guard._profile.profile
+                    daemon_profile = self._guard._profile.profile
+                    # Cap: if requested profile is more permissive, use daemon's profile
+                    if _PROFILE_RANK.get(requested, 0) > _PROFILE_RANK.get(daemon_profile, 0):
+                        logger.warning(
+                            "profile_elevation_blocked: app requested %s but daemon is %s — using daemon profile",
+                            requested.value, daemon_profile.value,
+                        )
+                        effective_guard = self._guard
+                    else:
+                        effective_guard = PermissionGuard(profile=get_profile_config(requested))
+                else:
+                    effective_guard = self._guard
+                if not effective_guard.is_allowed(module_id, action):
                     from llmos_bridge.security.guard import PermissionDeniedError
                     raise PermissionDeniedError(
                         action=action,
                         module=module_id,
-                        profile=self._guard._profile.profile.value,
+                        profile=effective_guard._profile.profile.value,
                     )
-                self._guard.check_sandbox_params(module_id, action, params)
+                effective_guard.check_sandbox_params(module_id, action, params)
 
             # 10. Perception capture: before
             await self._capture_perception(module_id, action, "before")
@@ -373,6 +427,10 @@ class DaemonToolExecutor:
             return {"error": f"{type(e).__name__}: {e}"}
 
         finally:
+            # Reset per-app security context
+            if _sec_token is not None:
+                from llmos_bridge.security.context import _current_app_id as _sec_ctx
+                _sec_ctx.reset(_sec_token)
             # 15. Audit enforcement + EventBus
             await self._emit_audit(module_id, action, params, success, error_msg, start)
 
@@ -460,7 +518,7 @@ class DaemonToolExecutor:
 
     # ── IML Security: Authorization Guard ────────────────────────
 
-    def _check_authorization(
+    async def _check_authorization(
         self, module_id: str, action: str
     ) -> str | None:
         """Check identity-based RBAC via IML AuthorizationGuard."""
@@ -473,16 +531,27 @@ class DaemonToolExecutor:
             return None  # No identity context — skip (anonymous access)
 
         try:
-            # AuthorizationGuard.check_action_allowed needs an Application object
-            # We cache it on the scope to avoid repeated DB lookups
+            # Resolve the Application object (cached on scope to avoid repeated DB lookups)
             app_obj = getattr(scope, '_cached_app', None)
             if app_obj is None and self._identity_store is not None:
-                # Synchronous lookup not possible here — use cached value only
-                # The API route should pre-cache this on the scope
-                pass
+                app_obj = await self._identity_store.get_application(identity.app_id)
+                if app_obj is not None:
+                    scope._cached_app = app_obj
 
             if app_obj is not None:
+                # Check application is enabled
+                if not app_obj.enabled:
+                    from llmos_bridge.exceptions import AuthorizationError
+                    raise AuthorizationError(
+                        role=identity.role.value if identity.role else "unknown",
+                        required="enabled_app",
+                        resource=f"application:{app_obj.app_id}",
+                    )
                 session_obj = getattr(scope, '_cached_session', None)
+                if session_obj is None and identity.session_id and self._identity_store is not None:
+                    session_obj = await self._identity_store.get_session(identity.session_id)
+                    if session_obj is not None:
+                        scope._cached_session = session_obj
                 self._authorization_guard.check_action_allowed(
                     app_obj, module_id, action, session=session_obj,
                 )
@@ -579,17 +648,25 @@ class DaemonToolExecutor:
         scope = _current_scope.get()
         sandbox_paths = scope.sandbox_paths if scope else []
         sandbox_commands = scope.sandbox_commands if scope else []
-        # Check allowed paths (applies to filesystem and os_exec working_directory)
+        # Check allowed paths — check ALL known path-carrying params
+        # (aligned with PermissionGuard._PATH_PARAM_KEYS for consistency)
+        _SANDBOX_PATH_KEYS = (
+            "path", "file_path", "source", "destination", "output_path",
+            "image_path", "theme_path", "screenshot_path", "database",
+            "directory", "working_directory", "cwd", "dir", "target_path",
+        )
         if sandbox_paths:
-            param_path = params.get("path", params.get("directory", params.get("working_directory", "")))
-            if param_path:
+            for _pk in _SANDBOX_PATH_KEYS:
+                param_path = params.get(_pk, "")
+                if not param_path:
+                    continue
                 resolved = str(Path(param_path).resolve())
                 in_allowed = any(
                     resolved.startswith(str(Path(p).resolve()))
                     for p in sandbox_paths
                 )
                 if not in_allowed:
-                    return f"Path '{param_path}' outside sandbox (allowed: {sandbox_paths})"
+                    return f"Path '{param_path}' (param '{_pk}') outside sandbox (allowed: {sandbox_paths})"
 
         # Check blocked commands
         if sandbox_commands:
@@ -776,6 +853,156 @@ class DaemonToolExecutor:
                 else:
                     scope.tool_constraints.pop(key, None)
 
+    async def _auto_grant_permissions_for_app(
+        self, module: Any, action: str,
+    ) -> None:
+        """Pre-grant OS-level permissions for a YAML app that passed capabilities.
+
+        When a YAML app runs with a non-default app_id, the ``@requires_permission``
+        decorator on module methods would reject MEDIUM+ risk actions because
+        ``PermissionManager.check_or_raise()`` only auto-grants for
+        ``app_id == "default"``.  Since the daemon's capabilities system has already
+        authorized this action, we pre-grant the required OS permissions so the
+        decorator doesn't block.
+        """
+        scope = _current_scope.get()
+        if scope is None or scope.capabilities is None:
+            return  # No YAML app context — nothing to do
+
+        security = getattr(module, "_security", None)
+        if security is None:
+            return
+
+        pm = getattr(security, "permission_manager", None)
+        if pm is None:
+            return
+
+        app_id = pm._current_app_id()
+        if app_id == "default":
+            return  # Default scope already handles auto-granting
+
+        # Look up the handler method to read its _required_permissions metadata
+        handler = getattr(module, f"_action_{action}", None)
+        if handler is None:
+            return
+
+        required = getattr(handler, "_required_permissions", None)
+        if not required:
+            return
+
+        for perm in required:
+            if not await pm.check(perm, module.MODULE_ID):
+                from llmos_bridge.security.models import PermissionGrant, PermissionScope
+                grant = PermissionGrant(
+                    permission=perm,
+                    module_id=module.MODULE_ID,
+                    scope=PermissionScope.SESSION,
+                    granted_by="capabilities",
+                    reason="Auto-granted (YAML capabilities authorized)",
+                    app_id=app_id,
+                )
+                await pm._store.grant(grant, app_id=app_id)
+                # Emit audit event (same as PermissionManager.grant())
+                await pm._emit_permission_event(
+                    "permission_granted",
+                    permission=perm,
+                    module_id=module.MODULE_ID,
+                    scope=PermissionScope.SESSION.value,
+                    granted_by="capabilities",
+                    reason="Auto-granted (YAML capabilities authorized)",
+                    risk_level=pm.get_risk_level(perm).value,
+                    app_id=app_id,
+                )
+                logger.info(
+                    "permission_auto_granted_by_capabilities: %s for %s (app=%s)",
+                    perm, module.MODULE_ID, app_id,
+                )
+
+    # ── Risk-level helpers ──────────────────────────────────────────
+
+    # Rank mapping for comparing risk levels.
+    _RISK_RANK: dict[str, int] = {
+        "low": 0,
+        "medium": 1,
+        "high": 2,
+        "critical": 3,
+    }
+
+    def _get_action_risk_level(self, module_id: str, action: str) -> str:
+        """Resolve the risk level of a module action.
+
+        Lookup order (highest wins):
+        1. ``@sensitive_action(risk_level=...)`` decorator metadata on the handler
+        2. ``PERMISSION_RISK[permission]`` for each ``@requires_permission`` on the handler
+        3. Default: ``"low"``
+        """
+        try:
+            module = self._registry.get(module_id)
+        except Exception:
+            return "low"
+
+        handler = getattr(module, f"_action_{action}", None)
+        if handler is None:
+            return "low"
+
+        best = "low"
+
+        # 1. @sensitive_action metadata
+        decorator_risk = getattr(handler, "_risk_level", None)
+        if decorator_risk is not None:
+            risk_str = decorator_risk.value if hasattr(decorator_risk, "value") else str(decorator_risk)
+            if self._RISK_RANK.get(risk_str, 0) > self._RISK_RANK.get(best, 0):
+                best = risk_str
+
+        # 2. @requires_permission metadata → PERMISSION_RISK lookup
+        perms = getattr(handler, "_required_permissions", None)
+        if perms:
+            from llmos_bridge.security.models import PERMISSION_RISK
+            for perm in perms:
+                perm_risk = PERMISSION_RISK.get(perm)
+                if perm_risk is not None:
+                    r = perm_risk.value
+                    if self._RISK_RANK.get(r, 0) > self._RISK_RANK.get(best, 0):
+                        best = r
+
+        return best
+
+    def _check_risk_approval(
+        self, module_id: str, action: str, params: dict[str, Any]
+    ) -> str | None:
+        """Check if this action needs approval based on its risk level.
+
+        Uses ``capabilities.auto_approve_risk`` to decide the threshold.
+        Actions whose risk is **at or above** the threshold require approval.
+
+        Returns an approval message if approval is needed, None otherwise.
+        """
+        scope = _current_scope.get()
+        capabilities = scope.capabilities if scope else None
+        if capabilities is None:
+            return None
+
+        threshold = (capabilities.auto_approve_risk or "medium").lower()
+        if threshold == "none":
+            return None  # risk-based approval disabled by developer
+
+        threshold_rank = self._RISK_RANK.get(threshold)
+        if threshold_rank is None:
+            return None  # invalid value → skip
+
+        action_risk = self._get_action_risk_level(module_id, action)
+        action_rank = self._RISK_RANK.get(action_risk, 0)
+
+        if action_rank >= threshold_rank:
+            return (
+                f"Action {module_id}.{action} has risk level '{action_risk.upper()}' "
+                f"(threshold: {threshold}) — approval required"
+            )
+
+        return None
+
+    # ── YAML approval rules ───────────────────────────────────────
+
     def _check_approval_required(
         self, module_id: str, action: str, params: dict[str, Any]
     ) -> str | None:
@@ -828,11 +1055,19 @@ class DaemonToolExecutor:
         """
         if self._approval_gate is None:
             # No gate — immediate error (standalone mode)
-            return {"error": f"Approval required: {message}"}
+            return {
+                "error": (
+                    f"[APPROVAL REQUIRED] '{module_id}.{action}' needs human approval: {message}. "
+                    "No approval gate is configured — action cannot proceed."
+                ),
+                "_approval": "no_gate",
+            }
 
-        # Check auto-approve first
-        if self._approval_gate.is_auto_approved(module_id, action):
-            logger.info("Auto-approved %s.%s (APPROVE_ALWAYS)", module_id, action)
+        # Check auto-approve first (scoped to current run session)
+        scope = _current_scope.get()
+        run_id = scope.run_id if scope else "unknown"
+        if self._approval_gate.is_auto_approved(module_id, action, run_id=run_id):
+            logger.info("Auto-approved %s.%s (APPROVE_ALWAYS, run=%s)", module_id, action, run_id)
             return None  # proceed
 
         import uuid
@@ -841,8 +1076,7 @@ class DaemonToolExecutor:
             ApprovalRequest,
         )
 
-        scope = _current_scope.get()
-        run_id = scope.run_id if scope else "unknown"
+        resolved_risk = self._get_action_risk_level(module_id, action)
 
         request = ApprovalRequest(
             plan_id=run_id,
@@ -850,7 +1084,7 @@ class DaemonToolExecutor:
             module=module_id,
             action_name=action,
             params=params,
-            risk_level="medium",
+            risk_level=resolved_risk,
             description=message,
             requires_approval_reason="yaml_approval_rule",
         )
@@ -904,10 +1138,40 @@ class DaemonToolExecutor:
             return None  # proceed with modified params
 
         if response.decision == ApprovalDecision.SKIP:
-            return {"skipped": True, "reason": response.reason or "Skipped by user"}
+            return {
+                "error": (
+                    f"[APPROVAL SKIPPED] The user skipped '{module_id}.{action}'. "
+                    f"Reason: {response.reason or 'No reason given'}. "
+                    "Do NOT retry this action — find an alternative approach or ask the user."
+                ),
+                "_approval": "skipped",
+            }
+
+        if response.decision == ApprovalDecision.MESSAGE:
+            # User wants to send feedback to the agent instead of approving.
+            # The action is NOT executed — the message is returned so the agent
+            # can adjust its approach based on the human's guidance.
+            user_msg = response.reason or "The user wants you to do something different."
+            logger.info("Message from user for %s.%s: %s", module_id, action, user_msg)
+            return {
+                "error": (
+                    f"[USER FEEDBACK] The user blocked '{module_id}.{action}' and sent you this message: "
+                    f"\"{user_msg}\". "
+                    "Follow the user's instructions instead of retrying this action."
+                ),
+                "_approval": "message",
+                "_user_message": user_msg,
+            }
 
         # REJECT
-        return {"error": f"Rejected: {response.reason or 'Action rejected by user'}"}
+        return {
+            "error": (
+                f"[APPROVAL REJECTED] The user rejected '{module_id}.{action}'. "
+                f"Reason: {response.reason or 'No reason given'}. "
+                "Do NOT retry this exact action — ask the user what they want instead."
+            ),
+            "_approval": "rejected",
+        }
 
     def _eval_condition(
         self, expr: str, module_id: str, action: str, params: dict[str, Any],

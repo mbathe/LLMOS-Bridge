@@ -39,6 +39,7 @@ class ApprovalDecision(str, Enum):
     SKIP = "skip"
     MODIFY = "modify"
     APPROVE_ALWAYS = "approve_always"
+    MESSAGE = "message"  # Block action + send feedback message to agent
 
 
 @dataclass
@@ -121,8 +122,9 @@ class ApprovalGate:
         self._default_timeout_behavior = default_timeout_behavior
         # (plan_id, action_id) → _PendingEntry
         self._pending: dict[tuple[str, str], _PendingEntry] = {}
-        # "module.action" keys that have been auto-approved via APPROVE_ALWAYS
-        self._auto_approve: set[str] = set()
+        # Per-session (run_id) auto-approve: {run_id: {"module.action", ...}}
+        # Scoped to application sessions — cleared when the run ends.
+        self._auto_approve: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # Executor side
@@ -190,10 +192,11 @@ class ApprovalGate:
         if entry is None:
             return False
 
-        # Handle APPROVE_ALWAYS: add to auto-approve set.
+        # Handle APPROVE_ALWAYS: add to per-session auto-approve set.
         if response.decision == ApprovalDecision.APPROVE_ALWAYS:
             action_key = f"{entry.request.module}.{entry.request.action_name}"
-            self._auto_approve.add(action_key)
+            session_set = self._auto_approve.setdefault(plan_id, set())
+            session_set.add(action_key)
 
         entry.response = response
         entry.event.set()
@@ -213,13 +216,30 @@ class ApprovalGate:
             if pid == plan_id
         ]
 
-    def is_auto_approved(self, module: str, action: str) -> bool:
-        """Check if this module.action has been auto-approved (APPROVE_ALWAYS)."""
-        return f"{module}.{action}" in self._auto_approve
+    def is_auto_approved(self, module: str, action: str, run_id: str = "") -> bool:
+        """Check if this module.action has been auto-approved for a specific run.
 
-    def clear_auto_approvals(self) -> None:
-        """Reset the session auto-approve list."""
-        self._auto_approve.clear()
+        Args:
+            module: Module ID.
+            action: Action name.
+            run_id: The current run/session ID.  Only approvals set during
+                    this run are considered.
+        """
+        session_set = self._auto_approve.get(run_id)
+        if session_set is None:
+            return False
+        return f"{module}.{action}" in session_set
+
+    def clear_auto_approvals(self, run_id: str | None = None) -> None:
+        """Reset auto-approve decisions.
+
+        Args:
+            run_id: Clear only for this session.  If None, clear everything.
+        """
+        if run_id is None:
+            self._auto_approve.clear()
+        else:
+            self._auto_approve.pop(run_id, None)
 
     @property
     def pending_count(self) -> int:

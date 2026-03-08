@@ -223,6 +223,62 @@ Use literals in expressions:
 "{{'hello'}}"               # String (single quotes)
 ```
 
+## Secrets
+
+The `secret` namespace provides access to encrypted secrets stored per-application in the identity database. Secrets are resolved at runtime and never exposed in logs, API responses, or YAML output.
+
+### Storing Secrets
+
+```bash
+# CLI
+llmos-bridge app secret set <app-name> MY_SECRET "secret-value"
+
+# API
+PUT /applications/{app_id}/secrets/MY_SECRET
+Content-Type: application/json
+{"value": "secret-value"}
+```
+
+You can also manage secrets from the Dashboard: **Applications > Select app > Secrets > Add Secret**.
+
+### Using Secrets
+
+Use `{{secret.KEY_NAME}}` anywhere in your YAML:
+
+```yaml
+# LLM provider API key
+brain:
+  provider: google
+  model: gemini-2.0-flash
+  config:
+    api_key: "{{secret.GOOGLE_API_KEY}}"
+
+# System prompt
+agent:
+  system_prompt: |
+    Use this internal API token: {{secret.INTERNAL_TOKEN}}
+
+# Variables
+variables:
+  db_password: "{{secret.DB_PASSWORD}}"
+
+# Flow step parameters
+flow:
+  - action: api_http.http_post
+    params:
+      url: "https://api.example.com/data"
+      headers:
+        Authorization: "Bearer {{secret.API_TOKEN}}"
+
+# Trigger webhook validation
+triggers:
+  - type: webhook
+    auth:
+      secret: "{{secret.WEBHOOK_SECRET}}"
+```
+
+Secrets are resolved everywhere the expression engine is used: `brain.config`, `system_prompt`, `variables`, `constraints`, flow steps, and triggers.
+
 ## Usage in Different Contexts
 
 ### System Prompt

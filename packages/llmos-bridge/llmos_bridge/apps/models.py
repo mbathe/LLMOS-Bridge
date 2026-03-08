@@ -197,6 +197,7 @@ class FallbackBrain(BaseModel):
     """
     provider: str | None = None
     model: str
+    max_tokens: int | None = None
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -477,10 +478,30 @@ class AuditConfig(BaseModel):
 
 
 class CapabilitiesConfig(BaseModel):
-    """Security capabilities (grants, denials, approvals, audit)."""
+    """Security capabilities (grants, denials, approvals, audit).
+
+    ``auto_approve_risk`` controls risk-based automatic approval.
+    Actions whose OS-level risk is **at or above** this threshold require
+    human approval even if no explicit ``approval_required`` rule matches.
+
+    Values (from most restrictive to least):
+        ``"low"``          — ALL actions require approval (except explicitly skipped)
+        ``"medium"``       — default — LOW risk auto-approved, MEDIUM+ needs approval
+        ``"high"``         — LOW and MEDIUM auto-approved, HIGH+ needs approval
+        ``"critical"``     — only CRITICAL risk triggers automatic approval
+        ``"none"``         — disable risk-based approval entirely (only YAML rules apply)
+    """
     grant: list[CapabilityGrant] = Field(default_factory=list)
     deny: list[CapabilityDenial] = Field(default_factory=list)
     approval_required: list[ApprovalRule] = Field(default_factory=list)
+    auto_approve_risk: str = Field(
+        default="medium",
+        description=(
+            "Risk threshold for automatic approval. Actions at or above this "
+            "level require human approval. Set to 'none' to disable. "
+            "Default: 'medium' (MEDIUM, HIGH, CRITICAL all need approval)."
+        ),
+    )
     audit: AuditConfig = Field(default_factory=AuditConfig)
 
 

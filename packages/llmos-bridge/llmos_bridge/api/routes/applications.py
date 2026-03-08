@@ -8,7 +8,7 @@ Phase 6: Full RBAC enforcement on all endpoints.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 
 from llmos_bridge.api.dependencies import (
     AuthorizationGuardDep,
@@ -28,7 +28,9 @@ from llmos_bridge.api.schemas import (
     CreateAgentRequest,
     CreateApplicationRequest,
     CreateSessionRequest,
+    SecretKeyResponse,
     SessionResponse,
+    SetSecretRequest,
     UpdateApplicationRequest,
 )
 from llmos_bridge.exceptions import AuthorizationError
@@ -173,6 +175,7 @@ async def get_application(
 async def update_application(
     app_id: str,
     body: UpdateApplicationRequest,
+    request: Request,
     store: IdentityStoreDep,
     identity: IdentityDep,
     guard: AuthorizationGuardDep,
@@ -189,6 +192,24 @@ async def update_application(
     updated = await store.update_application(app_id, **updates)
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
+
+    # ── Bidirectional sync: patch YAML capabilities.grant when modules/actions changed ──
+    if "allowed_modules" in updates or "allowed_actions" in updates:
+        app_store = getattr(request.app.state, "app_store", None)
+        if app_store is not None:
+            try:
+                yaml_record = await app_store.get_by_application_id(app_id)
+                if yaml_record and yaml_record.config_json and yaml_record.config_json != "{}":
+                    from llmos_bridge.api.routes.apps import _patch_yaml_capabilities
+                    patched = _patch_yaml_capabilities(
+                        yaml_record.config_json,
+                        allowed_modules=list(updated.allowed_modules or []),
+                        allowed_actions=dict(updated.allowed_actions or {}),
+                    )
+                    await app_store.update_yaml(yaml_record.id, patched)
+            except Exception:
+                pass  # Best-effort — identity update always succeeds even if YAML patch fails
+
     stats = await store.app_stats(updated.app_id)
     return _app_response(updated, stats)
 
@@ -196,6 +217,7 @@ async def update_application(
 @router.delete("/applications/{app_id}", summary="Delete application")
 async def delete_application(
     app_id: str,
+    request: Request,
     store: IdentityStoreDep,
     identity: IdentityDep,
     guard: AuthorizationGuardDep,
@@ -208,9 +230,24 @@ async def delete_application(
         raise _handle_authz_error(exc)
     if app_id == "default":
         raise HTTPException(status_code=400, detail="Cannot delete the default application.")
+
+    # Check if this Application was auto-created for a YAML app
+    app_obj = await store.get_application(app_id)
+    is_yaml_linked = app_obj and getattr(app_obj, "tags", {}).get("yaml_app") == "true"
+
     deleted = await store.delete_application(app_id, hard=hard)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
+
+    # Cascade-delete the linked YAML app
+    if is_yaml_linked:
+        app_store = getattr(request.app.state, "app_store", None)
+        if app_store is not None:
+            try:
+                await app_store.delete(app_id)
+            except Exception:
+                pass  # Best-effort cleanup
+
     action = "deleted" if hard else "disabled"
     return {"detail": f"Application '{app_id}' {action}."}
 
@@ -506,7 +543,7 @@ def _get_permission_store(sec_mgr: object):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="PermissionManager not initialised.",
         )
-    return pm.store
+    return pm._store
 
 
 @router.get(
@@ -534,6 +571,15 @@ async def list_app_permissions(
 
     perm_store = _get_permission_store(sec_mgr)
     grants = await perm_store.get_for_app(app_id)
+    # Also include grants stored under "default" namespace (e.g. from before the
+    # identity system was enabled, or from agent-level grants made without a
+    # per-app scope).  Deduplicate so app-specific grants take priority.
+    if app_id != "default":
+        default_grants = await perm_store.get_for_app("default")
+        existing_keys = {(g.permission, g.module_id) for g in grants}
+        for g in default_grants:
+            if (g.permission, g.module_id) not in existing_keys:
+                grants.append(g)
     return {"grants": [g.to_dict() for g in grants], "count": len(grants)}
 
 
@@ -613,3 +659,85 @@ async def revoke_app_permission(
             detail=f"Permission '{body.permission}' not granted to '{body.module_id}' for app '{app_id}'.",
         )
     return {"revoked": True, "permission": body.permission, "module_id": body.module_id, "app_id": app_id}
+
+
+# ---------------------------------------------------------------------------
+# Secrets (environment variables for YAML apps)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/applications/{app_id}/secrets",
+    response_model=list[SecretKeyResponse],
+    summary="List secret keys (values are never exposed)",
+)
+async def list_secrets(
+    app_id: str,
+    store: IdentityStoreDep,
+    identity: IdentityDep,
+    guard: AuthorizationGuardDep,
+) -> list[SecretKeyResponse]:
+    _require_identity(store)
+    try:
+        guard.require_role(identity, Role.OPERATOR, resource="list_secrets")
+        guard.require_app_scope(identity, app_id)
+    except AuthorizationError as exc:
+        raise _handle_authz_error(exc)
+    app_obj = await store.get_application(app_id)
+    if app_obj is None:
+        raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
+    keys = await store.list_secret_keys(app_id)
+    return [SecretKeyResponse(**k) for k in keys]
+
+
+@router.put(
+    "/applications/{app_id}/secrets/{key}",
+    response_model=SecretKeyResponse,
+    summary="Set a secret (create or update)",
+)
+async def set_secret(
+    app_id: str,
+    key: str,
+    body: SetSecretRequest,
+    store: IdentityStoreDep,
+    identity: IdentityDep,
+    guard: AuthorizationGuardDep,
+) -> SecretKeyResponse:
+    _require_identity(store)
+    try:
+        guard.require_role(identity, Role.APP_ADMIN, resource="set_secret")
+        guard.require_app_scope(identity, app_id)
+    except AuthorizationError as exc:
+        raise _handle_authz_error(exc)
+    app_obj = await store.get_application(app_id)
+    if app_obj is None:
+        raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
+    await store.set_secret(app_id, key, body.value)
+    keys = await store.list_secret_keys(app_id)
+    for k in keys:
+        if k["key"] == key:
+            return SecretKeyResponse(**k)
+    return SecretKeyResponse(key=key, created_at=time.time(), updated_at=time.time())
+
+
+@router.delete(
+    "/applications/{app_id}/secrets/{key}",
+    summary="Delete a secret",
+)
+async def delete_secret(
+    app_id: str,
+    key: str,
+    store: IdentityStoreDep,
+    identity: IdentityDep,
+    guard: AuthorizationGuardDep,
+) -> dict[str, str]:
+    _require_identity(store)
+    try:
+        guard.require_role(identity, Role.APP_ADMIN, resource="delete_secret")
+        guard.require_app_scope(identity, app_id)
+    except AuthorizationError as exc:
+        raise _handle_authz_error(exc)
+    deleted = await store.delete_secret(app_id, key)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Secret '{key}' not found.")
+    return {"detail": f"Secret '{key}' deleted."}

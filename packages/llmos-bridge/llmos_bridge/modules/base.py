@@ -32,6 +32,20 @@ from llmos_bridge.exceptions import (
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest
 
 
+def _collect_handler_cache_meta(handler: Any) -> dict[str, Any]:
+    """Extract ``_cache_meta`` from a handler method, traversing wrappers."""
+    # Walk __wrapped__ chain to find the attr even if it got lost
+    fn = handler
+    for _ in range(10):  # guard against infinite loops
+        meta = getattr(fn, "_cache_meta", None)
+        if meta is not None:
+            return dict(meta)
+        fn = getattr(fn, "__wrapped__", None)
+        if fn is None:
+            break
+    return {}
+
+
 class Platform(str, Enum):
     LINUX = "linux"
     WINDOWS = "windows"
@@ -548,6 +562,18 @@ class BaseModule(ABC):
     ) -> Any:
         """Dispatch *action* to the corresponding ``_action_<action>`` method.
 
+        Applies the two-level cache automatically when the handler is decorated
+        with ``@cacheable`` or ``@invalidates_cache``:
+
+        - **L2 cache check** (before execution): if the action is cacheable and
+          a matching entry exists in Redis/fakeredis, the cached value is
+          returned immediately without calling the handler.
+        - **L2 invalidation** (before execution): if the action declares
+          ``@invalidates_cache("other_action", ...)``, all matching Redis keys
+          for those actions are deleted before the write executes.
+        - **L2 cache store** (after successful execution): cacheable action
+          results are stored in Redis with the configured TTL.
+
         Subclasses that need custom dispatch logic (e.g. stateful session
         management) may override this method.
 
@@ -564,8 +590,62 @@ class BaseModule(ABC):
             ActionExecutionError: If the handler raises any unexpected exception.
         """
         handler = self._get_handler(action)
+        cache_meta = _collect_handler_cache_meta(handler)
+
+        # ── Meta-parameters: strip before dispatch ───────────────────────
+        # _no_cache: if True, skip the L2 cache read so the action always
+        # executes fresh.  The result is still written to cache afterwards
+        # (cache-refresh semantics) so subsequent reads benefit.
+        no_cache = bool(params.pop("_no_cache", False))
+
+        # ── L2: invalidate before write ──────────────────────────────────
+        invalidates = cache_meta.get("invalidates")
+        if invalidates:
+            try:
+                from llmos_bridge.cache.client import get_cache_client
+                from llmos_bridge.cache.decorators import make_invalidation_patterns
+
+                l2 = await get_cache_client()
+                if l2.enabled:
+                    for pattern in make_invalidation_patterns(
+                        self.MODULE_ID, tuple(invalidates)
+                    ):
+                        removed = await l2.delete_pattern(pattern)
+                        if removed:
+                            import logging as _log
+                            _log.getLogger(__name__).debug(
+                                "cache_l2_invalidate module=%s action=%s pattern=%s removed=%d",
+                                self.MODULE_ID, action, pattern, removed,
+                            )
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger(__name__).debug("cache L2 invalidation error: %s", exc)
+
+        # ── L2: check cache before executing ────────────────────────────
+        if not no_cache and cache_meta.get("cacheable") and cache_meta.get("shared", True):
+            try:
+                from llmos_bridge.cache.client import get_cache_client
+                from llmos_bridge.cache.decorators import make_cache_key
+
+                l2 = await get_cache_client()
+                if l2.enabled:
+                    key = make_cache_key(
+                        self.MODULE_ID, action, params, cache_meta.get("key_params")
+                    )
+                    cached = await l2.get(key)
+                    if cached is not None:
+                        import logging as _log
+                        _log.getLogger(__name__).debug(
+                            "cache_l2_hit module=%s action=%s", self.MODULE_ID, action
+                        )
+                        return cached
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger(__name__).debug("cache L2 get error: %s", exc)
+
+        # ── Execute the action ───────────────────────────────────────────
         try:
-            return await handler(params)
+            result = await handler(params)
         except (
             ActionNotFoundError,
             ActionExecutionError,
@@ -577,3 +657,26 @@ class BaseModule(ABC):
             raise ActionExecutionError(
                 module_id=self.MODULE_ID, action=action, cause=exc
             ) from exc
+
+        # ── L2: store result after successful execution ──────────────────
+        if cache_meta.get("cacheable") and cache_meta.get("shared", True):
+            try:
+                from llmos_bridge.cache.client import get_cache_client
+                from llmos_bridge.cache.decorators import make_cache_key
+
+                l2 = await get_cache_client()
+                if l2.enabled:
+                    key = make_cache_key(
+                        self.MODULE_ID, action, params, cache_meta.get("key_params")
+                    )
+                    await l2.set(key, result, ttl=cache_meta.get("ttl") or None)
+                    import logging as _log
+                    _log.getLogger(__name__).debug(
+                        "cache_l2_store module=%s action=%s ttl=%s",
+                        self.MODULE_ID, action, cache_meta.get("ttl"),
+                    )
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger(__name__).debug("cache L2 set error: %s", exc)
+
+        return result

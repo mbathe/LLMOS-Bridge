@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.exceptions import ModuleLoadError
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
@@ -272,6 +273,7 @@ class PowerPointModule(BaseModule):
     # Lifecycle actions
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_create_presentation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreatePresentationParams.model_validate(params)
@@ -324,6 +326,7 @@ class PowerPointModule(BaseModule):
             }
 
     @audit_trail("standard")
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_save_presentation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SavePresentationParams.model_validate(params)
@@ -335,6 +338,7 @@ class PowerPointModule(BaseModule):
             dest = self._save_prs(p.path, prs, p.output_path)
             return {"saved_to": dest}
 
+    @cacheable(ttl=60, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads presentation metadata")
     async def _action_get_presentation_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetPresentationInfoParams.model_validate(params)
@@ -356,6 +360,7 @@ class PowerPointModule(BaseModule):
     # Slide management
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddSlideParams.model_validate(params)
@@ -393,6 +398,7 @@ class PowerPointModule(BaseModule):
             return {"slide_index": new_index, "slide_count": len(prs.slides)}
 
     @sensitive_action(RiskLevel.MEDIUM)
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_delete_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteSlideParams.model_validate(params)
@@ -424,6 +430,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"deleted_index": p.slide_index, "slide_count": len(prs.slides)}
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_duplicate_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DuplicateSlideParams.model_validate(params)
@@ -471,6 +478,7 @@ class PowerPointModule(BaseModule):
             new_index = (p.insert_after + 1) if p.insert_after is not None else len(prs.slides) - 1
             return {"new_index": new_index, "slide_count": len(prs.slides)}
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_reorder_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReorderSlideParams.model_validate(params)
@@ -492,6 +500,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"from_index": p.from_index, "to_index": p.to_index}
 
+    @cacheable(ttl=60, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Lists presentation slides")
     async def _action_list_slides(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListSlidesParams.model_validate(params)
@@ -521,6 +530,7 @@ class PowerPointModule(BaseModule):
                 )
             return {"slides": result, "slide_count": len(prs.slides)}
 
+    @cacheable(ttl=60, key_params=["path", "slide_index"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads slide content")
     async def _action_read_slide(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadSlideParams.model_validate(params)
@@ -552,6 +562,7 @@ class PowerPointModule(BaseModule):
 
             return result
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_layout(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideLayoutParams.model_validate(params)
@@ -587,6 +598,7 @@ class PowerPointModule(BaseModule):
     # Text content
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_title(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideTitleParams.model_validate(params)
@@ -633,6 +645,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"slide_index": p.slide_index, "title": p.title}
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_text_box(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTextBoxParams.model_validate(params)
@@ -687,6 +700,7 @@ class PowerPointModule(BaseModule):
                 "text": p.text,
             }
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_slide_notes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddSlideNotesParams.model_validate(params)
@@ -717,6 +731,7 @@ class PowerPointModule(BaseModule):
     # Shapes
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_shape(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddShapeParams.model_validate(params)
@@ -804,6 +819,7 @@ class PowerPointModule(BaseModule):
                 "shape_type": p.shape_type,
             }
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_format_shape(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatShapeParams.model_validate(params)
@@ -889,6 +905,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"slide_index": p.slide_index, "shape_index": p.shape_index}
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddImageParams.model_validate(params)
@@ -922,6 +939,7 @@ class PowerPointModule(BaseModule):
     # Charts
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_chart(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddChartParams.model_validate(params)
@@ -984,6 +1002,7 @@ class PowerPointModule(BaseModule):
     # Tables
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_table(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTableParams.model_validate(params)
@@ -1040,6 +1059,7 @@ class PowerPointModule(BaseModule):
                 "cols": p.cols,
             }
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_format_table_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatTableCellParams.model_validate(params)
@@ -1094,6 +1114,7 @@ class PowerPointModule(BaseModule):
     # Background & theme
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_set_slide_background(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetSlideBackgroundParams.model_validate(params)
@@ -1216,6 +1237,7 @@ class PowerPointModule(BaseModule):
             self._save_prs(p.path, prs)
             return {"modified_slides": modified}
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_apply_theme(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyThemeParams.model_validate(params)
@@ -1266,6 +1288,7 @@ class PowerPointModule(BaseModule):
             # Theme copying is best-effort
             pass
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies PowerPoint presentation")
     async def _action_add_transition(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddTransitionParams.model_validate(params)

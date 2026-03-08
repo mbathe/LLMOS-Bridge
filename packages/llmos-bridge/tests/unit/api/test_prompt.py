@@ -372,3 +372,73 @@ class TestComputerUseProtocol:
         gen = SystemPromptGenerator(manifests=[])
         prompt = gen.generate()
         assert "Computer Use Protocol" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Cache section — _build_cache_section
+# ---------------------------------------------------------------------------
+
+
+def _make_manifest(module_id: str) -> ModuleManifest:
+    return ModuleManifest(
+        module_id=module_id,
+        version="1.0.0",
+        description=f"Test module {module_id}",
+        actions=[ActionSpec(name="do_thing", description="Does a thing.")],
+    )
+
+
+@pytest.mark.unit
+class TestCacheSection:
+    """_build_cache_section includes the section when a cached module is loaded."""
+
+    @pytest.mark.parametrize("module_id", [
+        "filesystem",
+        "os_exec",
+        "database",
+        "api_http",
+        "word",
+        "excel",
+        "powerpoint",
+    ])
+    def test_cache_section_included_for_cached_module(self, module_id: str) -> None:
+        gen = SystemPromptGenerator(manifests=[_make_manifest(module_id)])
+        prompt = gen.generate()
+        assert "Action Result Cache" in prompt
+        assert "_no_cache" in prompt
+
+    def test_cache_section_excluded_when_no_cached_module_loaded(self) -> None:
+        gen = SystemPromptGenerator(manifests=[_make_manifest("custom_module")])
+        prompt = gen.generate()
+        assert "Action Result Cache" not in prompt
+
+    def test_cache_section_excluded_when_no_modules_loaded(self) -> None:
+        gen = SystemPromptGenerator(manifests=[])
+        prompt = gen.generate()
+        assert "Action Result Cache" not in prompt
+
+    def test_cache_section_included_when_one_of_many_is_cached(self) -> None:
+        manifests = [
+            _make_manifest("custom_module"),
+            _make_manifest("filesystem"),
+            _make_manifest("another_custom"),
+        ]
+        gen = SystemPromptGenerator(manifests=manifests)
+        prompt = gen.generate()
+        assert "Action Result Cache" in prompt
+
+    def test_cache_section_contains_no_cache_guidance(self) -> None:
+        gen = SystemPromptGenerator(manifests=[_make_manifest("filesystem")])
+        prompt = gen.generate()
+        assert "When to use" in prompt
+        assert "When NOT to use" in prompt
+
+    def test_cache_section_contains_json_example(self) -> None:
+        gen = SystemPromptGenerator(manifests=[_make_manifest("filesystem")])
+        prompt = gen.generate()
+        assert '"_no_cache": true' in prompt
+
+    def test_guidelines_mention_no_cache_after_write(self) -> None:
+        gen = SystemPromptGenerator(manifests=[_make_manifest("filesystem")])
+        prompt = gen.generate()
+        assert "_no_cache" in prompt

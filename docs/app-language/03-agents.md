@@ -63,11 +63,110 @@ agent:
 
 ### Supported Providers
 
-| Provider | Models |
-|----------|--------|
-| `anthropic` | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-sonnet-4-20250514`, `claude-haiku-4-5-20251001` |
+| Provider | API | Models (examples) |
+|----------|-----|-------------------|
+| `anthropic` | Anthropic SDK | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
+| `openai` | OpenAI API | `gpt-4o`, `gpt-4o-mini`, `o3` |
+| `google` | Google AI Studio (OpenAI-compatible) | `gemini-2.0-flash`, `gemini-1.5-pro` |
+| `ollama` | Ollama local (OpenAI-compatible) | `llama3.1:8b`, `qwen2.5-coder:7b`, `mistral` |
+| Any other | OpenAI-compatible API | Any model — just provide `base_url` and `api_key` in `config` |
 
-Custom providers can be added via the provider plugin system.
+All providers except `anthropic` use the OpenAI-compatible API format (`/v1/chat/completions`). This means **any OpenAI-compatible service works without code changes** — just set `base_url` and `api_key` in the `config:` block.
+
+#### Provider-Specific Defaults
+
+| Provider | Default `base_url` | Default `api_key` |
+|----------|-------------------|-------------------|
+| `ollama` | `http://localhost:11434/v1` | `ollama` |
+| `google` | `https://generativelanguage.googleapis.com/v1beta/openai/` | (none) |
+| Others | (none — must be set in `config`) | (none) |
+
+#### Examples
+
+```yaml
+# Anthropic (native SDK)
+brain:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  config:
+    api_key: "{{secret.ANTHROPIC_API_KEY}}"
+
+# Google AI Studio (free tier)
+brain:
+  provider: google
+  model: gemini-2.0-flash
+  config:
+    api_key: "{{secret.GOOGLE_API_KEY}}"
+
+# Ollama (local, no API key needed)
+brain:
+  provider: ollama
+  model: llama3.1:8b
+
+# Mistral — no code change needed
+brain:
+  provider: mistral
+  model: mistral-large-latest
+  config:
+    api_key: "{{secret.MISTRAL_API_KEY}}"
+    base_url: "https://api.mistral.ai/v1"
+
+# Groq — no code change needed
+brain:
+  provider: groq
+  model: llama-3.3-70b-versatile
+  config:
+    api_key: "{{secret.GROQ_API_KEY}}"
+    base_url: "https://api.groq.com/openai/v1"
+
+# Together AI — no code change needed
+brain:
+  provider: together
+  model: meta-llama/Llama-3-70b-chat-hf
+  config:
+    api_key: "{{secret.TOGETHER_API_KEY}}"
+    base_url: "https://api.together.xyz/v1"
+```
+
+### Secrets Injection in Brain Config
+
+API keys and other sensitive values in `brain.config` are resolved automatically via the expression engine. Use `{{secret.KEY_NAME}}` to reference a secret stored in the application's secret store.
+
+```yaml
+brain:
+  provider: google
+  model: gemini-2.0-flash
+  config:
+    api_key: "{{secret.MY_API_KEY}}"    # Resolved at runtime from the secret store
+```
+
+**How to store a secret:**
+
+```bash
+# Via CLI
+llmos-bridge app secret set <app-name> MY_API_KEY "sk-..."
+
+# Via API
+PUT /applications/{app_id}/secrets/MY_API_KEY
+Content-Type: application/json
+{"value": "sk-..."}
+
+# Via Dashboard
+Applications → Select app → Secrets → Add Secret
+```
+
+Secrets are stored encrypted in the identity database and are **never exposed** in API responses, logs, or YAML output. They are resolved at runtime just before creating the LLM provider.
+
+`{{secret.X}}` works everywhere in the YAML — not just in `brain.config`:
+
+| Context | Example |
+|---------|---------|
+| `brain.config` | `api_key: "{{secret.OPENAI_KEY}}"` |
+| `system_prompt` | `API key: {{secret.INTERNAL_KEY}}` |
+| `variables` | `api_token: "{{secret.TOKEN}}"` |
+| `constraints` | `api_key: "{{secret.KEY}}"` |
+| Flow steps | `params: { token: "{{secret.TOKEN}}" }` |
+| Triggers | `secret: "{{secret.WEBHOOK_SECRET}}"` |
 
 ## System Prompt
 

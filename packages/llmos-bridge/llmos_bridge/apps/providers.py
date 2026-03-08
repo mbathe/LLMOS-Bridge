@@ -97,6 +97,14 @@ MODEL_LIMITS: dict[str, ModelLimits] = {
     "o1":                          ModelLimits(context_window=200000, max_output=100000),
     "o3":                          ModelLimits(context_window=200000, max_output=100000),
     "o3-mini":                     ModelLimits(context_window=200000, max_output=100000),
+    # Ollama / local models
+    "qwen2.5:14b-instruct-q4_K_M": ModelLimits(context_window=32768, max_output=8192),
+    "qwen2.5-coder:7b":            ModelLimits(context_window=32768, max_output=8192),
+    "llama3.1:8b":                 ModelLimits(context_window=131072, max_output=8192),
+    "llama3.1:latest":             ModelLimits(context_window=131072, max_output=8192),
+    "llama3.2:latest":             ModelLimits(context_window=131072, max_output=8192),
+    "mistral-nemo:latest":         ModelLimits(context_window=131072, max_output=8192),
+    "gemma3:4b":                   ModelLimits(context_window=131072, max_output=8192),
 }
 
 
@@ -444,12 +452,26 @@ class OpenAIProvider(LLMProvider):
 
     @staticmethod
     def _parse_response(response: Any) -> dict[str, Any]:
-        """Parse OpenAI response to the LLMProvider format."""
+        """Parse OpenAI response to the LLMProvider format.
+
+        Handles two tool-call styles:
+        1. Structured ``tool_calls`` field (GPT, llama3.1, mistral-nemo…)
+        2. JSON tool call emitted as plain text in ``content``
+           (qwen2.5-coder, deepseek-coder, and other models that don't
+           use the native tool_calls wire format).  We detect JSON objects
+           containing ``"name"`` + ``"arguments"`` keys and promote them.
+
+        Also detects ``finish_reason == "length"`` (response truncated at
+        max_tokens) and injects an error message so the agent can adapt
+        (e.g. retry with shorter content).
+        """
         choice = response.choices[0]
         message = choice.message
         text = message.content or ""
         tool_calls: list[dict[str, Any]] = []
+        truncated = choice.finish_reason == "length"
 
+        # ── 1. Native structured tool_calls ──
         if message.tool_calls:
             for tc in message.tool_calls:
                 args = tc.function.arguments
@@ -457,6 +479,22 @@ class OpenAIProvider(LLMProvider):
                     try:
                         args = json.loads(args)
                     except json.JSONDecodeError:
+                        if truncated:
+                            # Response was cut at max_tokens — the JSON is
+                            # incomplete.  Skip this tool call entirely and
+                            # let the agent know below.
+                            logger.warning(
+                                "Truncated tool call %s (finish_reason=length) "
+                                "— JSON args incomplete, skipping",
+                                tc.function.name,
+                            )
+                            continue
+                        # Non-truncated malformed JSON — use empty args so the
+                        # module validator reports the missing required fields.
+                        logger.warning(
+                            "Malformed JSON args for tool call %s — using empty args",
+                            tc.function.name,
+                        )
                         args = {}
                 tool_calls.append({
                     "id": tc.id,
@@ -464,10 +502,111 @@ class OpenAIProvider(LLMProvider):
                     "arguments": args,
                 })
 
+        # ── 2. Fallback: extract tool calls from text content ──
+        if not tool_calls and text.strip() and not truncated:
+            extracted = OpenAIProvider._extract_tool_calls_from_text(text)
+            if extracted:
+                tool_calls = extracted
+                # Clear text so the agent loop doesn't echo raw JSON
+                text = ""
+
+        # ── 3. Handle truncation ──
+        if truncated:
+            warning = (
+                "[SYSTEM: Your previous response was truncated because it "
+                "exceeded max_tokens. Some tool calls may have been lost. "
+                "Please retry with shorter content — split large file writes "
+                "into smaller chunks or reduce the number of simultaneous "
+                "tool calls.]"
+            )
+            if text:
+                text = text + "\n\n" + warning
+            else:
+                text = warning
+            logger.warning(
+                "Response truncated (finish_reason=length): %d tool calls "
+                "survived, injecting retry hint",
+                len(tool_calls),
+            )
+
         is_done = choice.finish_reason == "stop" and not tool_calls
 
         return {
             "text": text,
             "tool_calls": tool_calls,
             "done": is_done,
+        }
+
+    @staticmethod
+    def _extract_tool_calls_from_text(text: str) -> list[dict[str, Any]]:
+        """Try to extract tool call(s) from a text response.
+
+        Supports:
+        - Single JSON object: {"name": "...", "arguments": {...}}
+        - JSON array of objects: [{"name": "...", "arguments": {...}}, ...]
+        - Multiple JSON objects separated by newlines
+        """
+        import uuid as _uuid
+
+        results: list[dict[str, Any]] = []
+        stripped = text.strip()
+
+        # Try parsing as a single JSON value (object or array)
+        try:
+            parsed = json.loads(stripped)
+            candidates = parsed if isinstance(parsed, list) else [parsed]
+            for obj in candidates:
+                tc = OpenAIProvider._maybe_tool_call(obj)
+                if tc:
+                    results.append(tc)
+            if results:
+                return results
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Try extracting multiple JSON objects separated by newlines/whitespace
+        # Find all top-level { ... } blocks
+        depth = 0
+        start = -1
+        for i, ch in enumerate(stripped):
+            if ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    try:
+                        obj = json.loads(stripped[start:i + 1])
+                        tc = OpenAIProvider._maybe_tool_call(obj)
+                        if tc:
+                            results.append(tc)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    start = -1
+
+        return results
+
+    @staticmethod
+    def _maybe_tool_call(obj: Any) -> dict[str, Any] | None:
+        """Return a normalized tool-call dict if *obj* looks like one."""
+        import uuid as _uuid
+
+        if not isinstance(obj, dict):
+            return None
+        name = obj.get("name")
+        args = obj.get("arguments", obj.get("params", obj.get("parameters", {})))
+        if not name or not isinstance(name, str):
+            return None
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {
+            "id": str(_uuid.uuid4())[:8],
+            "name": name,
+            "arguments": args,
         }

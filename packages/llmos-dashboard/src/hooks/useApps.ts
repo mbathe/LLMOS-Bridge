@@ -5,10 +5,12 @@ import { api } from "@/lib/api/client";
 import type {
   AppRecord,
   RegisterAppRequest,
+  PrepareAppResponse,
   RunAppRequest,
   RunAppResponse,
   ValidateAppResponse,
   UpdateStatusRequest,
+  YamlParsedConfig,
 } from "@/types/appLanguage";
 
 export function useApps() {
@@ -16,6 +18,7 @@ export function useApps() {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["llmos-apps"] });
+    queryClient.invalidateQueries({ queryKey: ["applications"] });
   };
 
   // ── Queries ──
@@ -48,6 +51,12 @@ export function useApps() {
     onSuccess: invalidate,
   });
 
+  const prepareApp = useMutation<PrepareAppResponse, Error, string>({
+    mutationFn: (appId) =>
+      api.post<PrepareAppResponse>(`/apps/${appId}/prepare`),
+    onSuccess: invalidate,
+  });
+
   const validateApp = useMutation<ValidateAppResponse, Error, string>({
     mutationFn: (appId) =>
       api.post<ValidateAppResponse>(`/apps/${appId}/validate`),
@@ -67,6 +76,7 @@ export function useApps() {
     apps,
     registerApp,
     deleteApp,
+    prepareApp,
     runApp,
     validateApp,
     updateStatus,
@@ -80,6 +90,47 @@ export function useAppDetail(appId: string) {
     queryFn: () => api.get<AppRecord>(`/apps/${appId}`),
     enabled: !!appId,
   });
+}
+
+/**
+ * Fetch the structured/parsed YAML configuration for a YAML app,
+ * including sync status between YAML capabilities and the Identity.
+ */
+export function useYamlParsed(appId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  const parsed = useQuery<YamlParsedConfig>({
+    queryKey: ["llmos-apps", appId, "parsed"],
+    queryFn: () => api.get<YamlParsedConfig>(`/apps/${appId}/parsed`),
+    enabled: !!appId,
+    refetchInterval: 15000,
+    retry: false,
+  });
+
+  const syncFromYaml = useMutation<
+    { synced: boolean; yaml_modules: string[]; yaml_allowed_actions: Record<string, string[]> },
+    Error,
+    string
+  >({
+    mutationFn: (id) => api.post(`/apps/${id}/sync-from-yaml`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["llmos-apps", appId, "parsed"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+  });
+
+  const syncToYaml = useMutation<
+    { synced: boolean; allowed_modules: string[]; allowed_actions: Record<string, string[]> },
+    Error,
+    string
+  >({
+    mutationFn: (id) => api.post(`/apps/${id}/sync-to-yaml`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["llmos-apps", appId, "parsed"] });
+    },
+  });
+
+  return { parsed, syncFromYaml, syncToYaml };
 }
 
 /**

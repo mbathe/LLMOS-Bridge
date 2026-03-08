@@ -35,10 +35,12 @@ import {
   TeamOutlined,
   StopOutlined,
   CheckCircleOutlined,
+  SyncOutlined,
 } from "@ant-design/icons";
 import { api, ApiError } from "@/lib/api/client";
 import { useApplicationPermissions } from "@/hooks/useApplicationPermissions";
 import type { ApplicationResponse, SessionResponse, UpdateApplicationRequest } from "@/types/application";
+import type { YamlParsedConfig } from "@/types/appLanguage";
 import type { PermissionGrant } from "@/types/security";
 import type { ColumnsType } from "antd/es/table";
 
@@ -83,6 +85,36 @@ const PERMISSION_RISK: Record<string, string> = {
 
 const KNOWN_PERMISSIONS = Object.keys(PERMISSION_RISK);
 
+// Map module_id → which OS permission prefixes are relevant.
+const MODULE_PERMISSION_PREFIXES: Record<string, string[]> = {
+  filesystem:      ["filesystem."],
+  os_exec:         ["os."],
+  api_http:        ["network."],
+  database:        ["data.database."],
+  db_gateway:      ["data.database."],
+  browser:         ["app.browser", "network."],
+  gui:             ["device.screen", "device.keyboard"],
+  vision:          ["device."],
+  excel:           ["data."],
+  word:            ["data."],
+  iot:             ["iot."],
+  security:        ["module."],
+  module_manager:  ["module."],
+};
+
+function getPermissionsForModule(moduleId: string | null, cachedPerms: string[] | undefined): string[] {
+  if (cachedPerms?.length) return cachedPerms;
+  if (!moduleId) return KNOWN_PERMISSIONS;
+  const prefixes = MODULE_PERMISSION_PREFIXES[moduleId];
+  if (prefixes?.length) {
+    const filtered = KNOWN_PERMISSIONS.filter((p) =>
+      prefixes.some((prefix) => p.startsWith(prefix))
+    );
+    if (filtered.length > 0) return filtered;
+  }
+  return KNOWN_PERMISSIONS;
+}
+
 const riskTagColors: Record<string, string> = {
   low: "green",
   medium: "orange",
@@ -112,6 +144,11 @@ interface AppSecurityTabProps {
   app: ApplicationResponse;
   onUpdateApp: (updates: UpdateApplicationRequest) => Promise<void>;
   savingApp: boolean;
+  yamlParsed?: YamlParsedConfig | null;
+  onSyncFromYaml?: () => Promise<void>;
+  syncingFromYaml?: boolean;
+  linkedYamlAppId?: string;
+  onSyncToYaml?: () => Promise<void>;
 }
 
 // ── Tab 1: Module Access ──────────────────────────────────────────────────────
@@ -120,6 +157,10 @@ function ModuleAccessTab({
   app,
   onUpdateApp,
   savingApp,
+  yamlParsed,
+  onSyncFromYaml,
+  syncingFromYaml,
+  onSyncToYaml,
 }: AppSecurityTabProps) {
   const [allModules, setAllModules] = useState<string[]>([]);
   const [moduleActions, setModuleActions] = useState<Record<string, string[]>>({});
@@ -186,15 +227,75 @@ function ModuleAccessTab({
     }
     await onUpdateApp({ allowed_modules: selectedModules, allowed_actions: allowedActions });
     setDirty(false);
+    if (onSyncToYaml) {
+      try {
+        await onSyncToYaml();
+      } catch {
+        // sync-to-yaml is best-effort; identity save already succeeded
+      }
+    }
   };
 
   const extraRuleModules = Object.keys(actionRules).filter((m) => !selectedModules.includes(m));
   const ruleModules = [...selectedModules, ...extraRuleModules];
   const addableModules = allModules.filter((m) => !ruleModules.includes(m));
 
+  const yamlModuleSet = new Set(yamlParsed?.yaml_modules ?? []);
+
   return (
     <Spin spinning={loadingModules}>
       <Space direction="vertical" size="large" style={{ width: "100%" }}>
+
+        {/* ── Sync status banner ── */}
+        {yamlParsed && (
+          yamlParsed.in_sync ? (
+            <Alert
+              type="success"
+              showIcon
+              icon={<CheckCircleOutlined />}
+              message="In sync with YAML"
+              description={
+                <Space direction="vertical" size={4}>
+                  <Text style={{ fontSize: 12 }}>Module access matches what&apos;s declared in capabilities.grant.</Text>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    loading={syncingFromYaml}
+                    onClick={onSyncFromYaml}
+                  >
+                    Sync from YAML
+                  </Button>
+                </Space>
+              }
+              style={{ borderRadius: 6 }}
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              icon={<StopOutlined />}
+              message="Out of sync with YAML"
+              description={
+                <Space direction="vertical" size={4}>
+                  <Text style={{ fontSize: 12 }}>
+                    Dashboard settings differ from <strong>capabilities.grant</strong> in the YAML.
+                    Save from dashboard to update the YAML, or sync from YAML to restore it.
+                  </Text>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<SyncOutlined />}
+                    loading={syncingFromYaml}
+                    onClick={onSyncFromYaml}
+                  >
+                    Sync from YAML
+                  </Button>
+                </Space>
+              }
+              style={{ borderRadius: 6 }}
+            />
+          )
+        )}
 
         {/* Allowed Modules */}
         <div>
@@ -252,6 +353,9 @@ function ModuleAccessTab({
                       </Tag>
                       {!isFromModuleFilter && (
                         <Tag style={{ borderRadius: 4, fontSize: 11 }}>extra rule</Tag>
+                      )}
+                      {yamlModuleSet.has(modId) && (
+                        <Tag color="purple" style={{ borderRadius: 4, fontSize: 10 }}>YAML</Tag>
                       )}
                     </Space>
                   }
@@ -374,12 +478,11 @@ function OsPermissionsTab({ app }: { app: ApplicationResponse }) {
     }
   };
 
-  // Permissions to show in the dropdown for the currently selected module.
-  // - undefined  → cache miss (still loading) → show all
-  // - []         → module has no @requires_permission actions → show all as fallback
-  // - [...]      → use the module-specific list
   const cachedPerms = selectedModuleId ? modulePermCache[selectedModuleId] : undefined;
-  const availablePermissions: string[] = cachedPerms?.length ? cachedPerms : KNOWN_PERMISSIONS;
+  // Permissions filtered for the selected module (manifest-declared first,
+  // then prefix-based fallback, then all known as last resort).
+  const availablePermissions = getPermissionsForModule(selectedModuleId, cachedPerms);
+  const grantedPermissions = new Set(grants.filter((g) => g.module_id === selectedModuleId).map((g) => g.permission));
 
   const handleGrant = () => {
     grantForm.validateFields().then((values) => {
@@ -565,17 +668,21 @@ function OsPermissionsTab({ app }: { app: ApplicationResponse }) {
                   showSearch
                   placeholder={selectedModuleId ? "Select permission…" : "Select a module first"}
                   disabled={!selectedModuleId}
-                  options={availablePermissions.map((p) => ({
-                    label: (
-                      <Space>
-                        <Text style={{ fontFamily: "monospace", fontSize: 12 }}>{p}</Text>
-                        <Tag color={riskTagColors[PERMISSION_RISK[p] ?? "medium"]} style={{ fontSize: 10 }}>
-                          {PERMISSION_RISK[p] ?? "medium"}
-                        </Tag>
-                      </Space>
-                    ),
-                    value: p,
-                  }))}
+                  options={availablePermissions.map((p) => {
+                    const alreadyGranted = grantedPermissions.has(p);
+                    return {
+                      label: (
+                        <Space>
+                          <Text style={{ fontFamily: "monospace", fontSize: 12, opacity: alreadyGranted ? 0.5 : 1 }}>{p}</Text>
+                          <Tag color={riskTagColors[PERMISSION_RISK[p] ?? "medium"]} style={{ fontSize: 10 }}>
+                            {PERMISSION_RISK[p] ?? "medium"}
+                          </Tag>
+                          {alreadyGranted && <Tag color="green" style={{ fontSize: 10 }}>already granted</Tag>}
+                        </Space>
+                      ),
+                      value: p,
+                    };
+                  })}
                   filterOption={(input, option) =>
                     (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                   }
@@ -629,6 +736,19 @@ function OsPermissionsTab({ app }: { app: ApplicationResponse }) {
           <div style={{ textAlign: "center", padding: 40 }}>
             <Spin />
           </div>
+        ) : permissions.isError ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="Could not load permissions"
+            description={
+              <span>
+                {getErrorMessage(permissions.error)}.
+                {" "}The security module may be unavailable (check <code>security_advanced.enable_decorators</code> in config).
+              </span>
+            }
+            style={{ borderRadius: 6 }}
+          />
         ) : grants.length === 0 ? (
           <Text type="secondary">
             No OS permissions granted for this application. All module actions that require
@@ -1002,13 +1122,16 @@ function SessionsTab({ app }: { app: ApplicationResponse }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function AppSecurityTab({ app, onUpdateApp, savingApp }: AppSecurityTabProps) {
+export function AppSecurityTab({ app, onUpdateApp, savingApp, yamlParsed, onSyncFromYaml, syncingFromYaml, linkedYamlAppId, onSyncToYaml }: AppSecurityTabProps) {
   return (
     <Card
       title={
         <Space>
           <LockOutlined />
           <span>Security</span>
+          {yamlParsed && !yamlParsed.in_sync && (
+            <Tag color="warning" style={{ borderRadius: 4, fontSize: 11 }}>Out of sync</Tag>
+          )}
         </Space>
       }
     >
@@ -1021,10 +1144,20 @@ export function AppSecurityTab({ app, onUpdateApp, savingApp }: AppSecurityTabPr
               <Space size={4}>
                 <AppstoreOutlined />
                 <span>Module Access</span>
+                {yamlParsed && !yamlParsed.in_sync && <Badge dot />}
               </Space>
             ),
             children: (
-              <ModuleAccessTab app={app} onUpdateApp={onUpdateApp} savingApp={savingApp} />
+              <ModuleAccessTab
+                app={app}
+                onUpdateApp={onUpdateApp}
+                savingApp={savingApp}
+                yamlParsed={yamlParsed}
+                onSyncFromYaml={onSyncFromYaml}
+                syncingFromYaml={syncingFromYaml}
+                linkedYamlAppId={linkedYamlAppId}
+                onSyncToYaml={onSyncToYaml}
+              />
             ),
           },
           {

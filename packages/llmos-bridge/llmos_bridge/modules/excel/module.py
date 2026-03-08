@@ -22,6 +22,7 @@ try:
 except ImportError:
     ModuleLoadError = ImportError  # type: ignore[misc,assignment]
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.security.decorators import audit_trail, requires_permission
@@ -200,6 +201,7 @@ class ExcelModule(BaseModule):
     # Workbook lifecycle
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateWorkbookParams.model_validate(params)
@@ -265,6 +267,7 @@ class ExcelModule(BaseModule):
         return await asyncio.to_thread(_close)
 
     @audit_trail("standard")
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_save_workbook(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SaveWorkbookParams.model_validate(params)
@@ -277,6 +280,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_save)
 
+    @cacheable(ttl=60, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads workbook metadata")
     async def _action_get_workbook_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetWorkbookInfoParams.model_validate(params)
@@ -303,6 +307,7 @@ class ExcelModule(BaseModule):
     # Sheet management
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=60, key_params=["path"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Lists workbook sheets")
     async def _action_list_sheets(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListSheetsParams.model_validate(params)
@@ -314,6 +319,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_list)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateSheetParams.model_validate(params)
@@ -327,6 +333,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_create)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteSheetParams.model_validate(params)
@@ -342,6 +349,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_rename_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RenameSheetParams.model_validate(params)
@@ -357,6 +365,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_rename)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_copy_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopySheetParams.model_validate(params)
@@ -381,6 +390,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_copy)
 
+    @cacheable(ttl=60, key_params=["path", "sheet"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads sheet metadata")
     async def _action_get_sheet_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetSheetInfoParams.model_validate(params)
@@ -409,6 +419,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_info)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_protect_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ProtectSheetParams.model_validate(params)
@@ -434,6 +445,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_protect)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_unprotect_sheet(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UnprotectSheetParams.model_validate(params)
@@ -451,6 +463,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_unprotect)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_page_setup(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetPageSetupParams.model_validate(params)
@@ -489,6 +502,7 @@ class ExcelModule(BaseModule):
     # Cell & range operations
     # ------------------------------------------------------------------
 
+    @cacheable(ttl=60, key_params=["path", "sheet", "cell"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads cell value from workbook")
     async def _action_read_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadCellParams.model_validate(params)
@@ -512,6 +526,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_write_cell(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteCellParams.model_validate(params)
@@ -528,6 +543,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @cacheable(ttl=60, key_params=["path", "sheet", "range"])
     @requires_permission(Permission.FILESYSTEM_READ, reason="Reads cell range from workbook")
     async def _action_read_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ReadRangeParams.model_validate(params)
@@ -571,6 +587,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_read)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_write_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = WriteRangeParams.model_validate(params)
@@ -607,6 +624,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_write)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_copy_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CopyRangeParams.model_validate(params)
@@ -653,6 +671,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_copy)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_rows(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertRowsParams.model_validate(params)
@@ -667,6 +686,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_rows(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteRowsParams.model_validate(params)
@@ -681,6 +701,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_columns(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertColumnsParams.model_validate(params)
@@ -695,6 +716,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_insert)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_columns(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteColumnsParams.model_validate(params)
@@ -709,6 +731,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_delete)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_merge_cells(self, params: dict[str, Any]) -> dict[str, Any]:
         p = MergeCellsParams.model_validate(params)
@@ -723,6 +746,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_merge)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_unmerge_cells(self, params: dict[str, Any]) -> dict[str, Any]:
         p = UnmergeCellsParams.model_validate(params)
@@ -737,6 +761,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_unmerge)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_freeze_panes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FreezePanesParams.model_validate(params)
@@ -753,6 +778,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_freeze)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_column_width(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetColumnWidthParams.model_validate(params)
@@ -796,6 +822,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_set_width)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_set_row_height(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetRowHeightParams.model_validate(params)
@@ -812,6 +839,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_set_height)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_find_replace(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FindReplaceParams.model_validate(params)
@@ -853,6 +881,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_find_replace)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_remove_duplicates(self, params: dict[str, Any]) -> dict[str, Any]:
         p = RemoveDuplicatesParams.model_validate(params)
@@ -915,6 +944,7 @@ class ExcelModule(BaseModule):
     # Formulas & logic
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_apply_formula(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyFormulaParams.model_validate(params)
@@ -931,6 +961,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_apply)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_named_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddNamedRangeParams.model_validate(params)
@@ -963,6 +994,7 @@ class ExcelModule(BaseModule):
     # Formatting
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_format_range(self, params: dict[str, Any]) -> dict[str, Any]:
         p = FormatRangeParams.model_validate(params)
@@ -1056,6 +1088,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_format)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_apply_conditional_format(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ApplyConditionalFormatParams.model_validate(params)
@@ -1135,6 +1168,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_apply_cf)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_data_validation(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddDataValidationParams.model_validate(params)
@@ -1171,6 +1205,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_add_dv)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_autofilter(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddAutoFilterParams.model_validate(params)
@@ -1191,6 +1226,7 @@ class ExcelModule(BaseModule):
     # Charts
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_create_chart(self, params: dict[str, Any]) -> dict[str, Any]:
         p = CreateChartParams.model_validate(params)
@@ -1303,6 +1339,7 @@ class ExcelModule(BaseModule):
     # Images
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_insert_image(self, params: dict[str, Any]) -> dict[str, Any]:
         p = InsertImageParams.model_validate(params)
@@ -1337,6 +1374,7 @@ class ExcelModule(BaseModule):
     # Comments
     # ------------------------------------------------------------------
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_add_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = AddCommentParams.model_validate(params)
@@ -1358,6 +1396,7 @@ class ExcelModule(BaseModule):
 
         return await asyncio.to_thread(_add_comment)
 
+    @invalidates_cache("*")
     @requires_permission(Permission.FILESYSTEM_WRITE, reason="Modifies Excel workbook")
     async def _action_delete_comment(self, params: dict[str, Any]) -> dict[str, Any]:
         p = DeleteCommentParams.model_validate(params)

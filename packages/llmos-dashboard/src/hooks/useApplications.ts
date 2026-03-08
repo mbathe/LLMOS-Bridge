@@ -7,6 +7,8 @@ import type {
   AgentResponse,
   ApiKeyResponse,
   SessionResponse,
+  SecretKeyResponse,
+  SetSecretRequest,
   CreateApplicationRequest,
   UpdateApplicationRequest,
   CreateAgentRequest,
@@ -17,6 +19,7 @@ export function useApplications(refetchInterval = 10000) {
 
   const invalidateApps = () => {
     queryClient.invalidateQueries({ queryKey: ["applications"] });
+    queryClient.invalidateQueries({ queryKey: ["llmos-apps"] });
   };
 
   const applications = useQuery<ApplicationResponse[]>({
@@ -115,5 +118,34 @@ export function useApplicationDetail(appId: string, refetchInterval = 5000) {
     onSuccess: invalidateApp,
   });
 
-  return { app, agents, sessions, updateApp, createAgent, deleteAgent, generateKey, revokeKey };
+  // ── Secrets ──
+  const secrets = useQuery<SecretKeyResponse[]>({
+    queryKey: ["applications", appId, "secrets"],
+    queryFn: () => api.get<SecretKeyResponse[]>(`/applications/${appId}/secrets`),
+    refetchInterval,
+    enabled: !!appId,
+    retry: false,
+  });
+
+  const setSecret = useMutation<
+    SecretKeyResponse,
+    Error,
+    { key: string; value: string }
+  >({
+    mutationFn: ({ key, value }) =>
+      api.put<SecretKeyResponse>(`/applications/${appId}/secrets/${key}`, { value }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["applications", appId, "secrets"] });
+    },
+  });
+
+  const deleteSecret = useMutation<{ detail: string }, Error, string>({
+    mutationFn: (key) =>
+      api.delete<{ detail: string }>(`/applications/${appId}/secrets/${key}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["applications", appId, "secrets"] });
+    },
+  });
+
+  return { app, agents, sessions, secrets, updateApp, createAgent, deleteAgent, generateKey, revokeKey, setSecret, deleteSecret };
 }

@@ -19,8 +19,8 @@ import {
   InputNumber,
   Popconfirm,
   Modal,
-  message,
   Badge,
+  message,
 } from "antd";
 import {
   TeamOutlined,
@@ -107,9 +107,9 @@ export default function ApplicationsPage() {
     }
   };
 
-  const handleDelete = async (app: ApplicationResponse) => {
+  const handleDelete = async (app: ApplicationResponse, hard = true) => {
     try {
-      await deleteApp.mutateAsync({ appId: app.app_id });
+      await deleteApp.mutateAsync({ appId: app.app_id, hard });
       message.success(`Application '${app.name}' deleted`);
     } catch (err) {
       message.error(getErrorMessage(err));
@@ -133,6 +133,11 @@ export default function ApplicationsPage() {
           {name === "default" && (
             <Tag color="blue" style={{ borderRadius: 4 }}>
               default
+            </Tag>
+          )}
+          {record.tags?.yaml_app === "true" && (
+            <Tag color="purple" style={{ borderRadius: 4 }}>
+              YAML App
             </Tag>
           )}
         </Space>
@@ -229,7 +234,7 @@ export default function ApplicationsPage() {
         record.name !== "default" ? (
           <Popconfirm
             title={`Delete application '${record.name}'?`}
-            description="This will disable the application."
+            description="This will permanently delete the application, its agents, sessions, and API keys."
             onConfirm={() => handleDelete(record)}
             okText="Yes"
             cancelText="No"
@@ -308,83 +313,30 @@ export default function ApplicationsPage() {
       {/* Stat Cards */}
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} lg={6}>
-          <StatCard
-            title="Total Applications"
-            value={stats.total}
-            prefix={<AppstoreOutlined />}
-            color="#1677ff"
-            footer={
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Registered applications
-              </Text>
-            }
-          />
+          <StatCard title="Total Applications" value={stats.total} prefix={<AppstoreOutlined />} color="#1677ff" />
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <StatCard
-            title="Enabled"
-            value={stats.enabled}
-            prefix={<SafetyOutlined />}
-            color="#52c41a"
-            footer={
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Active applications
-              </Text>
-            }
-          />
+          <StatCard title="Enabled" value={stats.enabled} prefix={<SafetyOutlined />} color="#52c41a" />
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <StatCard
-            title="Total Agents"
-            value={stats.totalAgents}
-            prefix={<UserOutlined />}
-            color="#722ed1"
-            footer={
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Across all applications
-              </Text>
-            }
-          />
+          <StatCard title="Total Agents" value={stats.totalAgents} prefix={<UserOutlined />} color="#722ed1" />
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <StatCard
-            title="Active Sessions"
-            value={stats.totalSessions}
-            prefix={<FieldTimeOutlined />}
-            color="#fa8c16"
-            footer={
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                Current sessions
-              </Text>
-            }
-          />
+          <StatCard title="Active Sessions" value={stats.totalSessions} prefix={<FieldTimeOutlined />} color="#fa8c16" />
         </Col>
       </Row>
 
       {/* Application Table */}
       <Card
-        title={
-          <Space>
-            <TeamOutlined />
-            <span>Applications</span>
-          </Space>
-        }
-        extra={
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Auto-refreshes every 10s
-          </Text>
-        }
+        title={<Space><TeamOutlined /><span>Applications</span></Space>}
+        extra={<Text type="secondary" style={{ fontSize: 12 }}>Auto-refreshes every 10s</Text>}
       >
         <Table
           columns={columns}
           dataSource={apps}
           rowKey="app_id"
           loading={applications.isLoading}
-          pagination={{
-            pageSize: 20,
-            showTotal: (total) => `${total} applications`,
-            showSizeChanger: true,
-          }}
+          pagination={{ pageSize: 20, showTotal: (total) => `${total} applications`, showSizeChanger: true }}
           size="middle"
           onRow={(record) => ({
             style: { cursor: "pointer" },
@@ -395,9 +347,7 @@ export default function ApplicationsPage() {
                 target.closest(".ant-switch") ||
                 target.closest(".ant-popover") ||
                 target.closest(".ant-popconfirm")
-              ) {
-                return;
-              }
+              ) return;
               router.push(`/applications/${record.app_id}`);
             },
           })}
@@ -408,27 +358,12 @@ export default function ApplicationsPage() {
       <Modal
         title="Create Application"
         open={showCreate}
-        onCancel={() => {
-          setShowCreate(false);
-          form.resetFields();
-        }}
+        onCancel={() => { setShowCreate(false); form.resetFields(); }}
         footer={null}
         width={520}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={handleCreate}
-          initialValues={{
-            max_concurrent_plans: 10,
-            max_actions_per_plan: 50,
-          }}
-        >
-          <Form.Item
-            name="name"
-            label="Name"
-            rules={[{ required: true, message: "Application name is required" }]}
-          >
+        <Form form={form} layout="vertical" onFinish={handleCreate} initialValues={{ max_concurrent_plans: 10, max_actions_per_plan: 50 }}>
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Application name is required" }]}>
             <Input placeholder="e.g. my-agent-app" />
           </Form.Item>
           <Form.Item name="description" label="Description">
@@ -436,46 +371,20 @@ export default function ApplicationsPage() {
           </Form.Item>
           <Row gutter={16}>
             <Col span={12}>
-              <Form.Item
-                name="max_concurrent_plans"
-                label="Max Concurrent Plans"
-                rules={[
-                  { type: "number", min: 1, max: 100, message: "Must be 1-100" },
-                ]}
-              >
+              <Form.Item name="max_concurrent_plans" label="Max Concurrent Plans" rules={[{ type: "number", min: 1, max: 100, message: "Must be 1-100" }]}>
                 <InputNumber style={{ width: "100%" }} min={1} max={100} />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item
-                name="max_actions_per_plan"
-                label="Max Actions per Plan"
-                rules={[
-                  { type: "number", min: 1, max: 500, message: "Must be 1-500" },
-                ]}
-              >
+              <Form.Item name="max_actions_per_plan" label="Max Actions per Plan" rules={[{ type: "number", min: 1, max: 500, message: "Must be 1-500" }]}>
                 <InputNumber style={{ width: "100%" }} min={1} max={500} />
               </Form.Item>
             </Col>
           </Row>
           <Form.Item>
             <Space>
-              <Button
-                type="primary"
-                htmlType="submit"
-                icon={<PlusOutlined />}
-                loading={createApp.isPending}
-              >
-                Create
-              </Button>
-              <Button
-                onClick={() => {
-                  setShowCreate(false);
-                  form.resetFields();
-                }}
-              >
-                Cancel
-              </Button>
+              <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={createApp.isPending}>Create</Button>
+              <Button onClick={() => { setShowCreate(false); form.resetFields(); }}>Cancel</Button>
             </Space>
           </Form.Item>
         </Form>

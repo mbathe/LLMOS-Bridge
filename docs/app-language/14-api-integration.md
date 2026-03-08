@@ -4,7 +4,7 @@ LLMOS apps can be managed and executed through the daemon's REST API.
 
 ## App Store
 
-The App Store is a SQLite-backed registry that tracks registered applications. When the daemon is running, apps can be registered, listed, run, and managed via the API.
+The App Store is a SQLite-backed registry that tracks registered applications. When the daemon is running, apps can be registered, prepared, run, and managed via the API.
 
 ### App Lifecycle
 
@@ -12,7 +12,10 @@ The App Store is a SQLite-backed registry that tracks registered applications. W
 .app.yaml file
      │
      ▼
-POST /apps/register     →  registered
+POST /apps/register     →  registered  (compile + validate + link identity)
+     │
+     ▼
+POST /apps/{id}/prepare →  prepared    (pre-load modules, warm LLM, health-check memory)
      │
      ▼
 POST /apps/{id}/run     →  running → completed
@@ -21,14 +24,28 @@ POST /apps/{id}/run     →  running → completed
 DELETE /apps/{id}       →  removed
 ```
 
+Every step goes through the daemon. The CLI `app run` command orchestrates all three steps automatically.
+
 ### App Status
 
 | Status | Description |
 |--------|-------------|
-| `registered` | App is registered and ready to run |
+| `registered` | App is compiled, validated, and stored — not yet prepared |
+| `prepared` | All modules pre-loaded, LLM warmed, memory checked — ready to launch |
 | `running` | App is currently executing |
 | `stopped` | App was stopped |
 | `error` | App encountered an error |
+
+### Application Identity Link
+
+Each registered app is linked to a dashboard **Application** entity (identity system). This provides:
+
+- **Allowed modules** — Only modules in the Application's allowlist are accessible
+- **Allowed actions** — Fine-grained per-module action control
+- **Session management** — Time-limited sessions with constraints
+- **RBAC** — Role hierarchy: ADMIN > APP_ADMIN > OPERATOR > VIEWER > AGENT
+
+You can link an existing Application by providing `application_id` at registration, or let the daemon auto-create one.
 
 ## API Endpoints
 
@@ -41,9 +58,17 @@ POST /apps/register
 Content-Type: application/json
 
 {
-  "file_path": "/path/to/my-app.app.yaml"
+  "file_path": "/path/to/my-app.app.yaml",
+  "application_id": "optional-existing-application-id"
 }
 ```
+
+The daemon:
+
+1. Compiles and validates the YAML
+2. Checks `application_id` against the identity store (if provided)
+3. Validates that the Application's `allowed_modules` covers all tools declared in the YAML
+4. If no `application_id` is provided, auto-creates an Application entity with appropriate module permissions
 
 **Response** (201):
 ```json
@@ -54,7 +79,39 @@ Content-Type: application/json
   "description": "My application",
   "status": "registered",
   "file_path": "/path/to/my-app.app.yaml",
+  "application_id": "app-xyz",
+  "prepared": false,
   "created_at": 1709750400.0
+}
+```
+
+### Prepare an App
+
+Pre-loads all resources needed for fast launch:
+
+```http
+POST /apps/{app_id}/prepare
+```
+
+The prepare step:
+
+1. Verifies all required modules are loaded in the daemon
+2. Resolves tool schemas for declared tools
+3. Pre-warms the LLM connection pool (provider + model)
+4. Health-checks memory backends (if declared)
+5. Validates security capabilities
+6. Marks the app as `prepared` in the store
+
+**Response** (200):
+```json
+{
+  "app_id": "abc123",
+  "prepared": true,
+  "modules_ok": ["filesystem", "os_exec"],
+  "tools_resolved": 5,
+  "llm_warmed": true,
+  "memory_ok": true,
+  "timing_ms": 234
 }
 ```
 
@@ -72,6 +129,8 @@ GET /apps
     "name": "my-app",
     "version": "1.0",
     "status": "registered",
+    "application_id": "app-xyz",
+    "prepared": true,
     "run_count": 5,
     "last_run_at": 1709750400.0
   }
@@ -219,6 +278,12 @@ llmos app run my-app.app.yaml --input "Fix the login bug"
 
 # Variable overrides
 llmos app run my-app.app.yaml --var workspace=/tmp/project
+
+# Force standalone mode (no daemon)
+llmos app run my-app.app.yaml --standalone
+
+# Link to existing Application identity
+llmos app run my-app.app.yaml --app-id "app-xyz"
 ```
 
 ## Daemon Integration
@@ -238,7 +303,7 @@ In daemon mode, every tool call goes through the full 15-step security pipeline:
 
 ```text
 App tool call
-    → DaemonToolExecutor
+    -> DaemonToolExecutor
         1.  Rate limiting (per-tool rate_limit_per_minute check)
         2.  Intent verification (LLM-based semantic analysis, if enabled)
         3.  Authorization check (Application identity allowlist)
@@ -300,11 +365,17 @@ Apps run under an Application identity with:
 ## CLI Reference
 
 ```bash
-# Run an app (connects to daemon if running, falls back to standalone)
+# Run an app (connects to daemon, registers -> prepares -> runs)
 llmos app run my-app.app.yaml
 
 # Run with input
 llmos app run my-app.app.yaml --input "..."
+
+# Run in standalone mode (no daemon required)
+llmos app run my-app.app.yaml --standalone
+
+# Link to existing Application identity
+llmos app run my-app.app.yaml --app-id "app-xyz"
 
 # Validate YAML
 llmos app validate my-app.app.yaml
@@ -328,6 +399,11 @@ from llmos_bridge.apps.runtime import AppRuntime
 # Compile
 compiler = AppCompiler()
 app_def = compiler.compile_file("my-app.app.yaml")
+
+# Prepare (pre-load all resources)
+prep_result = await runtime.prepare(app_def)
+print(f"Modules OK: {prep_result['modules_ok']}")
+print(f"Tools resolved: {prep_result['tools_resolved']}")
 
 # Run
 runtime = AppRuntime(

@@ -25,7 +25,7 @@
 
 app:
   name: claude-code
-  version: "6.0"
+  version: "7.0"
   description: "Production AI coding assistant — full LLMOS daemon power"
   author: llmos
   tags: [coding, assistant, developer-tools, production]
@@ -70,48 +70,113 @@ agent:
   role: specialist
   brain:
     provider: anthropic
-    model: claude-sonnet-4-6
+    model: claude-sonnet-4-20250514
     temperature: 0.2
-    max_tokens: 16384
+    max_tokens: 16000
     timeout: 120.0
+    config:
+      api_key: "{{secret.ANTHROPIC_API_KEY ?? env.ANTHROPIC_API_KEY ?? ''}}"
     fallback:
-      - model: claude-haiku-4-5-20251001
+      - provider: deepseek
+        model: deepseek-chat
+        max_tokens: 8192
         config:
-          max_tokens: 8192
+          api_key: "{{secret.DEEPSEEK_API_KEY ?? env.DEEPSEEK_API_KEY ?? ''}}"
+          base_url: "https://api.deepseek.com/v1"
 
   system_prompt: |
-    You are Claude Code, a production AI coding assistant running inside LLMOS Bridge.
-    Workspace: {{workspace}} (all filesystem ops sandboxed here).
+    You are Claude Code, an elite AI coding assistant running inside LLMOS Bridge.
+    Your workspace is: {{workspace}}
 
-    ## How You Work
-    1. ALWAYS read files before editing — never modify blind
-    2. Make minimal, focused changes
-    3. Run tests after code modifications
-    4. Use sub-agents (agent_spawn) for parallel work on independent tasks
-    5. Store important findings in memory for future sessions
-    6. Ask the user (ask_user) when instructions are ambiguous
+    ═══ IDENTITY ═══
+    You are the most capable coding agent available. You can read, write, search,
+    run commands, manage tasks, spawn sub-agents, and persist memory across sessions.
+    You replicate and exceed the capabilities of standalone Claude Code.
 
-    ## Available Tool Categories
-    Tools are provided as function definitions — refer to them directly.
-    Key modules: filesystem, os_exec, memory, context_manager, agent_spawn,
-    api_http, browser, database, security, triggers, recording, module_manager.
+    ═══ WHEN TO USE TOOLS vs WHEN TO ANSWER ═══
+    - Questions, greetings, explanations → answer in text, NO tool calls
+    - Tasks requiring action (read/write/run/search) → use tools
+    - NEVER use os_exec__run_command to "echo" an answer — just reply in text
 
-    Built-in tools: ask_user, todo, delegate, emit.
+    ═══ CORE TOOLS ═══
+    File operations:
+    - filesystem__read_file: Read file contents (ALWAYS read before editing)
+    - filesystem__write_file: Write/create files (use create_dirs=true for new paths)
+    - filesystem__list_directory: List directory contents
+    - filesystem__search_files: Search files by pattern and content regex
+    - filesystem__get_file_info: Get file metadata (size, permissions, dates)
+    - filesystem__create_directory: Create directories
+    - filesystem__delete_file: Delete files (requires approval)
+    - filesystem__move_file: Move/rename files
 
-    ## Strategy for Complex Tasks
-    1. memory.observe() — check existing objectives and context
-    2. memory.set_objective(goal) — set cognitive goal
-    3. todo(action="add") — break into subtasks
-    4. For each subtask: read → plan → change → test
-    5. Large tasks → spawn sub-agents in parallel
-    6. memory.store(key, findings) — persist important findings
+    Shell:
+    - os_exec__run_command: Run shell commands (git, npm, pytest, etc.)
+    - os_exec__get_env_var: Read environment variables
+    - os_exec__get_system_info: Get system info (cpu, memory, disk, os)
 
-    ## Rules
-    - NEVER modify files outside {{workspace}}
-    - ALWAYS read before editing
-    - Ask before destructive operations (delete, force-push, reset)
-    - Run tests after code changes
-    - Use memory.store() for findings you'll need later
+    ═══ TASK MANAGEMENT (CRITICAL) ═══
+    You MUST track your work with the built-in todo tool:
+    - todo(action="add", task="Description") — add a task
+    - todo(action="update", id="...", status="in_progress") — mark as started
+    - todo(action="update", id="...", status="completed") — mark as done
+    - todo(action="list") — see current tasks
+
+    Rules:
+    - For any multi-step task, create a todo list FIRST before starting
+    - Mark tasks in_progress BEFORE working on them (one at a time)
+    - Mark tasks completed IMMEDIATELY after finishing
+    - This is how you demonstrate progress to the user
+
+    ═══ MEMORY (CRITICAL) ═══
+    You have persistent memory across sessions. USE IT:
+    - memory__store(key, value, backend="kv"): Save important context
+    - memory__recall(key, backend="kv"): Retrieve saved context
+    - memory__search(query, backend="episodic"): Search past experiences
+    - memory__set_objective(objective, priority): Set your current goal
+    - memory__observe(observation, category): Record observations
+    - memory__update_progress(objective_id, progress, notes): Track progress
+
+    What to remember:
+    - Project structure and conventions (after first exploration)
+    - Decisions made and their reasoning
+    - Errors encountered and how you fixed them
+    - User preferences observed during the session
+    - Key file paths and their purposes
+
+    At the START of each session:
+    1. Recall project context: memory__recall("project_context")
+    2. Check for objectives: memory__recall("current_objectives")
+    3. Set your objective: memory__set_objective(...)
+
+    ═══ SUB-AGENTS (PARALLEL WORK) ═══
+    For independent tasks, spawn sub-agents to work in parallel:
+    - agent_spawn__spawn_agent(task, agent_type="worker"): Start a background task
+    - agent_spawn__check_agent(agent_id): Check if done
+    - agent_spawn__get_result(agent_id): Get the result
+    - agent_spawn__list_agents(): See all running agents
+    - agent_spawn__wait_agent(agent_id): Wait for completion
+
+    Use sub-agents when:
+    - Multiple independent files need to be analyzed
+    - Running tests while making changes
+    - Researching multiple topics simultaneously
+
+    ═══ CONTEXT AWARENESS ═══
+    - context_manager__get_budget(): Check remaining context budget
+    - context_manager__get_state(): See context usage breakdown
+    - If context is getting full, the system auto-compresses older messages
+    - Your objectives and cognitive state are NEVER compressed
+
+    ═══ WORKING RULES ═══
+    1. ALWAYS read files before modifying them
+    2. ALWAYS create a todo list for multi-step tasks
+    3. ALWAYS run tests after making changes (when tests exist)
+    4. NEVER modify files outside {{workspace}} without permission
+    5. NEVER use destructive git operations without asking
+    6. When writing large files, split into manageable chunks
+    7. Store important findings in memory for future sessions
+    8. Use sub-agents for independent parallel work
+    9. Check context budget periodically on long tasks
 
   loop:
     type: reactive
@@ -128,13 +193,13 @@ agent:
       # to the actual model limit — no need to hardcode.
       strategy: summarize
       keep_system_prompt: true
-      keep_last_n_messages: 20
+      keep_last_n_messages: 30
       summarize_older: true
-      output_reserved: 16384
+      output_reserved: 16000
       cognitive_max_tokens: 1500
       memory_max_tokens: 2000
-      compression_trigger_ratio: 0.65
-      min_recent_messages: 8
+      compression_trigger_ratio: 0.70
+      min_recent_messages: 10
     planning:
       enabled: true
       batch_actions: true
@@ -142,15 +207,18 @@ agent:
       replan_on_failure: true
 
   tools:
-    # ── Filesystem (full, workspace-sandboxed) ──
+    # ── Filesystem (full access, workspace-sandboxed) ──
     - module: filesystem
+      actions: [read_file, write_file, append_file, list_directory, search_files,
+                get_file_info, create_directory, delete_file, move_file, copy_file,
+                compute_checksum]
       constraints:
         paths: ["{{workspace}}"]
         max_file_size: "50MB"
 
-    # ── Shell (rate-limited, dangerous commands blocked) ──
+    # ── Shell (essential commands) ──
     - module: os_exec
-      exclude: [kill_process, open_application, close_application]
+      actions: [run_command, get_env_var, get_system_info]
       constraints:
         timeout: "{{shell_timeout}}"
         working_directory: "{{workspace}}"
@@ -158,60 +226,34 @@ agent:
         forbidden_patterns: ["sudo rm -rf *", "curl * | bash", "wget * | sh"]
         rate_limit_per_minute: 30
 
-    # ── Sub-agents ──
-    - module: agent_spawn
-
-    # ── Memory ──
+    # ── Memory (full access — critical for persistence) ──
     - module: memory
+      actions: [store, recall, search, delete, list_keys,
+                set_objective, get_context, update_progress, observe]
 
-    # ── Context management ──
+    # ── Sub-agent spawning (parallel work) ──
+    - module: agent_spawn
+      actions: [spawn_agent, check_agent, get_result, list_agents,
+                cancel_agent, wait_agent, send_message]
+
+    # ── Context management (budget awareness) ──
     - module: context_manager
+      actions: [get_budget, get_state, compress_history, get_tools_summary]
 
-    # ── Browser (domain-restricted) ──
-    - module: browser
-      actions: [open_browser, close_browser, navigate_to, get_page_content,
-                take_screenshot, click_element, fill_input, execute_script,
-                wait_for_element, get_element_text]
-      constraints:
-        allowed_domains: ["github.com", "stackoverflow.com", "docs.python.org",
-                          "pypi.org", "npmjs.com", "developer.mozilla.org",
-                          "crates.io", "pkg.go.dev"]
-        timeout: "30s"
-        rate_limit_per_minute: 20
-
-    # ── HTTP API (domain-restricted) ──
+    # ── HTTP API (for external integrations) ──
     - module: api_http
-      actions: [http_get, http_post, http_put, http_delete, http_head,
-                graphql_query, download_file, upload_file, parse_html,
-                check_url_availability]
+      actions: [http_get, http_post]
       constraints:
-        allowed_domains: ["api.github.com", "pypi.org", "registry.npmjs.org",
-                          "httpbin.org", "raw.githubusercontent.com"]
         max_response_size: "10MB"
         timeout: "30s"
-        rate_limit_per_minute: 20
-
-    # ── Database (read-only by default) ──
-    - module: database
-      actions: [connect, disconnect, execute_query, fetch_results,
-                list_tables, get_table_schema]
-      constraints:
-        read_only: true
-        timeout: "15s"
 
     # ── Security introspection ──
     - module: security
+      actions: [check_permission, get_security_status]
 
-    # ── Triggers (manage triggers at runtime) ──
-    - module: triggers
-
-    # ── Recording (capture workflows for replay) ──
-    - module: recording
-
-    # ── Module management (inspect system) ──
+    # ── Module management (inspect only) ──
     - module: module_manager
-      actions: [list_modules, get_module_info, get_module_health,
-                get_system_status, search_hub, describe_module]
+      actions: [list_modules, get_module_info, get_system_status]
 
 # ─── Memory (5-level) ──────────────────────────────────────────────
 
@@ -257,35 +299,32 @@ perception:
 capabilities:
   grant:
     - module: filesystem
+      actions: [read_file, write_file, append_file, list_directory, search_files,
+                get_file_info, create_directory, delete_file, move_file, copy_file,
+                compute_checksum]
       constraints:
         paths: ["{{workspace}}"]
     - module: os_exec
-      actions: [run_command, get_env_var, set_env_var, list_processes,
-                get_process_info, get_system_info]
+      actions: [run_command, get_env_var, get_system_info]
     - module: memory
-    - module: context_manager
+      actions: [store, recall, search, delete, list_keys,
+                set_objective, get_context, update_progress, observe]
     - module: agent_spawn
-    - module: browser
-      actions: [open_browser, close_browser, navigate_to, get_page_content,
-                take_screenshot, click_element, fill_input, execute_script,
-                wait_for_element, get_element_text]
+      actions: [spawn_agent, check_agent, get_result, list_agents,
+                cancel_agent, wait_agent, send_message]
+    - module: context_manager
+      actions: [get_budget, get_state, compress_history, get_tools_summary]
     - module: api_http
-      actions: [http_get, http_post, http_put, http_delete, graphql_query,
-                download_file, parse_html, check_url_availability]
-    - module: database
-      actions: [connect, disconnect, execute_query, fetch_results,
-                list_tables, get_table_schema]
+      actions: [http_get, http_post]
     - module: security
-    - module: triggers
-    - module: recording
+      actions: [check_permission, get_security_status]
     - module: module_manager
-      actions: [list_modules, get_module_info, get_module_health,
-                get_system_status, search_hub, describe_module]
+      actions: [list_modules, get_module_info, get_system_status]
 
   deny:
     - module: filesystem
       action: delete_file
-      when: "{{params.path.endswith('.env') or params.path.endswith('.key') or params.path.endswith('.pem')}}"
+      when: "{{params.path | endswith('.env') or params.path | endswith('.key') or params.path | endswith('.pem')}}"
       reason: "Cannot delete sensitive configuration or key files"
     - module: os_exec
       action: kill_process
@@ -504,13 +543,16 @@ triggers:
     multiline: true
     history: true
     greeting: |
-      Claude Code v6.0 — LLMOS Bridge
+      Claude Code v7.0 — LLMOS Bridge
+      Provider: {{env.LLMOS_PROVIDER ?? 'anthropic'}}
       Workspace: {{workspace}}
 
-      Modules: filesystem, shell, sub-agents, memory, browser, API, database,
-               triggers, recording, security, module_manager
-      Memory: 5-level persistent (project + conversation + episodic + procedural)
-      Security: power_user profile, workspace-sandboxed, audit logging
+      Capabilities:
+        Files: read, write, search, move, delete (workspace-sandboxed)
+        Shell: run commands, git, npm, pytest, etc.
+        Memory: 5-level persistent (project, episodic, procedural)
+        Agents: spawn sub-agents for parallel work
+        Context: auto-compression with summarization
 
       Type a coding task or question.
 

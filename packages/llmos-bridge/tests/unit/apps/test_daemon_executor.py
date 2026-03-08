@@ -388,7 +388,7 @@ async def test_capability_approval_required():
 
     result = await executor.execute("os_exec", "run_command", {"command": ["ls"]})
     assert "error" in result
-    assert "Approval required" in result["error"]
+    assert "APPROVAL" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -641,7 +641,7 @@ async def test_approval_with_when_condition():
 
     result = await executor.execute("os_exec", "run_command", {"command": ["ls"]})
     assert "error" in result
-    assert "Approval required" in result["error"]
+    assert "APPROVAL" in result["error"]
 
 
 # ─── Tests: Audit enforcement ────────────────────────────────────

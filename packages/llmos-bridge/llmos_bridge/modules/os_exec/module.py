@@ -17,6 +17,7 @@ from typing import Any
 
 import psutil
 
+from llmos_bridge.cache import cacheable, invalidates_cache
 from llmos_bridge.modules.base import BaseModule, Platform
 from llmos_bridge.modules.manifest import ActionSpec, ModuleManifest, ParamSpec
 from llmos_bridge.orchestration.streaming_decorators import streams_progress
@@ -106,6 +107,7 @@ class OSExecModule(BaseModule):
         }
 
     @requires_permission(Permission.PROCESS_READ, reason="Lists running system processes")
+    @cacheable(ttl=5, key_params=["name_filter"])
     async def _action_list_processes(self, params: dict[str, Any]) -> dict[str, Any]:
         p = ListProcessesParams.model_validate(params)
         processes = []
@@ -200,18 +202,21 @@ class OSExecModule(BaseModule):
         return {"application": p.application_name, "closed_pids": closed}
 
     @requires_permission(Permission.ENV_WRITE, reason="Modifies environment variable")
+    @invalidates_cache("get_env_var")
     async def _action_set_env_var(self, params: dict[str, Any]) -> dict[str, Any]:
         p = SetEnvVarParams.model_validate(params)
         os.environ[p.name] = p.value
         return {"name": p.name, "scope": p.scope}
 
     @requires_permission(Permission.ENV_READ, reason="Reads environment variable")
+    @cacheable(ttl=30, key_params=["name"])
     async def _action_get_env_var(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetEnvVarParams.model_validate(params)
         value = os.environ.get(p.name)
         return {"name": p.name, "value": value, "exists": value is not None}
 
     @requires_permission(Permission.PROCESS_READ, reason="Reads system resource usage")
+    @cacheable(ttl=10, key_params=["include"])
     async def _action_get_system_info(self, params: dict[str, Any]) -> dict[str, Any]:
         p = GetSystemInfoParams.model_validate(params)
         info: dict[str, Any] = {}
